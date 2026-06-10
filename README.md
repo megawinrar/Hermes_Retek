@@ -1,2 +1,2 @@
 # Hermes Workspace
-Рабочая папка Hermes Agent. Код, скрипты, результаты.
+Рабочее пространство бота Hermes_Retek
