@@ -1,0 +1,153 @@
+hermes_retek_token_governor:
+  version: 1
+  default_mode: economy
+
+  routing_principle:
+    description: "Сначала классифицировать задачу, потом выбирать модель, память, инструменты и агентов."
+    never_start_with_strong_model: true
+    never_load_full_memory_by_default: true
+    prefer_tools_over_llm_for_commands: true
+
+  levels:
+    L0:
+      name: no_llm_command
+      examples:
+        - status
+        - tasks
+        - done
+        - show_recent_requests
+        - save_note
+      llm_calls: 0
+      memory_top_k: 0
+      agents: false
+      max_input_tokens: 0
+      max_output_tokens: 0
+
+    L1:
+      name: simple_task
+      examples:
+        - translate_short_text
+        - rewrite_message
+        - extract_basic_fields
+        - short_supplier_reply
+        - simple_calculation
+      model_class: cheap_fast
+      max_calls: 1
+      max_input_tokens: 3000
+      max_output_tokens: 800
+      memory_top_k: 0
+      agents: false
+      reviewer: false
+
+    L2:
+      name: standard_task
+      examples:
+        - parse_client_request
+        - summarize_email
+        - create_short_spec
+        - compare_request_with_base
+        - prepare_commercial_offer_structure
+      model_class: medium
+      max_calls: 3
+      max_input_tokens: 8000
+      max_output_tokens: 2000
+      memory_top_k: 5
+      agents: false
+      reviewer: optional
+
+    L3:
+      name: complex_task
+      examples:
+        - architecture_design
+        - tender_analysis
+        - multi_step_pipeline
+        - codex_specification
+        - multiple_roles_task
+      planner_model_class: strong_reasoning
+      worker_model_class: medium
+      reviewer_model_class: medium
+      max_calls: 8
+      max_input_tokens: 16000
+      max_output_tokens: 4000
+      memory_top_k: 8
+      agents: true
+      max_agents: 3
+      max_rounds: 2
+      reviewer: true
+
+    L4:
+      name: project_task
+      examples:
+        - multi_file_code_project
+        - long_running_rag_analysis
+        - several_documents_and_agents
+        - code_generation_with_ci_review
+      planner_model_class: strong_reasoning
+      worker_model_class: cheap_or_medium
+      reviewer_model_class: strong_reasoning
+      max_calls: 20
+      max_input_tokens: 24000
+      max_output_tokens: 6000
+      memory_top_k: 12
+      agents: true
+      max_agents: 5
+      max_rounds: 3
+      checkpoint_every_calls: 5
+      require_human_decision_above_usd: 1.5
+
+  memory_policy:
+    default:
+      load_user_profile: true
+      load_project_summary: true
+      load_full_history: false
+      load_raw_files: false
+    by_task_type:
+      translation:
+        memory_top_k: 0
+      supplier_message:
+        memory_top_k: 2
+        skills:
+          - business_tone
+          - china_supplier_messages
+      request_processing:
+        memory_top_k: 5
+        skills:
+          - gauges_request_normalization
+          - excel_request_processing
+      tender_analysis:
+        memory_top_k: 8
+        skills:
+          - locked_tender_rules
+          - hss_tool_families
+      architecture:
+        memory_top_k: 8
+        skills:
+          - microservice_design
+          - codex_task_spec
+
+  escalation_rules:
+    cheap_to_medium_if:
+      - low_confidence
+      - structured_output_failed
+      - user_marks_important
+      - document_has_multiple_entities
+    medium_to_strong_if:
+      - legal_or_financial_risk
+      - architecture_decision
+      - multi_file_reasoning
+      - contradiction_detected
+      - code_design_decision
+
+  stop_rules:
+    stop_if_budget_exceeded: true
+    create_checkpoint_before_stop: true
+    do_not_retry_more_than: 2
+    ask_user_if_human_business_decision_required: true
+
+  code_guard_bot:
+    enabled: true
+    max_debate_rounds: 3
+    notify_user_if_no_consensus: true
+    notify_channel: telegram
+    block_direct_push_to_main: true
+    require_pull_request_flow: true
