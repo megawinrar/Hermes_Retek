@@ -70,19 +70,31 @@
 
 Запрещает формальную взаимную приёмку Bot#1 и Bot#2. Вводит acceptance contract до старта задачи, evidence-based approve, mandatory dissent, red-team question и random audit.
 
-### 8. Prompt для Task Router
+### 8. Prompt универсального Bot#2
+
+`prompts/universal_bot2_guard_prompt.md`
+
+Промт для Bot#2 вне кода: quality gate, analytical validator и creative challenger. Запрещает approve без acceptance criteria и evidence.
+
+### 9. Шаблон Acceptance Contract
+
+`configs/acceptance_contract_template.yaml`
+
+YAML-шаблон условий приёмки до старта задачи. Фиксирует task type, mode, expected result, acceptance criteria, rejection criteria, доказательства Bot#1 и проверки Bot#2.
+
+### 10. Prompt для Task Router
 
 `prompts/task_router_prompt.md`
 
 Промт классификатора задач. Он должен возвращать JSON с уровнем задачи, лимитами, моделью, памятью и агентами.
 
-### 9. Второй бот Code Guard
+### 11. Второй бот Code Guard
 
 `docs/02_code_guard_bot_scenario.md`
 
 Сценарий второго бота, который следит за кодом, спорит с исполнителем максимум 3 раунда и обращается к человеку, если согласия нет.
 
-### 10. Анти-имитационные сценарии Code Guard
+### 12. Анти-имитационные сценарии Code Guard
 
 `docs/03_code_guard_anti_imitation_scenarios.md`
 
@@ -94,7 +106,7 @@
 - изменил только тесты, но не исправил поведение;
 - утверждает, что задача выполнена, без доказательств в diff.
 
-### 11. Realtime stage gates и Human-in-the-loop
+### 13. Realtime stage gates и Human-in-the-loop
 
 `docs/04_realtime_human_in_loop_and_stage_gates.md`
 
@@ -103,7 +115,7 @@
 - GitHub — источник истины: branch, commits, PR, diff, CI, review;
 - Telegram DevLog — live-окно: события, споры Bot#1/Bot#2, вопросы пользователю и кнопки решений.
 
-### 12. Prompt для Code Guardian
+### 14. Prompt для Code Guardian
 
 `prompts/code_guardian_prompt.md`
 
@@ -154,3 +166,4 @@ src/realtime/github_audit_log.py
 14. DeepSeek пишет и исправляет, OpenAI/Codex проверяет и принимает.
 15. Вне кода Bot#2 работает как аналитик, критик и креативный challenger на рискованных или важных задачах.
 16. Согласие Bot#1 и Bot#2 не является доказательством; approve возможен только по acceptance criteria и evidence.
+17. Для важных задач acceptance contract создаётся до выполнения и не меняется Bot#1/Bot#2 без разрешения.
