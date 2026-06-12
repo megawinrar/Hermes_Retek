@@ -62,19 +62,27 @@
 - Analytical Validator — проверка фактов, расчётов, источников и допущений;
 - Creative Challenger — усиление идей, стратегий, офферов и позиционирования.
 
-### 7. Prompt для Task Router
+### 7. Anti Rubber-Stamp Acceptance Protocol
+
+`docs/08_anti_rubber_stamp_acceptance_protocol.md`
+
+`configs/anti_rubber_stamp_acceptance_protocol.yaml`
+
+Запрещает формальную взаимную приёмку Bot#1 и Bot#2. Вводит acceptance contract до старта задачи, evidence-based approve, mandatory dissent, red-team question и random audit.
+
+### 8. Prompt для Task Router
 
 `prompts/task_router_prompt.md`
 
 Промт классификатора задач. Он должен возвращать JSON с уровнем задачи, лимитами, моделью, памятью и агентами.
 
-### 8. Второй бот Code Guard
+### 9. Второй бот Code Guard
 
 `docs/02_code_guard_bot_scenario.md`
 
 Сценарий второго бота, который следит за кодом, спорит с исполнителем максимум 3 раунда и обращается к человеку, если согласия нет.
 
-### 9. Анти-имитационные сценарии Code Guard
+### 10. Анти-имитационные сценарии Code Guard
 
 `docs/03_code_guard_anti_imitation_scenarios.md`
 
@@ -86,7 +94,7 @@
 - изменил только тесты, но не исправил поведение;
 - утверждает, что задача выполнена, без доказательств в diff.
 
-### 10. Realtime stage gates и Human-in-the-loop
+### 11. Realtime stage gates и Human-in-the-loop
 
 `docs/04_realtime_human_in_loop_and_stage_gates.md`
 
@@ -95,7 +103,7 @@
 - GitHub — источник истины: branch, commits, PR, diff, CI, review;
 - Telegram DevLog — live-окно: события, споры Bot#1/Bot#2, вопросы пользователю и кнопки решений.
 
-### 11. Prompt для Code Guardian
+### 12. Prompt для Code Guardian
 
 `prompts/code_guardian_prompt.md`
 
@@ -145,3 +153,4 @@ src/realtime/github_audit_log.py
 13. Bot#2 не нужен для каждого сообщения Bot#1, но обязателен для каждого code gate.
 14. DeepSeek пишет и исправляет, OpenAI/Codex проверяет и принимает.
 15. Вне кода Bot#2 работает как аналитик, критик и креативный challenger на рискованных или важных задачах.
+16. Согласие Bot#1 и Bot#2 не является доказательством; approve возможен только по acceptance criteria и evidence.
