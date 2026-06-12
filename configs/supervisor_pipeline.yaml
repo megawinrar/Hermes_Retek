@@ -1,0 +1,50 @@
+version: 1
+name: Hermes Supervisor Pipeline MVP
+
+paths:
+  project_dir: /opt/hermes-assistant
+  supervisor_store: /var/lib/docker/volumes/hermes-data/_data/supervisor_store.db
+  bot2_gate: /opt/hermes-assistant/scripts/bot2_gate.py
+
+pipeline:
+  - id: create_contract
+    role: architect
+    required: true
+  - id: bot1_developer
+    role: developer
+    required: true
+  - id: tester
+    role: tester
+    required: true
+  - id: bot2_gate
+    role: bot2
+    required: true
+  - id: human_decision
+    role: supervisor
+    when:
+      bot2_status:
+        - REJECT
+        - NEEDS_HUMAN
+  - id: deploy
+    role: devops
+    when:
+      supervisor_status:
+        - approved
+        - accepted_by_user_override
+
+status_transitions:
+  created:
+    - running
+  running:
+    - approved
+    - awaiting_human_decision
+    - failed
+  awaiting_human_decision:
+    - return_to_bot1
+    - accepted_by_user_override
+  return_to_bot1:
+    - running
+  approved:
+    - ready_for_deploy
+  accepted_by_user_override:
+    - ready_for_deploy

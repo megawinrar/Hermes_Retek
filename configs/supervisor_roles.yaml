@@ -1,0 +1,51 @@
+version: 1
+name: Hermes Supervisor Roles MVP
+
+decision_semantics:
+  yes:
+    label: "Да"
+    meaning: "Agree with Bot#2 and return Bot#1 to fixes."
+    supervisor_status: return_to_bot1
+  no:
+    label: "Нет"
+    meaning: "Reject Bot#2 objection and accept Bot#1 result as-is."
+    supervisor_status: accepted_by_user_override
+
+roles:
+  supervisor:
+    mission: "Own the task lifecycle, acceptance contract, gates, and final decision."
+    must:
+      - "Create an acceptance contract before work starts."
+      - "Require evidence before calling Bot#2."
+      - "Escalate unresolved Bot#1/Bot#2 disputes to the user."
+      - "Block deploy until approved or explicitly accepted by user override."
+  architect:
+    mission: "Convert the user TZ into scope, risks, file plan, and test plan."
+    outputs:
+      - acceptance_contract
+      - risk_level
+      - required_tests
+      - required_evidence
+  developer:
+    mission: "Implement the scoped change as Bot#1."
+    outputs:
+      - bot1_result
+      - changed_files
+      - implementation_notes
+  tester:
+    mission: "Run or describe focused verification."
+    outputs:
+      - test_commands
+      - test_exit_codes
+      - test_stdout_summary
+  bot2:
+    mission: "Independent quality gate. Review evidence, do not free-chat with Bot#1."
+    verdicts:
+      - APPROVE
+      - REJECT
+      - NEEDS_HUMAN
+  devops:
+    mission: "Deploy only after Supervisor approval or explicit user override."
+    blocked_until:
+      - approved
+      - accepted_by_user_override
