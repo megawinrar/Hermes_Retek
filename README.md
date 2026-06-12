@@ -1,6 +1,6 @@
 # Hermes_Retek
 
-Проектная база для настройки Hermes Retek: экономное потребление токенов, маршрутизация задач L0-L4, управление памятью, агентами и второй бот-контролёр написания кода.
+Проектная база для настройки Hermes Retek: экономное потребление токенов, маршрутизация задач L0-L4, управление памятью, агентами и второй бот-контролёр качества.
 
 ## Что добавлено
 
@@ -50,19 +50,31 @@
 
 Фиксирует матрицу: когда Bot#2 обязателен, когда достаточно light-review, а когда Bot#2 будет лишней нагрузкой. Также закрепляет модельную схему: Bot#1 = DeepSeek как implementer, Bot#2 = OpenAI/Codex как reviewer, quality gate и арбитр.
 
-### 6. Prompt для Task Router
+### 6. Универсальные режимы Bot#2
+
+`docs/07_universal_bot2_guard_modes.md`
+
+`configs/universal_bot2_guard_modes.yaml`
+
+Расширяет Bot#2 за пределы кода. Bot#2 может работать как:
+
+- Quality Gate — проверка готового результата;
+- Analytical Validator — проверка фактов, расчётов, источников и допущений;
+- Creative Challenger — усиление идей, стратегий, офферов и позиционирования.
+
+### 7. Prompt для Task Router
 
 `prompts/task_router_prompt.md`
 
 Промт классификатора задач. Он должен возвращать JSON с уровнем задачи, лимитами, моделью, памятью и агентами.
 
-### 7. Второй бот Code Guard
+### 8. Второй бот Code Guard
 
 `docs/02_code_guard_bot_scenario.md`
 
 Сценарий второго бота, который следит за кодом, спорит с исполнителем максимум 3 раунда и обращается к человеку, если согласия нет.
 
-### 8. Анти-имитационные сценарии Code Guard
+### 9. Анти-имитационные сценарии Code Guard
 
 `docs/03_code_guard_anti_imitation_scenarios.md`
 
@@ -74,7 +86,7 @@
 - изменил только тесты, но не исправил поведение;
 - утверждает, что задача выполнена, без доказательств в diff.
 
-### 9. Realtime stage gates и Human-in-the-loop
+### 10. Realtime stage gates и Human-in-the-loop
 
 `docs/04_realtime_human_in_loop_and_stage_gates.md`
 
@@ -83,7 +95,7 @@
 - GitHub — источник истины: branch, commits, PR, diff, CI, review;
 - Telegram DevLog — live-окно: события, споры Bot#1/Bot#2, вопросы пользователю и кнопки решений.
 
-### 10. Prompt для Code Guardian
+### 11. Prompt для Code Guardian
 
 `prompts/code_guardian_prompt.md`
 
@@ -132,3 +144,4 @@ src/realtime/github_audit_log.py
 12. PR с изменением кода нельзя мержить без одобрения Bot#2 по тестам и рефакторингу.
 13. Bot#2 не нужен для каждого сообщения Bot#1, но обязателен для каждого code gate.
 14. DeepSeek пишет и исправляет, OpenAI/Codex проверяет и принимает.
+15. Вне кода Bot#2 работает как аналитик, критик и креативный challenger на рискованных или важных задачах.
