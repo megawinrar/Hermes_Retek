@@ -151,3 +151,44 @@ hermes_retek_token_governor:
     notify_channel: telegram
     block_direct_push_to_main: true
     require_pull_request_flow: true
+
+    anti_imitation:
+      enabled: true
+      do_not_trust_verbal_done: true
+      require_diff_evidence: true
+      require_expected_files_changed: true
+      require_tests_to_check_behavior: true
+      require_test_to_match_task: true
+      reject_placeholder_implementation: true
+      reject_tests_that_only_check_imports: true
+      reject_tests_that_only_check_function_exists: true
+      reject_tests_without_asserting_result: true
+      reject_tests_that_mock_all_logic: true
+      reject_tests_that_could_not_fail_on_old_code: true
+      reject_weakened_asserts: true
+      reject_skipped_tests_without_reason: true
+
+    violation_statuses:
+      - FAKE_IMPLEMENTATION_DETECTED
+      - TEST_THEATER_DETECTED
+      - WEAKENED_TESTS_DETECTED
+      - NEED_HUMAN_DECISION
+
+    human_escalation:
+      after_rounds: 3
+      sender_label: "Сообщение от Bot#2"
+      via: hermes_telegram_bot
+      buttons:
+        yes:
+          text: "Да"
+          meaning: "Согласен с Bot#2, вернуть Bot#1 на исправление"
+        no:
+          text: "Нет"
+          meaning: "Принять работу Bot#1 как есть"
+      message_must_include:
+        - task_summary
+        - what_bot1_claimed
+        - what_bot2_found
+        - evidence
+        - risk_if_accepted
+        - bot2_recommendation
