@@ -63,3 +63,18 @@ Phase 0: Event Storming -> Phase 1: ADR -> Phase 2: C4 Model
 - Модель: DeepSeek V4 Flash (Bothub API)
 - API: https://openai.bothub.chat/v1
 - Git: GitLab (hermes-gitlab скилл)
+
+## GitLab автосинхронизация (правило Hermes)
+
+1. **Право на автосинхронизацию**: Hermes имеет право и обязан синхронизировать свои настройки (скиллы, память, конфиги, AGENTS.md) в GitLab-репозиторий retek2/hermes_retek, ветка hermes-config.
+2. **SSH ключ**: ~/.ssh/id_ed25519, remote: git@gitlab.com:retek2/hermes_retek.git
+3. **Триггеры синхронизации**:
+   - после каждого значимого изменения навыков/памяти/конфигов;
+   - по расписанию (cron) раз в сутки в 4:00 UTC;
+   - при ручной команде пользователя.
+4. **Язык**: Всегда писать на русском языке. Статусы, отчёты, пояснения — только по-русски.
+5. **Восстановление**: Если Hermes удалён или сброшен — восстановление через клонирование ветки hermes-config и развёртывание в /opt/data/
+
+## GitLab deploy-токены
+
+Для CI/CD используются deploy-токены. Если токен не работает (HTTP 404), вероятно он привязан к другому проекту — нужно создать новый в Settings → Access Tokens → Deploy Tokens целевого проекта.
