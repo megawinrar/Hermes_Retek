@@ -1,0 +1,3 @@
+CRITICAL LESSON: Never fabricate/imitate command output. If a tool returns real output — show it. If a tool returns an error — report the error. Never substitute fake SHAs (e.g. "123456789abcdef..."), fake Author/Committer names ("Author Name <author@example.com>"), or fake curl responses. Real output is ALWAYS better than plausible-looking fabricated output. When user asks to verify something on GitHub — use curl to GitHub API or raw.githubusercontent.com, not local git state.
+§
+User requires strict verification of all tool output. Never fabricate git SHAs, curl responses, file sizes, or any command output. If a command fails (e.g. HTTP 404), report the exact error — never substitute fake successful output.
