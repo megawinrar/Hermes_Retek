@@ -32,7 +32,7 @@
 - L3 — сложная задача, planner + worker + reviewer;
 - L4 — проектная задача, несколько агентов и checkpoint.
 
-Также содержит правила Code Guard Bot: лимит спора 3 раунда, анти-имитационный контроль, статусы нарушений и Telegram escalation с кнопками `Да` / `Нет`.
+Также содержит правила Code Guard Bot: лимит спора 3 раунда, анти-имитационный контроль, stage gates, realtime Telegram DevLog, статусы нарушений и Telegram escalation с кнопками `Да` / `Нет`.
 
 ### 4. Prompt для Task Router
 
@@ -58,7 +58,16 @@
 - изменил только тесты, но не исправил поведение;
 - утверждает, что задача выполнена, без доказательств в diff.
 
-### 7. Prompt для Code Guardian
+### 7. Realtime stage gates и Human-in-the-loop
+
+`docs/04_realtime_human_in_loop_and_stage_gates.md`
+
+Описывает гибридную схему наблюдения:
+
+- GitHub — источник истины: branch, commits, PR, diff, CI, review;
+- Telegram DevLog — live-окно: события, споры Bot#1/Bot#2, вопросы пользователю и кнопки решений.
+
+### 8. Prompt для Code Guardian
 
 `prompts/code_guardian_prompt.md`
 
@@ -82,6 +91,13 @@ src/code_guard/review_agent.py
 src/code_guard/debate_manager.py
 src/code_guard/human_escalation.py
 src/code_guard/telegram_notifier.py
+src/stage_gates/gate_manager.py
+src/stage_gates/policy.py
+src/stage_gates/event_schema.py
+src/stage_gates/human_decision.py
+src/realtime/telegram_devlog.py
+src/realtime/event_bus.py
+src/realtime/github_audit_log.py
 ```
 
 ## Главные правила
@@ -94,3 +110,5 @@ src/code_guard/telegram_notifier.py
 6. Code Guard спорит максимум 3 раунда, затем спрашивает пользователя.
 7. Тест ради теста не считается выполнением задачи.
 8. Bot#2 принимает только проверяемые доказательства: diff, тесты, результат запуска и соответствие ТЗ.
+9. GitHub хранит доказательства, Telegram показывает процесс в реальном времени.
+10. На L3/L4 перед важными решениями система спрашивает пользователя.
