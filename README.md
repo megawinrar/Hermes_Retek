@@ -70,31 +70,39 @@
 
 Запрещает формальную взаимную приёмку Bot#1 и Bot#2. Вводит acceptance contract до старта задачи, evidence-based approve, mandatory dissent, red-team question и random audit.
 
-### 8. Prompt универсального Bot#2
+### 8. Task State Machine and Loop Guard
+
+`docs/09_task_state_machine_and_loop_guard.md`
+
+`configs/task_state_machine_loop_guard.yaml`
+
+Защищает Hermes от повторения одних и тех же действий по кругу: повторного discovery после approval, повторных browser/ssh/cronjob calls, смешивания cronjob/manual context и повторного исследования уже собранных evidence.
+
+### 9. Prompt универсального Bot#2
 
 `prompts/universal_bot2_guard_prompt.md`
 
 Промт для Bot#2 вне кода: quality gate, analytical validator и creative challenger. Запрещает approve без acceptance criteria и evidence.
 
-### 9. Шаблон Acceptance Contract
+### 10. Шаблон Acceptance Contract
 
 `configs/acceptance_contract_template.yaml`
 
 YAML-шаблон условий приёмки до старта задачи. Фиксирует task type, mode, expected result, acceptance criteria, rejection criteria, доказательства Bot#1 и проверки Bot#2.
 
-### 10. Prompt для Task Router
+### 11. Prompt для Task Router
 
 `prompts/task_router_prompt.md`
 
 Промт классификатора задач. Он должен возвращать JSON с уровнем задачи, лимитами, моделью, памятью и агентами.
 
-### 11. Второй бот Code Guard
+### 12. Второй бот Code Guard
 
 `docs/02_code_guard_bot_scenario.md`
 
 Сценарий второго бота, который следит за кодом, спорит с исполнителем максимум 3 раунда и обращается к человеку, если согласия нет.
 
-### 12. Анти-имитационные сценарии Code Guard
+### 13. Анти-имитационные сценарии Code Guard
 
 `docs/03_code_guard_anti_imitation_scenarios.md`
 
@@ -106,7 +114,7 @@ YAML-шаблон условий приёмки до старта задачи. 
 - изменил только тесты, но не исправил поведение;
 - утверждает, что задача выполнена, без доказательств в diff.
 
-### 13. Realtime stage gates и Human-in-the-loop
+### 14. Realtime stage gates и Human-in-the-loop
 
 `docs/04_realtime_human_in_loop_and_stage_gates.md`
 
@@ -115,7 +123,7 @@ YAML-шаблон условий приёмки до старта задачи. 
 - GitHub — источник истины: branch, commits, PR, diff, CI, review;
 - Telegram DevLog — live-окно: события, споры Bot#1/Bot#2, вопросы пользователю и кнопки решений.
 
-### 14. Prompt для Code Guardian
+### 15. Prompt для Code Guardian
 
 `prompts/code_guardian_prompt.md`
 
@@ -146,6 +154,10 @@ src/stage_gates/human_decision.py
 src/realtime/telegram_devlog.py
 src/realtime/event_bus.py
 src/realtime/github_audit_log.py
+src/runtime/task_state_machine.py
+src/runtime/loop_guard.py
+src/runtime/evidence_cache.py
+src/runtime/context_isolation.py
 ```
 
 ## Главные правила
@@ -167,3 +179,5 @@ src/realtime/github_audit_log.py
 15. Вне кода Bot#2 работает как аналитик, критик и креативный challenger на рискованных или важных задачах.
 16. Согласие Bot#1 и Bot#2 не является доказательством; approve возможен только по acceptance criteria и evidence.
 17. Для важных задач acceptance contract создаётся до выполнения и не меняется Bot#1/Bot#2 без разрешения.
+18. После user approval задача переходит в execution; повторный discovery без новой причины считается loop bug.
+19. Cronjob context и manual task context должны быть изолированы по task_id.
