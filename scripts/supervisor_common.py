@@ -30,8 +30,20 @@ DEFAULT_STORE_PATH = Path(
 )
 DEFAULT_BOT2_GATE = Path(os.environ.get("BOT2_GATE_PATH", "/opt/hermes-assistant/scripts/bot2_gate.py"))
 
-APPROVED_STATUSES = {"APPROVE"}
-ESCALATION_STATUSES = {"REJECT", "NEEDS_HUMAN"}
+APPROVED_STATUSES = {"APPROVE", "APPROVE_WITH_EVIDENCE"}
+ESCALATION_STATUSES = {
+    "REJECT",
+    "NEEDS_HUMAN",
+    "NEED_HUMAN_DECISION",
+    "REQUEST_CHANGES",
+    "INSUFFICIENT_EVIDENCE",
+    "RUBBER_STAMP_RISK",
+    "FAKE_IMPLEMENTATION_DETECTED",
+    "MISSING_TESTS_FOR_CODE_CHANGE",
+    "TEST_THEATER_DETECTED",
+    "REFACTORING_REQUIRED",
+}
+BLOCKED_STATUSES = {"BLOCKED_BY_POLICY", "LOOP_DETECTED"}
 
 YES_MEANING = "Agree with Bot#2 and return Bot#1 to fixes."
 NO_MEANING = "Reject Bot#2 objection and accept Bot#1 result as-is."
@@ -307,6 +319,8 @@ def supervisor_status_for_verdict(verdict: dict[str, Any]) -> str:
         return "approved"
     if status in ESCALATION_STATUSES:
         return "awaiting_human_decision"
+    if status in BLOCKED_STATUSES:
+        return "blocked"
     return "failed"
 
 

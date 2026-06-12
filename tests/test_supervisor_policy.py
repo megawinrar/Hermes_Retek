@@ -18,8 +18,14 @@ from supervisor_common import (  # noqa: E402
 
 def test_verdict_status_mapping() -> None:
     assert supervisor_status_for_verdict({"status": "APPROVE"}) == "approved"
+    assert supervisor_status_for_verdict({"status": "APPROVE_WITH_EVIDENCE"}) == "approved"
     assert supervisor_status_for_verdict({"status": "REJECT"}) == "awaiting_human_decision"
     assert supervisor_status_for_verdict({"status": "NEEDS_HUMAN"}) == "awaiting_human_decision"
+    assert supervisor_status_for_verdict({"status": "REQUEST_CHANGES"}) == "awaiting_human_decision"
+    assert supervisor_status_for_verdict({"status": "INSUFFICIENT_EVIDENCE"}) == "awaiting_human_decision"
+    assert supervisor_status_for_verdict({"status": "RUBBER_STAMP_RISK"}) == "awaiting_human_decision"
+    assert supervisor_status_for_verdict({"status": "BLOCKED_BY_POLICY"}) == "blocked"
+    assert supervisor_status_for_verdict({"status": "LOOP_DETECTED"}) == "blocked"
     assert supervisor_status_for_verdict({"status": "BROKEN"}) == "failed"
 
 

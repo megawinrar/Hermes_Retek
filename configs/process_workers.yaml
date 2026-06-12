@@ -1,0 +1,131 @@
+version: 1
+name: Hermes Retek Process Workers
+
+principles:
+  supervisor_is_only_state_owner: true
+  bot1_bot2_direct_chat_forbidden: true
+  single_writer_for_external_state: true
+  discovery_and_verification_can_parallelize: true
+  deployment_requires_approval: true
+
+workers:
+  router:
+    process: task_router
+    writes_state: false
+    output:
+      - task_level
+      - task_type
+      - risk_level
+      - process_plan
+      - review_required
+
+  supervisor:
+    process: process_orchestrator
+    writes_state: true
+    owns:
+      - task_id
+      - phase
+      - approval_state
+      - human_decision
+      - final_status
+
+  architect:
+    process: architect_worker
+    writes_state: false
+    output:
+      - acceptance_contract
+      - risks
+      - execution_plan
+
+  bot1:
+    process: bot1_worker
+    provider_class: deepseek
+    default_model: deepseek-v4-flash
+    writes_state: false
+    output:
+      - implementation_result
+      - changed_files
+      - tests
+      - evidence
+
+  tester:
+    process: tester_worker
+    writes_state: false
+    output:
+      - test_commands
+      - test_exit_codes
+      - test_summary
+
+  bot2:
+    process: bot2_worker
+    provider_class: codex
+    default_model: gpt-5.3-codex
+    writes_state: false
+    input_contract:
+      - task
+      - acceptance_contract
+      - bot1_result
+      - evidence
+      - risk_level
+    output:
+      - verdict_status
+      - risks
+      - required_fixes
+      - confidence
+
+  devops:
+    process: devops_worker
+    writes_state: false
+    blocked_until:
+      - approved
+      - accepted_by_user_override
+
+levels:
+  L0:
+    process_plan:
+      - router
+      - supervisor
+    bot2_required: false
+  L1:
+    process_plan:
+      - router
+      - supervisor
+      - bot1
+    bot2_required: false
+  L2:
+    process_plan:
+      - router
+      - supervisor
+      - bot1
+      - tester
+      - bot2_light_if_risky
+    bot2_required: conditional
+  L3:
+    process_plan:
+      - router
+      - supervisor
+      - architect
+      - bot1
+      - tester
+      - bot2
+    bot2_required: true
+  L4:
+    process_plan:
+      - router
+      - supervisor
+      - architect
+      - bot1
+      - tester
+      - bot2
+      - devops_if_approved
+    bot2_required: true
+
+human_decision:
+  yes:
+    label: "Да"
+    meaning: "Согласен с Bot#2, вернуть Bot#1 на исправление"
+    supervisor_status: return_to_bot1
+  no:
+    label: "Нет"
+    meaning: "Отклонить возражение Bot#2 и принять работу Bot#1 как есть"
+    supervisor_status: accepted_by_user_override
