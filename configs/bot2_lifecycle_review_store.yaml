@@ -1,0 +1,254 @@
+bot2_lifecycle_review_store:
+  version: 1
+  enabled: true
+
+  principle:
+    bot2_is_managed_review_session: true
+    bot2_is_not_free_chat_participant: true
+    bot1_bot2_direct_chat_forbidden: true
+    supervisor_is_only_state_owner: true
+    supervisor_routes_all_bot1_bot2_messages: true
+    review_store_required: true
+
+  review_session_creation:
+    created_by: supervisor
+    create_only_on_gates:
+      - plan_ready
+      - before_execution_if_high_risk
+      - verification_result
+      - pre_merge_decision
+      - human_escalation_request
+      - code_guard_required
+      - money_or_tender_risk
+      - memory_rule_change
+      - external_message_with_price_or_terms
+    do_not_create_on:
+      - every_agent_message
+      - every_telegram_progress_event
+      - every_cache_hit
+      - L0_no_llm_command
+      - simple_L1_without_risk
+
+  context_package:
+    required: true
+    max_context_policy: structured_summary_not_full_history
+    required_fields:
+      - task_id
+      - review_session_id
+      - phase
+      - review_mode
+      - original_user_request
+      - task_level
+      - task_type
+      - acceptance_contract_ref
+      - acceptance_criteria
+      - rejection_criteria
+      - bot1_claim
+      - bot1_result_summary
+      - evidence_refs
+      - changed_files
+      - tool_call_summary
+      - known_risks
+      - previous_rounds_summary
+      - question_for_bot2
+    forbidden_context:
+      - full_raw_chat_history_by_default
+      - unrelated_memory
+      - secrets_or_api_keys
+      - cronjob_context_for_manual_task
+
+  bot2_required_checks:
+    - original_task
+    - acceptance_contract
+    - evidence
+    - bot1_result
+    - missing_items
+    - rubber_stamp_risk
+    - project_memory_conflict
+    - need_human_decision
+    - red_team_question
+
+  statuses:
+    approve: APPROVE_WITH_EVIDENCE
+    request_changes: REQUEST_CHANGES
+    insufficient_evidence: INSUFFICIENT_EVIDENCE
+    rubber_stamp_risk: RUBBER_STAMP_RISK
+    need_human_decision: NEED_HUMAN_DECISION
+    blocked_by_policy: BLOCKED_BY_POLICY
+    loop_detected: LOOP_DETECTED
+
+  verdict_schema:
+    required_fields:
+      - review_session_id
+      - task_id
+      - round_number
+      - phase
+      - mode
+      - status
+      - summary
+      - checked_acceptance_criteria
+      - missing_acceptance_criteria
+      - evidence_checked
+      - missing_evidence
+      - risks_found
+      - must_fix
+      - red_team_answer
+      - what_was_checked
+      - what_was_not_checked
+      - residual_risk
+      - confidence
+      - human_question
+
+  rounds:
+    max_rounds: 3
+    if_request_changes:
+      route: supervisor_to_bot1
+      bot1_receives_only:
+        - must_fix
+        - missing_evidence
+        - risks_found
+        - acceptance_criteria_failed
+      bot1_response_required_fields:
+        - task_id
+        - review_session_id
+        - round_number
+        - fixed_items
+        - not_fixed_items
+        - new_evidence_refs
+        - notes
+    after_max_rounds_without_consensus:
+      status: NEED_HUMAN_DECISION
+      escalate_to_user: true
+      via: hermes_telegram_bot
+
+  review_store:
+    physical_database: shared_hermes_postgres
+    recommended_schema: bot2_review
+    redis_for_realtime: true
+    postgres_for_audit: true
+    required_tables:
+      tasks:
+        purpose: "Основная задача и её статус."
+      acceptance_contracts:
+        purpose: "Условия приёмки результата."
+      evidence_items:
+        purpose: "Доказательства, ссылки на diff, tools, tests, reports."
+      tool_calls:
+        purpose: "Аудит tool calls и fingerprint для loop guard."
+      bot2_review_sessions:
+        purpose: "Одна проверка Bot#2 на gate."
+        fields:
+          - id
+          - task_id
+          - phase
+          - mode
+          - status
+          - created_at
+          - closed_at
+          - created_by
+          - gate_name
+          - acceptance_contract_id
+      bot2_review_rounds:
+        purpose: "Раунды спора Bot#1/Bot#2."
+        fields:
+          - id
+          - review_session_id
+          - round_number
+          - bot1_claim_json
+          - bot2_verdict_json
+          - status
+          - created_at
+      bot2_verdicts:
+        purpose: "Итоговый verdict каждого раунда."
+        fields:
+          - id
+          - review_session_id
+          - round_id
+          - status
+          - risks_json
+          - missing_evidence_json
+          - must_fix_json
+          - residual_risk
+          - confidence
+          - red_team_answer
+          - created_at
+      bot2_escalations:
+        purpose: "Эскалации пользователю."
+        fields:
+          - id
+          - task_id
+          - review_session_id
+          - reason
+          - telegram_message_id
+          - buttons_json
+          - status
+          - created_at
+      human_decisions:
+        purpose: "Решения пользователя по спору."
+        fields:
+          - id
+          - task_id
+          - review_session_id
+          - decision
+          - decision_text
+          - decided_by
+          - created_at
+      review_memory_items:
+        purpose: "Паттерны качества и типовые ошибки."
+        fields:
+          - id
+          - pattern_type
+          - task_type
+          - summary
+          - evidence_ref
+          - confidence
+          - created_at
+
+  review_memory:
+    enabled: true
+    use_as_hint_not_evidence: true
+    stores:
+      - common_bot1_errors
+      - weak_evidence_patterns
+      - false_approve_cases
+      - false_reject_cases
+      - user_decision_patterns
+      - task_type_risks
+    must_not:
+      - override_acceptance_contract
+      - replace_evidence
+      - approve_without_current_task_check
+
+  human_escalation:
+    required_if:
+      - max_rounds_exceeded
+      - high_residual_risk
+      - insufficient_evidence_after_review
+      - policy_conflict
+      - user_business_decision_required
+    message_sender_label: "Сообщение от Bot#2"
+    buttons:
+      yes:
+        text: "Да"
+        meaning: "Согласен с Bot#2, вернуть Bot#1 на доработку"
+      no:
+        text: "Нет"
+        meaning: "Принять результат Bot#1 как есть"
+    decision_must_be_saved: true
+    save_to_table: human_decisions
+
+  integration:
+    with_loop_guard:
+      bot2_must_not_start_new_discovery_directly: true
+      additional_evidence_request_goes_through_supervisor: true
+      supervisor_checks_evidence_cache_before_tool_call: true
+      loop_detected_blocks_review_until_resolved: true
+    with_parallel_agents:
+      agents_collect_evidence: true
+      supervisor_builds_context_package: true
+      bot2_reviews_gate: true
+      bot2_does_not_control_agents_directly: true
+    with_acceptance_contract:
+      contract_required_for_approve: true
+      contract_locked_after_task_start: true
+      bot2_cannot_change_contract: true
