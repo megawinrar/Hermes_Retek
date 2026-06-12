@@ -86,31 +86,39 @@
 
 Добавляет безопасную параллельность агентов: discovery и verification могут работать параллельно, execution остаётся single-writer, а decision/approval выполняет только Supervisor.
 
-### 10. Prompt универсального Bot#2
+### 10. Server Observability and LLM Failure Logging
+
+`docs/11_server_observability_and_llm_failure_logging.md`
+
+`configs/server_observability_llm_failure_logging.yaml`
+
+Добавляет серверное логирование падений LLM и runtime-событий: task_id, phase, provider, model, request_id, error_type, retry/fallback, checkpoint и resume status. Нужен, чтобы Hermes видел, почему потерял связь с DeepSeek/Bothub или другим LLM-провайдером.
+
+### 11. Prompt универсального Bot#2
 
 `prompts/universal_bot2_guard_prompt.md`
 
 Промт для Bot#2 вне кода: quality gate, analytical validator и creative challenger. Запрещает approve без acceptance criteria и evidence.
 
-### 11. Шаблон Acceptance Contract
+### 12. Шаблон Acceptance Contract
 
 `configs/acceptance_contract_template.yaml`
 
 YAML-шаблон условий приёмки до старта задачи. Фиксирует task type, mode, expected result, acceptance criteria, rejection criteria, доказательства Bot#1 и проверки Bot#2.
 
-### 12. Prompt для Task Router
+### 13. Prompt для Task Router
 
 `prompts/task_router_prompt.md`
 
 Промт классификатора задач. Он должен возвращать JSON с уровнем задачи, лимитами, моделью, памятью и агентами.
 
-### 13. Второй бот Code Guard
+### 14. Второй бот Code Guard
 
 `docs/02_code_guard_bot_scenario.md`
 
 Сценарий второго бота, который следит за кодом, спорит с исполнителем максимум 3 раунда и обращается к человеку, если согласия нет.
 
-### 14. Анти-имитационные сценарии Code Guard
+### 15. Анти-имитационные сценарии Code Guard
 
 `docs/03_code_guard_anti_imitation_scenarios.md`
 
@@ -122,7 +130,7 @@ YAML-шаблон условий приёмки до старта задачи. 
 - изменил только тесты, но не исправил поведение;
 - утверждает, что задача выполнена, без доказательств в diff.
 
-### 15. Realtime stage gates и Human-in-the-loop
+### 16. Realtime stage gates и Human-in-the-loop
 
 `docs/04_realtime_human_in_loop_and_stage_gates.md`
 
@@ -131,7 +139,7 @@ YAML-шаблон условий приёмки до старта задачи. 
 - GitHub — источник истины: branch, commits, PR, diff, CI, review;
 - Telegram DevLog — live-окно: события, споры Bot#1/Bot#2, вопросы пользователю и кнопки решений.
 
-### 16. Prompt для Code Guardian
+### 17. Prompt для Code Guardian
 
 `prompts/code_guardian_prompt.md`
 
@@ -153,6 +161,9 @@ src/agents/agent_pool.py
 src/agents/resource_lock.py
 src/agents/tool_gateway.py
 src/telemetry/usage_logger.py
+src/telemetry/observability.py
+src/telemetry/llm_failure_logger.py
+src/telemetry/runtime_alerts.py
 src/code_guard/pr_watcher.py
 src/code_guard/diff_reader.py
 src/code_guard/review_agent.py
@@ -170,6 +181,7 @@ src/runtime/task_state_machine.py
 src/runtime/loop_guard.py
 src/runtime/evidence_cache.py
 src/runtime/context_isolation.py
+src/runtime/checkpoint_store.py
 ```
 
 ## Главные правила
@@ -194,3 +206,4 @@ src/runtime/context_isolation.py
 18. После user approval задача переходит в execution; повторный discovery без новой причины считается loop bug.
 19. Cronjob context и manual task context должны быть изолированы по task_id.
 20. Параллельность разрешена для discovery/verification, но execution, approval, merge, rollback и запись конфигов выполняются только через Supervisor/single-writer.
+21. Каждое падение LLM должно логироваться с task_id, phase, provider, model, request_id, error_type, retry/fallback и checkpoint status.
