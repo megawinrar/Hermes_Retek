@@ -1,0 +1,92 @@
+code_quality_contract:
+  version: 1
+  enabled: true
+
+  applies_to:
+    any_code_change: true
+    source_code: true
+    runtime_config: true
+    prompts_that_change_agent_behavior: true
+    database_migrations: true
+    api_contracts: true
+    routing_logic: true
+    agent_logic: true
+    memory_or_rag_logic: true
+    token_policy_logic: true
+    ci_cd: true
+    integrations: true
+
+  core_rules:
+    no_code_change_without_tests: true
+    no_code_change_without_test_run: true
+    no_code_change_without_refactor_review: true
+    tests_are_never_optional_for_code: true
+    code_review_by_bot2_required: true
+    merge_without_tests_for_code_is_forbidden: true
+
+  bot1_required_report_for_code_change:
+    - what_code_changed
+    - why_code_changed
+    - changed_files
+    - tests_added_or_updated
+    - test_scenarios_covered
+    - tests_run_command
+    - tests_run_result
+    - refactor_review
+    - refactor_done_or_reason_not_needed
+
+  minimum_test_set:
+    - main_success_case
+    - boundary_case
+    - error_case_if_possible
+    - expected_result_assertion
+    - regression_check_for_old_wrong_behavior
+
+  bot2_must_reject_if:
+    - code_changed_without_tests
+    - code_changed_without_test_run_result
+    - tests_do_not_check_behavior
+    - tests_only_check_import
+    - tests_only_check_function_exists
+    - tests_have_no_assert_on_result
+    - tests_mock_all_important_logic
+    - tests_could_not_fail_on_old_code
+    - old_tests_weakened_or_disabled
+    - refactor_review_missing
+    - refactor_required_but_not_done
+    - implementation_is_placeholder
+
+  refactor_required_if:
+    - duplicated_logic
+    - function_too_large
+    - mixed_responsibilities
+    - hidden_dependencies_added
+    - code_is_hard_to_test
+    - workaround_added_only_to_pass_tests
+    - architecture_boundary_broken
+
+  violation_statuses:
+    - MISSING_TESTS_FOR_CODE_CHANGE
+    - TEST_THEATER_DETECTED
+    - REFACTORING_REQUIRED
+    - WEAKENED_TESTS_DETECTED
+    - FAKE_IMPLEMENTATION_DETECTED
+    - NEED_HUMAN_DECISION
+
+  merge_requires:
+    - bot2_tests_approved
+    - bot2_refactor_approved
+    - ci_passed
+    - pre_merge_decision_passed
+
+  human_escalation:
+    after_debate_rounds: 3
+    via: hermes_telegram_bot
+    sender_label: "Сообщение от Bot#2"
+    buttons:
+      yes:
+        text: "Да"
+        meaning: "Согласен с Bot#2, вернуть Bot#1 на исправление"
+      no:
+        text: "Нет"
+        meaning: "Принять работу Bot#1 как есть"
