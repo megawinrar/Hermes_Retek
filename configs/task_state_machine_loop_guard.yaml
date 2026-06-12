@@ -1,0 +1,195 @@
+task_state_machine_loop_guard:
+  version: 1
+  enabled: true
+
+  task_identity:
+    require_task_id: true
+    require_task_type: true
+    task_types:
+      - manual
+      - cronjob
+      - agent_subtask
+      - verification
+    isolate_context_by_task_id: true
+
+  phases:
+    intake:
+      allowed_next:
+        - discovery
+        - plan_ready
+      allowed_actions:
+        - classify_task
+        - assign_task_id
+        - detect_task_level
+
+    discovery:
+      allowed_next:
+        - plan_ready
+      allowed_actions:
+        - read_config
+        - list_cronjobs
+        - check_pricing
+        - check_service_status
+        - collect_evidence
+      forbidden_if:
+        - user_approved_plan_true
+
+    plan_ready:
+      allowed_next:
+        - waiting_user_approval
+        - execution_if_no_user_approval_required
+      required_output:
+        - findings
+        - planned_changes
+        - execution_steps
+        - risks
+        - approval_needed
+
+    waiting_user_approval:
+      allowed_next:
+        - execution
+        - cancelled
+      forbidden_actions:
+        - new_discovery_without_user_request
+        - external_write_actions
+        - repeated_pricing_research
+
+    execution:
+      allowed_next:
+        - verification
+        - rollback
+      requires:
+        - user_approved_plan_true
+        - execution_checklist_created
+      allowed_actions:
+        - backup_config
+        - write_config
+        - update_cronjob
+        - create_or_update_file
+        - restart_service
+        - run_smoke_test
+      forbidden_actions:
+        - pricing_research_without_new_reason
+        - discovery_restart_without_new_reason
+        - cronjob_list_without_new_reason
+
+    verification:
+      allowed_next:
+        - final_report
+        - fixing
+        - rollback
+      allowed_actions:
+        - check_config_diff
+        - check_service_status
+        - check_cronjob_output
+        - run_smoke_test
+        - check_fallback
+      forbidden_actions:
+        - full_discovery_restart_without_reason
+
+    fixing:
+      allowed_next:
+        - verification
+        - rollback
+      requires:
+        - verification_failed
+
+    rollback:
+      allowed_next:
+        - verification
+        - final_report
+      requires:
+        - rollback_reason
+
+    final_report:
+      terminal: true
+      required_output:
+        - changed_items
+        - test_results
+        - failed_items
+        - residual_risk
+        - next_user_decision_if_any
+
+  approval_semantics:
+    tool_approval_is_not_business_approval: true
+    approved_permanently_means_tool_permission_only: true
+    execution_requires_user_approved_plan: true
+    user_approval_phrases:
+      - "да запускай"
+      - "согласен, делай"
+      - "запускай все внедрения"
+      - "одобряю план"
+    on_user_approved_plan:
+      set_flags:
+        user_approved_plan: true
+        forbid_return_to_discovery: true
+        require_execution_checklist: true
+      next_phase: execution
+
+  execution_checklist:
+    required_before_execution: true
+    minimum_fields:
+      - step_id
+      - action
+      - target
+      - expected_result
+      - verification_method
+      - rollback_note
+
+  tool_call_deduplication:
+    enabled: true
+    fingerprint_fields:
+      - task_id
+      - phase
+      - tool_name
+      - normalized_args
+    max_same_tool_call_without_new_reason: 1
+    second_repeat_requires_reason: true
+    third_repeat_status: LOOP_DETECTED
+
+  evidence_cache:
+    enabled: true
+    scope: task_id
+    cache_items:
+      - checked_pricing_pages
+      - checked_config_paths
+      - cronjob_list_result
+      - service_status
+      - provider_status
+      - test_request_result
+      - discovered_api_limits
+      - discovered_costs
+    reuse_evidence_before_new_tool_call: true
+
+  cron_manual_isolation:
+    enabled: true
+    cronjob_context_cannot_modify_manual_task_state: true
+    cronjob_output_must_have_own_task_id: true
+    manual_task_context_cannot_be_overwritten_by_cronjob: true
+    separate_output_channels_recommended: true
+
+  loop_detection:
+    enabled: true
+    triggers:
+      - same_phase_repeated_without_new_evidence
+      - same_browser_url_opened_twice_in_task
+      - same_ssh_command_repeated_twice_without_reason
+      - discovery_after_user_approval
+      - cronjob_output_changed_manual_task_phase
+      - final_report_repeated_instead_of_execution
+    on_detect:
+      status: LOOP_DETECTED
+      stop_execution: true
+      notify_user: true
+      require_summary:
+        - repeated_phase
+        - repeated_action
+        - existing_evidence
+        - correct_next_step
+
+  stop_rules:
+    no_repeat_discovery_after_approval: true
+    no_pricing_research_after_approval: true
+    no_cronjob_list_after_approval_without_reason: true
+    no_more_than_two_phase_repeats: true
+    stop_and_ask_if_loop_detected: true
