@@ -144,6 +144,104 @@ hermes_retek_token_governor:
     do_not_retry_more_than: 2
     ask_user_if_human_business_decision_required: true
 
+  realtime_stage_gates:
+    enabled: true
+    source_of_truth: github
+    live_window: telegram_devlog
+    default_channel_name: "Hermes Retek DevLog"
+    event_bus: redis_stream
+    persist_events_to_db: true
+
+    levels:
+      L2:
+        realtime_visible: true
+        ask_user_by_default: false
+        notify_events:
+          - task_started
+          - assumption_found
+          - code_chunk_ready
+          - bot2_rejected
+          - task_finished
+        ask_user_if:
+          - bot1_bot2_conflict
+          - business_logic_change
+          - schema_change
+          - integration_change
+          - affects_money_clients_suppliers_tenders_or_user_files
+          - fake_implementation_detected
+          - test_theater_detected
+
+      L3:
+        realtime_visible: true
+        ask_user_by_default: false
+        required_gates:
+          - plan_ready
+          - architecture_decision
+          - code_chunk_ready
+          - tests_ready
+          - bot2_review_ready
+          - pre_merge_decision
+        always_ask_user_on:
+          - architecture_decision
+          - pre_merge_decision
+          - bot1_bot2_conflict_after_3_rounds
+          - token_policy_change
+          - agent_logic_change
+
+      L4:
+        realtime_visible: true
+        ask_user_by_default: true
+        required_gates:
+          - plan_ready
+          - architecture_decision
+          - api_contract_change
+          - database_schema_change
+          - large_code_chunk_ready
+          - tests_ready
+          - bot2_review_ready
+          - pre_merge_decision
+        always_ask_user_on:
+          - new_service
+          - database_schema_change
+          - api_contract_change
+          - agent_logic_change
+          - token_policy_change
+          - cost_increase
+          - security_or_data_risk
+          - pre_merge_decision
+
+    bot1_bot2_flow:
+      bot1_must_report:
+        - what_changed
+        - why_changed
+        - changed_files
+        - tests_added_or_updated
+        - evidence
+      bot2_must_review:
+        - diff
+        - changed_files
+        - tests
+        - task_alignment
+        - risks
+      if_bot2_rejects_without_logical_conflict:
+        action: bot1_auto_fix
+        notify_user: devlog_only
+      if_bot2_rejects_with_logical_conflict:
+        action: ask_user
+        notify_user: telegram_buttons
+      if_bot2_rejects_after_3_rounds:
+        action: ask_user
+        notify_user: telegram_buttons
+
+    commit_policy:
+      commit_each_small_agent_message: false
+      small_steps: telegram_event_and_db_only
+      code_chunk: commit_to_feature_branch
+      completed_task: create_pull_request
+      bot2_approval: pull_request_review_comment
+      user_decision: pull_request_comment_and_db_event
+      merge_requires: pre_merge_decision
+
   code_guard_bot:
     enabled: true
     max_debate_rounds: 3
