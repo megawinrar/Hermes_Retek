@@ -1,0 +1,110 @@
+bot2_activation_policy:
+  version: 1
+  enabled: true
+
+  model_roles:
+    bot1:
+      name: Bot#1
+      provider_class: deepseek
+      role: implementer
+      responsibilities:
+        - write_code
+        - update_tests
+        - run_tests
+        - fix_review_comments
+        - prepare_change_summary
+    bot2:
+      name: Bot#2
+      provider_class: openai_or_codex
+      role: reviewer_and_quality_gate
+      responsibilities:
+        - review_diff
+        - verify_tests
+        - verify_refactor_review
+        - detect_fake_implementation
+        - detect_test_theater
+        - detect_policy_or_architecture_risk
+        - approve_or_block_code_gate
+        - escalate_to_user_after_3_rounds
+
+  mandatory_bot2:
+    if_any:
+      - code_diff_exists
+      - pull_request_created
+      - tests_changed
+      - prompt_changes_agent_behavior
+      - token_policy_changed
+      - memory_policy_changed
+      - agent_logic_changed
+      - architecture_changed
+      - api_contract_changed
+      - database_schema_changed
+      - integration_changed
+      - ci_cd_changed
+      - docker_or_deploy_changed
+      - secrets_auth_permissions_or_user_data_touched
+      - money_clients_suppliers_or_tenders_affected
+      - multi_agent_workflow_enabled
+      - bot1_bot2_conflict_exists
+      - user_requested_strict_review
+
+  bot2_light_mode:
+    enabled: true
+    use_for:
+      - formatting_only
+      - unused_import_removal
+      - local_rename
+      - small_low_risk_fix
+      - boilerplate_creation
+      - docs_partially_affecting_behavior
+    checks:
+      - changed_files
+      - diff_size
+      - tests_added_or_updated_if_code_changed
+      - tests_run_result_if_code_changed
+      - refactor_review_if_code_changed
+      - no_behavior_change_unless_requested
+
+  bot2_disabled:
+    allowed_for:
+      - l0_commands
+      - simple_translation
+      - short_supplier_message
+      - simple_explanation
+      - brainstorm_without_code
+      - ci_status_forwarding_without_interpretation
+      - telegram_progress_notification
+      - docs_not_affecting_behavior
+    hard_condition:
+      no_code_diff: true
+      no_behavior_policy_change: true
+      no_security_or_money_risk: true
+
+  review_scope_order:
+    - task_spec
+    - changed_files
+    - diff
+    - tests
+    - test_run_result
+    - refactor_review
+    - nearest_related_files_if_needed
+    - wider_context_only_if_needed
+
+  decision_rules:
+    no_code_gate_without_bot2: true
+    no_merge_without_bot2: true
+    no_code_change_without_tests: true
+    no_code_change_without_refactor_review: true
+    bot2_after_every_message: false
+    bot2_after_every_code_gate: true
+
+  telegram_escalation:
+    after_debate_rounds: 3
+    sender_label: "Сообщение от Bot#2"
+    buttons:
+      yes:
+        text: "Да"
+        meaning: "Согласен с Bot#2, вернуть Bot#1 на исправление"
+      no:
+        text: "Нет"
+        meaning: "Принять работу Bot#1 как есть"
