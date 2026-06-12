@@ -1,0 +1,140 @@
+universal_bot2_guard_modes:
+  version: 1
+  enabled: true
+
+  model_roles:
+    bot1:
+      provider_class: deepseek
+      role: executor
+      description: "Быстро делает первый результат: код, текст, таблицу, расчёт, идею, аналитику."
+    bot2:
+      provider_class: openai_or_codex
+      role: reviewer_analyst_creative_challenger
+      description: "Проверяет, усиливает, спорит, блокирует рискованные решения и спрашивает пользователя."
+
+  modes:
+    quality_gate:
+      purpose: "Проверить готовый результат перед принятием."
+      use_for:
+        - code
+        - documents
+        - commercial_offers
+        - excel_tables
+        - tenders
+        - client_requests
+        - supplier_messages
+      checks:
+        - task_alignment
+        - missing_items
+        - formal_completion
+        - evidence
+        - risk_if_accepted
+        - need_human_decision
+
+    analytical_validator:
+      purpose: "Проверить факты, расчёты, источники, выводы и допущения."
+      use_for:
+        - tender_analysis
+        - financial_calculation
+        - pricing
+        - tax_logic
+        - supplier_comparison
+        - rag_answer
+        - market_research
+        - document_extraction
+        - memory_rule_update
+      checks:
+        - facts
+        - sources
+        - freshness
+        - assumptions
+        - formulas
+        - contradictions
+        - alternative_explanations
+        - confidence_level
+        - risk_if_wrong
+
+    creative_challenger:
+      purpose: "Усилить идею, стратегию, оффер или позиционирование."
+      use_for:
+        - product_strategy
+        - new_service_idea
+        - business_hypothesis
+        - commercial_offer_positioning
+        - partnership_offer
+        - negotiation_message
+        - presentation_or_pitch
+        - customer_value_proposition
+      checks:
+        - originality
+        - practicality
+        - fit_to_user_business
+        - hidden_risks
+        - cheaper_or_faster_path
+        - stronger_alternative
+        - weak_points
+        - implementation_cost
+
+  activation:
+    mandatory_if_any:
+      - affects_money
+      - affects_customer
+      - affects_supplier
+      - affects_tender
+      - affects_production
+      - affects_project_memory
+      - external_message_to_be_sent
+      - new_rule_to_save
+      - legal_or_financial_risk
+      - low_confidence_analysis
+      - high_cost_business_idea
+      - multi_agent_workflow
+      - user_requested_strict_review
+
+    light_mode_if_any:
+      - medium_risk_text
+      - internal_but_important_summary
+      - draft_for_later_external_use
+      - initial_supplier_message_with_price_or_terms
+      - document_extraction_small_volume
+
+    disabled_if_all:
+      - low_risk
+      - no_external_action
+      - no_money_risk
+      - no_memory_update
+      - no_code_change
+      - no_tender_or_legal_risk
+
+  human_escalation:
+    after_debate_rounds: 3
+    via: hermes_telegram_bot
+    sender_label: "Сообщение от Bot#2"
+    message_must_include:
+      - mode
+      - task_summary
+      - what_bot1_did
+      - what_bot2_found
+      - risk
+      - bot2_recommendation
+    buttons:
+      yes:
+        text: "Да"
+        meaning: "Согласен с Bot#2, вернуть Bot#1 на доработку"
+      no:
+        text: "Нет"
+        meaning: "Принять вариант Bot#1"
+
+  economy_rules:
+    bot2_not_after_every_message: true
+    bot2_only_on_gates_or_risk: true
+    prefer_light_mode_before_full_mode: true
+    full_mode_requires_reason: true
+    do_not_load_full_memory_by_default: true
+    review_scope_order:
+      - task_spec
+      - bot1_output
+      - changed_data_or_files
+      - evidence
+      - nearest_relevant_memory
+      - external_sources_if_needed
