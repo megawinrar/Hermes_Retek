@@ -1,0 +1,187 @@
+parallel_agent_orchestration:
+  version: 1
+  enabled: true
+
+  principle:
+    parallelize_fact_collection: true
+    parallelize_independent_verification: true
+    do_not_parallelize_state_changes: true
+    supervisor_is_only_state_owner: true
+    bot2_reviews_gates_not_every_agent_message: true
+
+  compatibility:
+    compatible_with:
+      - configs/token_governor.yaml
+      - configs/task_state_machine_loop_guard.yaml
+      - configs/anti_rubber_stamp_acceptance_protocol.yaml
+      - configs/universal_bot2_guard_modes.yaml
+      - configs/code_quality_contract.yaml
+    compromise:
+      discovery_parallel: true
+      execution_single_writer: true
+      verification_parallel: true
+      decision_supervisor_only: true
+      human_approval_supervisor_only: true
+
+  phase_parallelism:
+    intake:
+      parallel_agents: false
+      reason: "Нужно единообразно присвоить task_id и level."
+
+    discovery:
+      parallel_agents: true
+      max_agents_by_level:
+        L1: 0
+        L2: 0
+        L3: 3
+        L4: 5
+      allowed_agent_roles:
+        - pricing_agent
+        - config_agent
+        - cron_agent
+        - provider_status_agent
+        - security_context_agent
+        - memory_context_agent
+        - document_extraction_agent
+        - finance_check_agent
+        - tender_check_agent
+      write_actions_allowed: false
+      must_write_to_evidence_cache: true
+
+    plan_ready:
+      parallel_agents: false
+      owner: supervisor
+      requires:
+        - evidence_pack
+        - planned_changes
+        - execution_checklist
+        - risk_summary
+        - approval_question_if_needed
+
+    waiting_user_approval:
+      parallel_agents: false
+      owner: supervisor
+      forbidden_actions:
+        - new_discovery_without_user_request
+        - external_write_actions
+        - repeated_pricing_research
+
+    execution:
+      parallel_agents: false
+      mode: single_writer
+      owner: supervisor
+      requires:
+        - user_approved_plan_true
+        - execution_checklist_created
+      resource_lock:
+        enabled: true
+        lock_key: "task_id + target_resource"
+      allowed_actions:
+        - backup_config
+        - write_config
+        - update_cronjob
+        - create_or_update_file
+        - restart_or_reload_service
+        - run_smoke_test
+
+    verification:
+      parallel_agents: true
+      max_agents_by_level:
+        L1: 0
+        L2: 1
+        L3: 3
+        L4: 5
+      allowed_agent_roles:
+        - config_diff_agent
+        - service_health_agent
+        - cron_output_agent
+        - fallback_smoke_test_agent
+        - telegram_report_agent
+        - budget_db_agent
+      write_actions_allowed: false
+      verdict_owner: supervisor
+
+    final_report:
+      parallel_agents: false
+      owner: supervisor
+      terminal: true
+
+  agent_contract:
+    agents_cannot:
+      - change_task_phase
+      - change_approval_state
+      - approve_final_result
+      - write_same_resource_in_parallel
+      - rollback_without_supervisor
+      - ignore_evidence_cache
+      - use_cronjob_context_for_manual_task
+    agent_result_required_fields:
+      - task_id
+      - subtask_id
+      - phase
+      - agent_role
+      - status
+      - evidence
+      - risks
+      - confidence
+      - next_action_request
+
+  tool_gateway_requirements:
+    every_tool_call_must_pass_gateway: true
+    checks:
+      - phase_allows_tool
+      - duplicate_fingerprint
+      - evidence_cache_hit
+      - approval_state
+      - resource_lock
+      - cron_manual_isolation
+      - budget_limit
+    deny_statuses:
+      duplicate_call: EVIDENCE_ALREADY_EXISTS
+      repeated_without_reason: LOOP_DETECTED
+      forbidden_phase_tool: TOOL_FORBIDDEN_IN_PHASE
+      locked_resource: RESOURCE_LOCKED
+
+  bot2_gate_placement:
+    review_gates:
+      - plan_ready
+      - before_execution_if_high_risk
+      - verification_result
+      - pre_merge_decision
+      - human_escalation_request
+    do_not_review:
+      - every_agent_message
+      - every_telegram_progress_event
+      - every_cache_hit
+
+  forbidden_parallel_actions:
+    - config_write
+    - env_write
+    - cronjob_update
+    - database_migration
+    - service_restart
+    - deployment
+    - rollback
+    - merge
+    - user_approval_decision
+    - permanent_memory_rule_write
+
+  event_bus:
+    recommended: redis_streams
+    streams:
+      discovery: hermes.discovery.events
+      execution: hermes.execution.events
+      verification: hermes.verification.events
+      bot2_review: hermes.bot2.review
+      human_decision: hermes.human.decision
+    persist_to_db: true
+
+  speed_policy:
+    expected_effect:
+      loop_guard_overhead: low
+      discovery_speedup: medium_to_high
+      verification_speedup: medium
+      execution_speedup: none_by_design
+    notes:
+      - "Параллельность ускоряет сбор фактов, но не должна ускорять запись изменений."
+      - "Если нет Tool Gateway и Evidence Cache, параллельность запрещена для production tasks."
