@@ -1,0 +1,97 @@
+acceptance_contract_template:
+  version: 1
+  description: "Шаблон условий приёмки результата до старта задачи."
+
+  required_fields:
+    task_id: ""
+    task_type: "code|analytics|creative|document|finance|tender|message|memory|agent_workflow"
+    level: "L1|L2|L3|L4"
+    mode: "quality_gate|analytical_validator|creative_challenger|code_guard|document_guard|finance_guard|tender_guard|memory_guard|agent_guard"
+    expected_result: ""
+    out_of_scope: []
+
+  acceptance_criteria:
+    universal:
+      - result_matches_original_task
+      - no_missing_required_items
+      - evidence_attached
+      - residual_risk_declared
+      - confidence_declared
+    code:
+      - code_diff_matches_task
+      - tests_added_or_updated
+      - tests_run_result_attached
+      - tests_check_behavior
+      - refactor_review_attached
+      - bot2_code_gate_passed
+    analytics:
+      - facts_checked
+      - sources_checked
+      - assumptions_declared
+      - formulas_checked_if_any
+      - alternative_explanation_considered
+    creative:
+      - at_least_one_alternative_considered
+      - weak_points_named
+      - selected_option_justified
+      - implementation_cost_or_risk_declared
+    document:
+      - required_fields_checked
+      - row_or_section_count_checked
+      - totals_checked_if_any
+      - missing_data_declared
+    finance:
+      - formula_checked
+      - inputs_checked
+      - tax_or_vat_logic_checked_if_any
+      - currency_checked_if_any
+    tender:
+      - scope_checked
+      - forbidden_categories_checked
+      - deadlines_checked
+      - legal_or_procurement_risks_declared
+    memory:
+      - fact_vs_hypothesis_checked
+      - conflict_with_locked_rules_checked
+      - user_confirmation_required_if_rule_is_new
+
+  rejection_criteria:
+    - insufficient_evidence
+    - acceptance_criteria_not_met
+    - rubber_stamp_risk
+    - high_residual_risk_without_user_decision
+    - bot1_self_approval
+    - bot2_approval_without_evidence
+    - task_scope_simplified_without_permission
+
+  bot1_required_evidence:
+    - task_understanding
+    - work_done
+    - checks_performed
+    - known_risks
+    - unresolved_questions
+
+  bot2_required_checks:
+    - check_against_original_task
+    - verify_bot1_evidence
+    - mandatory_dissent
+    - red_team_question
+    - residual_risk
+    - confidence_level
+
+  human_escalation_conditions:
+    - bot1_bot2_disagree_after_3_rounds
+    - acceptance_contract_change_requested
+    - high_residual_risk
+    - affects_money_customer_supplier_tender_or_memory
+    - insufficient_evidence_after_review
+
+  approve_output_required_fields:
+    - status
+    - checked_acceptance_criteria
+    - evidence
+    - what_was_checked
+    - what_was_not_checked
+    - residual_risk
+    - confidence
+    - red_team_answer
