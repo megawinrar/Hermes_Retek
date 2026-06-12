@@ -1,0 +1,134 @@
+anti_rubber_stamp_acceptance_protocol:
+  version: 1
+  enabled: true
+
+  principle:
+    agreement_is_not_evidence: true
+    approve_requires_acceptance_contract: true
+    approve_requires_evidence: true
+    bot1_cannot_self_approve: true
+    bot2_cannot_approve_by_style_or_persuasion: true
+    task_simplification_requires_reason: true
+
+  acceptance_contract:
+    created_before_execution: true
+    created_by: supervisor_or_router
+    locked_after_task_start: true
+    change_requires:
+      - supervisor_approval
+      - user_approval_if_scope_or_risk_changes
+    required_fields:
+      - task_id
+      - task_type
+      - expected_result
+      - acceptance_criteria
+      - rejection_criteria
+      - bot1_required_evidence
+      - bot2_required_checks
+      - human_escalation_conditions
+
+  bot1_required_evidence:
+    universal:
+      - task_understanding
+      - work_done
+      - constraints_considered
+      - checks_performed
+      - known_risks
+      - unresolved_questions
+    code:
+      - changed_files
+      - tests_added_or_updated
+      - tests_run_result
+      - refactor_review
+    analytics:
+      - sources
+      - formulas
+      - assumptions
+      - confidence_level
+    creative:
+      - alternatives_considered
+      - why_selected_option
+      - weak_points
+      - implementation_cost
+    documents:
+      - row_count_or_section_count
+      - required_fields_check
+      - totals_check_if_any
+
+  bot2_required_checks:
+    universal:
+      - check_against_original_task_not_bot1_explanation
+      - verify_evidence
+      - identify_missing_items
+      - identify_risks
+      - provide_residual_risk
+      - provide_confidence_level
+    must_answer_before_approve:
+      - what_could_make_bot1_wrong
+      - what_was_actually_checked
+      - what_was_not_checked
+      - what_evidence_supports_approval
+
+  rubber_stamp_rejection_patterns:
+    reject_if_approve_reason_only:
+      - logic_does_not_contradict
+      - looks_ok
+      - bot1_explained_well
+      - tests_exist
+      - generally_ok
+      - no_errors_seen
+      - seems_reasonable
+
+  mandatory_dissent:
+    enabled: true
+    applies_to:
+      - L3
+      - L4
+      - code_gate
+      - money_risk
+      - tender_risk
+      - customer_or_supplier_risk
+      - memory_update
+      - external_message
+      - high_cost_creative_decision
+    minimum_risks_to_search: 3
+    if_no_risks_found_status_note: risks_not_found_after_check
+
+  red_team_question:
+    enabled: true
+    question: "Что должно быть правдой, чтобы решение Bot#1 оказалось неправильным?"
+    if_plausible_failure_condition_exists: require_check_or_request_changes
+
+  random_audit:
+    enabled: true
+    sample_rate:
+      L2: 0.10
+      L3: 0.25
+      L4: 0.50
+      money_tender_customer_supplier_tasks: 0.50
+      code_merge: 1.00
+    audit_by: supervisor_or_bot2_full_mode
+
+  statuses:
+    approve: APPROVE_WITH_EVIDENCE
+    request_changes: REQUEST_CHANGES
+    insufficient_evidence: INSUFFICIENT_EVIDENCE
+    rubber_stamp_risk: RUBBER_STAMP_RISK
+    human_needed: NEED_HUMAN_DECISION
+
+  human_escalation:
+    trigger_if:
+      - rubber_stamp_risk
+      - insufficient_evidence_after_3_rounds
+      - bot1_bot2_simplify_scope
+      - acceptance_contract_change_requested
+      - residual_risk_high
+    via: hermes_telegram_bot
+    sender_label: "Сообщение от Bot#2"
+    buttons:
+      yes:
+        text: "Да"
+        meaning: "Согласен с Bot#2, вернуть на доработку"
+      no:
+        text: "Нет"
+        meaning: "Принять результат Bot#1"
