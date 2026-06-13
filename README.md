@@ -2,6 +2,26 @@
 
 Проектная база для настройки Hermes Retek: экономное потребление токенов, маршрутизация задач L0-L4, управление памятью, агентами и второй бот-контролёр качества.
 
+## Runtime Integration Note
+
+`Hermes_Retek` — это не замена `hermes-core` и не новый основной agent loop.
+На живом сервере Hermes работает как Docker stack:
+
+```text
+Telegram -> hermes-agent container -> /opt/hermes upstream runtime
+                              \-> /opt/data AGENTS.md, skills, memory, config
+Host -> Hermes_Retek scripts/configs -> Supervisor, Bot#2 gate, audit, deploy gates
+```
+
+Поэтому изменения надо вносить по слою:
+
+- поведение агента: `AGENTS.md`, `skills/`, `prompts/`, `memories/`;
+- LLM proxy, бюджет, fallback: `custom/yandex-proxy/`;
+- process guard, routing, Bot#2, human gate: `scripts/`, `configs/`, `docs/`;
+- `hermes-core`: только если нужен upstream-aware patch.
+
+Подробный контракт: `docs/17_hermes_runtime_integration.md`.
+
 ## Что добавлено
 
 ### 1. Аудит репозитория

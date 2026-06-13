@@ -22,8 +22,13 @@ def test_scripts_compile() -> None:
     scripts = [
         SCRIPTS / "task_router.py",
         SCRIPTS / "process_orchestrator.py",
+        SCRIPTS / "bot2_gate.py",
+        SCRIPTS / "tool_gateway.py",
+        SCRIPTS / "supervisor_common.py",
         SCRIPTS / "dual_bot_lab.py",
         SCRIPTS / "dual_bot_suite.py",
+        SCRIPTS / "stage2_battle_suite.py",
+        SCRIPTS / "skill_index.py",
     ]
     with tempfile.TemporaryDirectory() as tmp:
         for script in scripts:

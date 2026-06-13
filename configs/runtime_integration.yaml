@@ -1,0 +1,64 @@
+version: 1
+name: Hermes Retek Runtime Integration
+
+principles:
+  hermes_retek_is_host_side_governance: true
+  do_not_replace_hermes_core_by_default: true
+  prefer_runtime_compatible_changes: true
+  server_deploy_requires_backup_and_smoke_check: true
+  blind_git_pull_on_server_forbidden: true
+
+live_runtime:
+  server_root: /opt/hermes-assistant
+  containers:
+    hermes_agent:
+      name: hermes-agent
+      role: Telegram gateway and upstream Hermes runtime
+      command: hermes gateway run --accept-hooks
+      code_path: /opt/hermes
+      home_path: /opt/data
+    yandex_proxy:
+      name: hermes-yandex-proxy
+      role: OpenAI-compatible LLM proxy, budget tracker, fallback gateway
+  host_side_stores:
+    - /var/lib/docker/volumes/hermes-data/_data/bot2_review_store.db
+    - /var/lib/docker/volumes/hermes-data/_data/dual_bot_lab_store.db
+    - /var/lib/docker/volumes/hermes-data/_data/token_usage.db
+
+change_layers:
+  agent_behavior:
+    paths:
+      - AGENTS.md
+      - skills/
+      - prompts/
+      - memories/
+    deploy_shape: sync_to_hermes_home_or_mount
+  hermes_skill:
+    paths:
+      - skills/<skill>/SKILL.md
+    deploy_shape: sync_to_/opt/data/skills
+  host_side_governance:
+    paths:
+      - scripts/
+      - configs/
+      - docs/
+    deploy_shape: host_patch_plus_tests
+  llm_gateway:
+    paths:
+      - custom/yandex-proxy/
+    deploy_shape: rebuild_or_restart_yandex_proxy
+  crm_tools:
+    paths:
+      - custom/tools/
+    deploy_shape: read_only_container_mount
+  hermes_core:
+    paths:
+      - hermes-core/
+    deploy_shape: upstream_aware_patch_only
+
+server_safety:
+  inspect_before_write: true
+  backup_before_patch: true
+  run_focused_tests: true
+  record_rollback_notes: true
+  never_assume_clean_worktree: true

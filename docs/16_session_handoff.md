@@ -2,6 +2,19 @@
 
 Date: 2026-06-13
 
+## Current Runtime Correction
+
+The live Hermes runtime has been re-checked on 2026-06-13.
+
+Use `docs/17_hermes_runtime_integration.md` as the current integration map.
+Important correction: the live application tree is `/opt/hermes-assistant`, and
+the Telegram agent runs in the `hermes-agent` Docker container. The Retek
+`scripts/` in this repository are host-side Supervisor/Bot#2/process tooling;
+they are not imported by `/opt/hermes` inside the running container.
+
+Avoid blind `git pull` or full sync on `/opt/hermes-assistant`; the server tree
+contains local changes, untracked files, Docker mounts, and mixed ownership.
+
 ## How To Continue In A New Codex Session
 
 Open a new Codex session and provide this file. Suggested first message:

@@ -29,6 +29,7 @@ DEFAULT_STORE_PATH = Path(
     )
 )
 DEFAULT_BOT2_GATE = Path(os.environ.get("BOT2_GATE_PATH", "/opt/hermes-assistant/scripts/bot2_gate.py"))
+MAX_BOT_REVIEW_CYCLES = int(os.environ.get("HERMES_MAX_BOT_REVIEW_CYCLES", "3"))
 
 APPROVED_STATUSES = {"APPROVE", "APPROVE_WITH_EVIDENCE"}
 ESCALATION_STATUSES = {
@@ -49,6 +50,29 @@ BOT2_VERDICT_STATUSES = APPROVED_STATUSES | ESCALATION_STATUSES | BLOCKED_STATUS
 
 YES_MEANING = "Agree with Bot#2 and return Bot#1 to fixes."
 NO_MEANING = "Reject Bot#2 objection and accept Bot#1 result as-is."
+
+SUPERVISOR_STATUSES = {
+    "created",
+    "running",
+    "approved",
+    "approved_refusal",
+    "awaiting_human_decision",
+    "return_to_bot1",
+    "accepted_by_user_override",
+    "failed",
+    "blocked",
+}
+ALLOWED_STATUS_TRANSITIONS = {
+    "created": {"running", "failed", "blocked"},
+    "running": {"approved", "approved_refusal", "awaiting_human_decision", "failed", "blocked"},
+    "awaiting_human_decision": {"return_to_bot1", "accepted_by_user_override", "failed", "blocked"},
+    "return_to_bot1": {"running", "failed", "blocked"},
+    "approved": set(),
+    "approved_refusal": set(),
+    "accepted_by_user_override": set(),
+    "failed": set(),
+    "blocked": set(),
+}
 
 
 def utc_now() -> str:
@@ -148,6 +172,15 @@ def init_schema(con: sqlite3.Connection) -> None:
             risk TEXT DEFAULT '',
             recommendation TEXT DEFAULT '',
             status TEXT NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES supervisor_tasks(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS supervisor_resource_locks (
+            resource TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            acquired_at TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            command TEXT DEFAULT '',
             FOREIGN KEY(task_id) REFERENCES supervisor_tasks(id)
         );
         """
@@ -269,6 +302,55 @@ def add_role_run(
         con.commit()
 
 
+def validate_status_transition(current_status: str, next_status: str) -> None:
+    current = str(current_status or "").strip()
+    next_value = str(next_status or "").strip()
+    if current == next_value:
+        return
+    if current not in SUPERVISOR_STATUSES:
+        raise SystemExit(f"unknown current supervisor status: {current}")
+    if next_value not in SUPERVISOR_STATUSES:
+        raise SystemExit(f"unknown next supervisor status: {next_value}")
+    if next_value not in ALLOWED_STATUS_TRANSITIONS[current]:
+        raise SystemExit(f"illegal supervisor transition: {current} -> {next_value}")
+
+
+def bot2_cycle_count(task_id_value: str, *, store_path: Path | str | None = None) -> int:
+    with connect(store_path) as con:
+        row = con.execute("SELECT COUNT(*) AS count FROM supervisor_bot2_links WHERE task_id=?", (task_id_value,)).fetchone()
+    return int(row["count"] if row else 0)
+
+
+def enforce_bot_loop_guard(
+    task_id_value: str,
+    *,
+    current_status: str,
+    next_status: str,
+    store_path: Path | str | None = None,
+) -> None:
+    if current_status != "return_to_bot1" or next_status != "running":
+        return
+    cycles = bot2_cycle_count(task_id_value, store_path=store_path)
+    if cycles < MAX_BOT_REVIEW_CYCLES:
+        return
+    with connect(store_path) as con:
+        con.execute(
+            "UPDATE supervisor_tasks SET status=?, updated_at=? WHERE id=?",
+            ("blocked", utc_now(), task_id_value),
+        )
+        con.execute(
+            "INSERT INTO supervisor_events(task_id, created_at, event_type, payload_json) VALUES (?, ?, ?, ?)",
+            (
+                task_id_value,
+                utc_now(),
+                "bot_loop_guard",
+                dumps({"cycles": cycles, "max_cycles": MAX_BOT_REVIEW_CYCLES, "blocked_status": "blocked"}),
+            ),
+        )
+        con.commit()
+    raise SystemExit(f"bot loop guard blocked restart after {cycles} Bot#2 cycles")
+
+
 def update_task(
     task_id_value: str,
     *,
@@ -287,6 +369,18 @@ def update_task(
     assignments = ", ".join(f"{key}=?" for key in fields)
     values = list(fields.values()) + [task_id_value]
     with connect(store_path) as con:
+        if status is not None:
+            row = con.execute("SELECT status FROM supervisor_tasks WHERE id=?", (task_id_value,)).fetchone()
+            if not row:
+                raise SystemExit(f"task not found: {task_id_value}")
+            current_status = str(row["status"])
+            validate_status_transition(current_status, status)
+            enforce_bot_loop_guard(
+                task_id_value,
+                current_status=current_status,
+                next_status=status,
+                store_path=store_path,
+            )
         con.execute(f"UPDATE supervisor_tasks SET {assignments} WHERE id=?", values)
         con.commit()
 
@@ -460,6 +554,77 @@ def record_human_decision(
         "status": status,
         "bot2_session_id": str(pending["bot2_session_id"] or "") or None,
     }
+
+
+def active_resource_lock(resource: str, *, store_path: Path | str | None = None) -> dict[str, Any] | None:
+    with connect(store_path) as con:
+        row = con.execute(
+            "SELECT resource, task_id, acquired_at, reason, command FROM supervisor_resource_locks WHERE resource=?",
+            (resource,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def acquire_resource_locks(
+    task_id_value: str,
+    resources: list[str],
+    *,
+    reason: str,
+    command: str = "",
+    store_path: Path | str | None = None,
+) -> list[str]:
+    if not resources:
+        return []
+    unique = sorted(set(resources))
+    acquired: list[str] = []
+    with connect(store_path) as con:
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            for resource in unique:
+                existing = con.execute(
+                    "SELECT task_id FROM supervisor_resource_locks WHERE resource=?",
+                    (resource,),
+                ).fetchone()
+                if existing:
+                    raise SystemExit(f"resource locked: {resource} by {existing['task_id']}")
+            for resource in unique:
+                con.execute(
+                    """
+                    INSERT INTO supervisor_resource_locks(resource, task_id, acquired_at, reason, command)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (resource, task_id_value, utc_now(), reason, command),
+                )
+                acquired.append(resource)
+            con.commit()
+        except BaseException:
+            con.rollback()
+            raise
+    add_event(
+        task_id_value,
+        "resource_locks_acquired",
+        {"resources": acquired, "reason": reason, "command": command},
+        store_path=store_path,
+    )
+    return acquired
+
+
+def release_resource_locks(
+    task_id_value: str,
+    resources: list[str],
+    *,
+    store_path: Path | str | None = None,
+) -> None:
+    unique = sorted(set(resources))
+    if not unique:
+        return
+    with connect(store_path) as con:
+        con.executemany(
+            "DELETE FROM supervisor_resource_locks WHERE task_id=? AND resource=?",
+            [(task_id_value, resource) for resource in unique],
+        )
+        con.commit()
+    add_event(task_id_value, "resource_locks_released", {"resources": unique}, store_path=store_path)
 
 
 def run_subprocess(cmd: list[str], *, timeout: int = 900) -> subprocess.CompletedProcess[str]:

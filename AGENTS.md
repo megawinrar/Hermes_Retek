@@ -40,6 +40,33 @@
 - Security configuration changes
 - Database schema migrations
 
+## RUNTIME BOUNDARY (ВАЖНО)
+
+Hermes Retek работает как два связанных слоя:
+
+```text
+Telegram -> hermes-agent Docker container -> /opt/hermes upstream runtime
+Host -> Hermes_Retek scripts/configs -> Supervisor, Bot#2 gate, audit, deploy gates
+```
+
+Не перестраивай проект в новую структуру и не меняй `hermes-core`, если задача
+решается через правила агента, skill, config или host-side Supervisor.
+
+### Куда вносить изменения
+
+| Цель | Слой |
+|------|-----|
+| Поведение и правила агента | `AGENTS.md`, `skills/`, `prompts/`, `memories/` |
+| Новый навык Hermes | `skills/<skill>/SKILL.md` |
+| CRM/read-only инструмент | `custom/tools/` на сервере |
+| LLM gateway, бюджет, fallback | `custom/yandex-proxy/` на сервере |
+| Router, Bot#2, human gate, audit | `scripts/`, `configs/`, `docs/` |
+| Core agent loop | `hermes-core/`, только как отдельный upstream-aware patch |
+
+Перед деплоем на сервер проверяй, что `/opt/hermes-assistant` может быть
+грязной рабочей копией с локальными файлами и смешанными владельцами. Нельзя
+делать blind `git pull`, `git reset` или полный sync без backup и проверки.
+
 ## ТВОИ ПРАВА И ОБЯЗАННОСТИ
 
 1. **Саморедактирование**: ТЫ ОБЯЗАН редактировать AGENTS.md если правила устарели.

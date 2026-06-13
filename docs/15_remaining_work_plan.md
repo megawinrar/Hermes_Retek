@@ -4,13 +4,21 @@ Date: 2026-06-13
 
 ## Recommended Next Step
 
-Next implementation target: `P1 Human Notification / Telegram DevLog`.
+Next implementation target: `P1 Runtime-Compatible Hermes Integration`.
 
 Reason:
 
-- The process can already produce `awaiting_human_decision`.
-- The user now needs to see Bot#1/Bot#2 disagreement in real time.
-- This makes the system observable and usable, not only testable in SQLite/JSON.
+- The live Telegram agent runs inside the `hermes-agent` Docker container.
+- The Retek scripts are host-side Supervisor/Bot#2/process gates, not imported
+  by the container.
+- Future work should target the correct layer first: `AGENTS.md`/skills/config
+  for agent behavior, scripts/configs for host-side gates, and `hermes-core`
+  only for upstream-aware runtime changes.
+
+Reference:
+
+- `docs/17_hermes_runtime_integration.md`
+- `docs/18_server_rollout_checklist.md`
 
 ## P0: Rotate Exposed Secrets
 
@@ -70,17 +78,30 @@ Acceptance:
 
 ## P1: Bot#2 Retry / Repair
 
-Status: not done.
+Status: implemented in repository; server rollout still pending.
 
 Current behavior:
 
 - invalid Bot#2 JSON becomes `INVALID_BOT2_OUTPUT` and fail-closed.
+- live dual Bot#1/Bot#2 path performs one strict JSON-only Bot#2 repair
+  attempt when the first Bot#2 response is not machine-readable.
+- repo-side `scripts/bot2_gate.py` mirrors the same one-repair/fail-closed
+  contract for the host-side review gate.
+- dry-run `INVALID_BOT2_OUTPUT` still fails closed and is used as a guardrail
+  test case.
+- dual-bot lab run metadata, stored messages, CLI previews, and Markdown reports
+  are redacted before persistence.
+- host-side Bot#2 gate storage, events, stdout, verdicts, and raw outputs are
+  redacted before persistence/output.
+- repaired live verdicts include `repair_attempted` and `repair_status`; failed
+  repair attempts remain fail-closed and auditable.
 
 Next behavior:
 
-- make one retry with strict JSON-only repair prompt;
-- if retry is invalid, keep fail-closed status;
-- store raw transcript with redaction.
+- deploy repo-side `scripts/bot2_gate.py` to the server only after review,
+  backup, and smoke test using `docs/18_server_rollout_checklist.md`;
+- verify server cron/manual commands use the repo copy instead of a drifting
+  host-only script.
 
 Acceptance:
 
@@ -90,11 +111,11 @@ Acceptance:
 
 ## P1: DevOps / Tool Gateway
 
-Status: partial shell fail-closed exists, unified gateway not done.
+Status: repository gateway and resource locks implemented; server rollout still pending.
 
 Tasks:
 
-- Create `scripts/tool_gateway.py`.
+- Create `scripts/tool_gateway.py`. Done.
 - Require linked Supervisor approval for dangerous actions:
   - `git push`;
   - `git merge`;
@@ -104,7 +125,12 @@ Tasks:
   - `sqlite UPDATE/DELETE`;
   - secret writes;
   - auth/payment/db/CI changes.
-- Distinguish `approved_action=execute` from `approved_action=refuse`.
+- Distinguish `approved_action=execute` from `approved_action=refuse`. Done.
+
+Next behavior:
+
+- route server DevOps commands through `scripts/tool_gateway.py run`;
+- add server smoke checks before enabling gateway as an operational wrapper.
 
 Acceptance:
 
@@ -114,7 +140,7 @@ Acceptance:
 
 ## P1: Process State Machine
 
-Status: partial.
+Status: supervisor task transitions and loop guard implemented.
 
 Tasks:
 
@@ -128,9 +154,14 @@ Tasks:
   - `accepted_by_user_override`
   - `failed`
   - `blocked`
-- Add illegal transition tests.
-- Add loop guard for repeated Bot#1/Bot#2 cycles.
-- Add write/deploy resource locks.
+- Add illegal transition tests. Done.
+- Add loop guard for repeated Bot#1/Bot#2 cycles. Done.
+- Add write/deploy resource locks. Done.
+
+Next behavior:
+
+- deploy `scripts/tool_gateway.py` and updated Supervisor schema to the server;
+- wrap operational write/deploy commands with `tool_gateway.py run`.
 
 Acceptance:
 
@@ -140,11 +171,11 @@ Acceptance:
 
 ## P2: Skills Index / Lazy Loading
 
-Status: not done.
+Status: manifest and selector implemented in repository; runtime adoption pending.
 
 Tasks:
 
-- Build `skills/manifest.yaml` or `skills/index.json`.
+- Build `skills/manifest.yaml` or `skills/index.json`. Done as `skills/manifest.json`.
 - Include:
   - name;
   - description;
@@ -157,6 +188,17 @@ Tasks:
 - Update Hermes role skills for Router, Supervisor, Bot#1, Tester, Bot#2, DevOps.
 - Mark legacy GitLab/YandexGPT context.
 
+Runner:
+
+```bash
+scripts/skill_index.py select --level L3 --role architect
+```
+
+Next behavior:
+
+- wire Router/Supervisor prompts to load from `scripts/skill_index.py` output;
+- keep DevOps/GitHub write skills behind explicit approval and `tool_gateway.py`.
+
 Acceptance:
 
 - Router loads only relevant skills;
@@ -165,7 +207,7 @@ Acceptance:
 
 ## P2: Observability Dashboard
 
-Status: basic `show` exists, richer dashboard not done.
+Status: repository dashboard summary and JSONL event tail implemented; server rollout still pending.
 
 Tasks:
 
@@ -183,7 +225,14 @@ scripts/process_orchestrator.py show <process_id>
   - human decision;
   - reports;
   - blocked reason.
-- Add JSONL live event tail.
+- Add JSONL live event tail. Done.
+
+Next behavior:
+
+- use `scripts/process_orchestrator.py show <process_id>` during server smoke
+  checks;
+- use `scripts/process_orchestrator.py events <process_id>` for redacted JSONL
+  event inspection.
 
 Acceptance:
 
@@ -193,7 +242,7 @@ Acceptance:
 
 ## Stage 2 Battle Suite
 
-Status: not run after all remaining P1 work.
+Status: deterministic repository runner implemented and passing locally.
 
 Cases:
 
@@ -207,6 +256,12 @@ Cases:
 8. Bad Bot#2 JSON retry/fail-closed.
 9. Human disagreement with visible Yes/No.
 10. DevOps gate blocked before approval.
+
+Runner:
+
+```bash
+scripts/stage2_battle_suite.py
+```
 
 Acceptance:
 

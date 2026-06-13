@@ -1,0 +1,144 @@
+{
+  "version": 1,
+  "name": "Hermes Retek Skill Manifest",
+  "default_policy": {
+    "load_policy": "lazy",
+    "heavy_bundle_default": false,
+    "scripts_require_gateway": true
+  },
+  "skills": [
+    {
+      "name": "role-dispatcher",
+      "path": "skills/role-dispatcher/SKILL.md",
+      "description": "Routes work to role-based Hermes skills.",
+      "tags": ["router", "roles", "dispatch"],
+      "worker_roles": ["router", "supervisor"],
+      "risk_level": "low",
+      "script_presence": false,
+      "network_required": false,
+      "auth_required": false,
+      "load_policy": "router_only",
+      "levels": ["L2", "L3", "L4"]
+    },
+    {
+      "name": "hermes-analyst",
+      "path": "skills/hermes-analyst/SKILL.md",
+      "description": "Requirements, data analysis, PDF/Excel and dashboard-oriented work.",
+      "tags": ["analysis", "requirements", "documents"],
+      "worker_roles": ["bot1", "analyst"],
+      "risk_level": "medium",
+      "script_presence": false,
+      "network_required": false,
+      "auth_required": false,
+      "load_policy": "lazy",
+      "levels": ["L2", "L3"]
+    },
+    {
+      "name": "hermes-architect",
+      "path": "skills/hermes-architect/SKILL.md",
+      "description": "Architecture, ADRs, C4, event storming, and trade-off analysis.",
+      "tags": ["architecture", "adr", "design"],
+      "worker_roles": ["architect"],
+      "risk_level": "medium",
+      "script_presence": false,
+      "network_required": false,
+      "auth_required": false,
+      "load_policy": "lazy",
+      "levels": ["L3", "L4"]
+    },
+    {
+      "name": "hermes-developer",
+      "path": "skills/hermes-developer/SKILL.md",
+      "description": "Implementation, TDD, refactoring, and code review preparation.",
+      "tags": ["code", "tdd", "implementation"],
+      "worker_roles": ["bot1"],
+      "risk_level": "medium",
+      "script_presence": false,
+      "network_required": false,
+      "auth_required": false,
+      "load_policy": "lazy",
+      "levels": ["L1", "L2", "L3", "L4"]
+    },
+    {
+      "name": "hermes-tester",
+      "path": "skills/hermes-tester/SKILL.md",
+      "description": "QA, edge cases, regression, and test evidence collection.",
+      "tags": ["testing", "qa", "regression"],
+      "worker_roles": ["tester"],
+      "risk_level": "medium",
+      "script_presence": false,
+      "network_required": false,
+      "auth_required": false,
+      "load_policy": "lazy",
+      "levels": ["L2", "L3", "L4"]
+    },
+    {
+      "name": "github-code-review",
+      "path": "skills/github/github-code-review/SKILL.md",
+      "description": "GitHub PR and code review workflow support.",
+      "tags": ["github", "review", "pull-request"],
+      "worker_roles": ["bot2", "tester"],
+      "risk_level": "medium",
+      "script_presence": false,
+      "network_required": true,
+      "auth_required": true,
+      "load_policy": "on_demand",
+      "levels": ["L3", "L4"]
+    },
+    {
+      "name": "hermes-devops",
+      "path": "skills/hermes-devops/SKILL.md",
+      "description": "CI/CD, Docker, infrastructure and deployment operations.",
+      "tags": ["devops", "docker", "deploy"],
+      "worker_roles": ["devops"],
+      "risk_level": "high",
+      "script_presence": false,
+      "network_required": true,
+      "auth_required": true,
+      "load_policy": "approval_required",
+      "levels": ["L4"],
+      "gateway_required": true
+    },
+    {
+      "name": "github-pr-workflow",
+      "path": "skills/github/github-pr-workflow/SKILL.md",
+      "description": "GitHub PR creation, update, and merge workflow support.",
+      "tags": ["github", "pull-request", "merge"],
+      "worker_roles": ["devops", "supervisor"],
+      "risk_level": "high",
+      "script_presence": false,
+      "network_required": true,
+      "auth_required": true,
+      "load_policy": "approval_required",
+      "levels": ["L4"],
+      "gateway_required": true
+    }
+  ],
+  "level_policy": {
+    "L0": {
+      "allowed_roles": ["router", "supervisor"],
+      "autoload_skills": [],
+      "forbidden_tags": ["devops", "deploy", "github", "docker"]
+    },
+    "L1": {
+      "allowed_roles": ["router", "supervisor", "bot1"],
+      "autoload_skills": ["hermes-developer"],
+      "forbidden_tags": ["devops", "deploy", "github", "docker"]
+    },
+    "L2": {
+      "allowed_roles": ["router", "supervisor", "bot1", "tester"],
+      "autoload_skills": ["hermes-analyst", "hermes-tester"],
+      "forbidden_tags": ["devops", "deploy"]
+    },
+    "L3": {
+      "allowed_roles": ["router", "supervisor", "architect", "bot1", "tester", "bot2"],
+      "autoload_skills": ["role-dispatcher", "hermes-architect", "hermes-developer", "hermes-tester"],
+      "forbidden_tags": ["deploy"]
+    },
+    "L4": {
+      "allowed_roles": ["router", "supervisor", "architect", "bot1", "tester", "bot2", "devops"],
+      "autoload_skills": ["role-dispatcher", "hermes-architect", "hermes-developer", "hermes-tester"],
+      "approval_only_skills": ["hermes-devops", "github-pr-workflow"]
+    }
+  }
+}
