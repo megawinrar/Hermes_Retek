@@ -700,6 +700,89 @@ def process_details(
     return redact_payload(data)
 
 
+def process_transcript(
+    pid: str,
+    *,
+    store_path: Path | str | None = None,
+    supervisor_store_path: Path | str | None = None,
+) -> dict[str, Any]:
+    details = process_details(pid, store_path=store_path, supervisor_store_path=supervisor_store_path)
+    supervisor = details.get("supervisor") or {}
+    bot2_links = supervisor.get("bot2_links") or []
+    bot2_link = bot2_links[-1] if bot2_links else {}
+    bot2_verdict = bot2_link.get("verdict") or (details.get("summary") or {}).get("bot2") or {}
+    human_escalations = supervisor.get("human_escalations") or []
+    human_escalation = human_escalations[-1] if human_escalations else {}
+    supervisor_events = supervisor.get("events") or []
+    human_event = next((event for event in reversed(supervisor_events) if event.get("event_type") == "human_escalation"), {})
+    human_payload = human_event.get("payload") or {}
+    process_events = details.get("events") or []
+
+    transcript = {
+        "process_id": details.get("id", ""),
+        "supervisor_task_id": details.get("supervisor_task_id", ""),
+        "status": details.get("status", ""),
+        "route": details.get("router", {}),
+        "conversation": [
+            {
+                "actor": "router",
+                "phase": "intake",
+                "status": "completed",
+                "content": details.get("router", {}),
+            },
+            {
+                "actor": "bot1",
+                "phase": "execution",
+                "status": "completed" if supervisor.get("bot1_result") else "not_started",
+                "content": supervisor.get("bot1_result", ""),
+            },
+            {
+                "actor": "tester",
+                "phase": "verification",
+                "status": "completed" if supervisor.get("evidence") else "not_started",
+                "content": supervisor.get("evidence", ""),
+            },
+            {
+                "actor": "bot2",
+                "phase": "quality_gate",
+                "status": bot2_verdict.get("status", "") or "not_required",
+                "session_id": bot2_link.get("bot2_session_id", ""),
+                "content": bot2_verdict,
+            },
+        ],
+        "human_gate": {
+            "required": bool(human_escalation),
+            "status": human_escalation.get("status", ""),
+            "choice": human_escalation.get("choice"),
+            "meaning": human_escalation.get("meaning"),
+            "bot2_session_id": human_escalation.get("bot2_session_id", ""),
+            "message": human_payload.get("message", ""),
+            "notification": human_payload.get("notification", {}),
+            "delivery": human_payload.get("delivery", {}),
+            "yes_meaning": YES_MEANING,
+            "no_meaning": NO_MEANING,
+        },
+        "audit": {
+            "role_runs": supervisor.get("role_runs", []),
+            "process_events": [
+                {
+                    "created_at": event.get("created_at", ""),
+                    "event_type": event.get("event_type", ""),
+                }
+                for event in process_events
+            ],
+            "supervisor_events": [
+                {
+                    "created_at": event.get("created_at", ""),
+                    "event_type": event.get("event_type", ""),
+                }
+                for event in supervisor_events
+            ],
+        },
+    }
+    return redact_payload(transcript)
+
+
 def cmd_route(args: argparse.Namespace) -> None:
     print(json.dumps(classify_task(args.task), ensure_ascii=False, indent=2))
 
@@ -712,6 +795,20 @@ def cmd_show(args: argparse.Namespace) -> None:
     print(
         json.dumps(
             process_details(
+                args.process_id,
+                store_path=args.process_store,
+                supervisor_store_path=args.supervisor_store,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+def cmd_transcript(args: argparse.Namespace) -> None:
+    print(
+        json.dumps(
+            process_transcript(
                 args.process_id,
                 store_path=args.process_store,
                 supervisor_store_path=args.supervisor_store,
@@ -755,6 +852,10 @@ def build_parser() -> argparse.ArgumentParser:
     show = sub.add_parser("show")
     show.add_argument("process_id")
     show.set_defaults(func=cmd_show)
+
+    transcript = sub.add_parser("transcript", help="Print Bot#1/Bot#2/Supervisor conversation transcript")
+    transcript.add_argument("process_id")
+    transcript.set_defaults(func=cmd_transcript)
 
     events = sub.add_parser("events", help="Print process events as JSONL")
     events.add_argument("process_id")
