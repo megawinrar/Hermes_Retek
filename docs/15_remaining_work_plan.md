@@ -1,0 +1,217 @@
+# Hermes Retek Remaining Work Plan
+
+Date: 2026-06-13
+
+## Recommended Next Step
+
+Next implementation target: `P1 Human Notification / Telegram DevLog`.
+
+Reason:
+
+- The process can already produce `awaiting_human_decision`.
+- The user now needs to see Bot#1/Bot#2 disagreement in real time.
+- This makes the system observable and usable, not only testable in SQLite/JSON.
+
+## P0: Rotate Exposed Secrets
+
+Status: still required.
+
+Why:
+
+- Current tracked files no longer contain the hardcoded key.
+- But the old key existed in git history, so it must be treated as compromised.
+
+Tasks:
+
+- Rotate Bothub/API key in the external service.
+- Store new key outside git, for example:
+
+```bash
+/var/lib/docker/volumes/hermes-data/_data/.secrets/bothub_api_key
+```
+
+- Restrict file permissions.
+- Verify `scripts/check_api_limits.sh` works via env/secret file.
+- Decide whether git history rewrite is needed or revoke/rotate is enough.
+
+Acceptance:
+
+- old key revoked;
+- new key absent from git/files/logs/reports;
+- secret scan passes;
+- API healthcheck passes.
+
+## P1: Human Notification / Telegram DevLog
+
+Status: next recommended code task.
+
+Tasks:
+
+- Add notification adapter for `process_orchestrator.py`.
+- Reuse or extend `scripts/devlog.py` if possible.
+- On `awaiting_human_decision`, send payload containing:
+  - process id;
+  - supervisor task id;
+  - original task;
+  - Bot#1 version;
+  - Bot#2 version;
+  - risk;
+  - recommendation;
+  - clear Yes/No semantics.
+- Add dry-run mode for exact payload without network send.
+- Add tests around payload shape and no-secret redaction.
+
+Acceptance:
+
+- unit/integration test validates notification payload;
+- dry-run output can be inspected without Telegram;
+- live human escalation records notification event;
+- no secrets are sent.
+
+## P1: Bot#2 Retry / Repair
+
+Status: not done.
+
+Current behavior:
+
+- invalid Bot#2 JSON becomes `INVALID_BOT2_OUTPUT` and fail-closed.
+
+Next behavior:
+
+- make one retry with strict JSON-only repair prompt;
+- if retry is invalid, keep fail-closed status;
+- store raw transcript with redaction.
+
+Acceptance:
+
+- first invalid Bot#2 output triggers one retry;
+- second invalid output cannot approve;
+- embedded/log-contaminated JSON is rejected.
+
+## P1: DevOps / Tool Gateway
+
+Status: partial shell fail-closed exists, unified gateway not done.
+
+Tasks:
+
+- Create `scripts/tool_gateway.py`.
+- Require linked Supervisor approval for dangerous actions:
+  - `git push`;
+  - `git merge`;
+  - deploy/release;
+  - `docker restart`;
+  - production config edits;
+  - `sqlite UPDATE/DELETE`;
+  - secret writes;
+  - auth/payment/db/CI changes.
+- Distinguish `approved_action=execute` from `approved_action=refuse`.
+
+Acceptance:
+
+- push/deploy/restart blocked without approval;
+- approved refusal does not unlock DevOps;
+- user override is explicit and audited.
+
+## P1: Process State Machine
+
+Status: partial.
+
+Tasks:
+
+- Formalize allowed transitions:
+  - `created`
+  - `running`
+  - `approved`
+  - `approved_refusal`
+  - `awaiting_human_decision`
+  - `return_to_bot1`
+  - `accepted_by_user_override`
+  - `failed`
+  - `blocked`
+- Add illegal transition tests.
+- Add loop guard for repeated Bot#1/Bot#2 cycles.
+- Add write/deploy resource locks.
+
+Acceptance:
+
+- no transition from `failed` to `approved` without new run;
+- no DevOps from `approved_refusal`;
+- repeated `REQUEST_CHANGES` eventually requires human.
+
+## P2: Skills Index / Lazy Loading
+
+Status: not done.
+
+Tasks:
+
+- Build `skills/manifest.yaml` or `skills/index.json`.
+- Include:
+  - name;
+  - description;
+  - tags;
+  - worker roles;
+  - risk level;
+  - script presence;
+  - network/auth requirements;
+  - load policy.
+- Update Hermes role skills for Router, Supervisor, Bot#1, Tester, Bot#2, DevOps.
+- Mark legacy GitLab/YandexGPT context.
+
+Acceptance:
+
+- Router loads only relevant skills;
+- L0/L1 do not load heavy bundles;
+- skill scripts require gateway approval.
+
+## P2: Observability Dashboard
+
+Status: basic `show` exists, richer dashboard not done.
+
+Tasks:
+
+- Improve:
+
+```bash
+scripts/process_orchestrator.py show <process_id>
+```
+
+- Add process summary:
+  - route;
+  - actors;
+  - state;
+  - Bot#2 verdict;
+  - human decision;
+  - reports;
+  - blocked reason.
+- Add JSONL live event tail.
+
+Acceptance:
+
+- user can watch process state in real time;
+- reasons for approval/block/human-gate are clear;
+- logs are redacted.
+
+## Stage 2 Battle Suite
+
+Status: not run after all remaining P1 work.
+
+Cases:
+
+1. L0 status without LLM.
+2. L1 rewrite without Bot#2.
+3. L2 supplier prices/dates high-risk caution.
+4. L3 SQLite -> Postgres migration plan.
+5. L4 router code change with tests.
+6. Adversarial push to main without tests/review.
+7. Secret write attempt.
+8. Bad Bot#2 JSON retry/fail-closed.
+9. Human disagreement with visible Yes/No.
+10. DevOps gate blocked before approval.
+
+Acceptance:
+
+- all unit tests pass;
+- battle reports are saved;
+- high-risk writes/deploys do not pass without approval;
+- human-gate message is understandable;
+- secrets do not appear in files, logs, reports, or notifications.
