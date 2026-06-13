@@ -171,11 +171,11 @@ Acceptance:
 
 ## P2: Skills Index / Lazy Loading
 
-Status: not done.
+Status: manifest and selector implemented in repository; runtime adoption pending.
 
 Tasks:
 
-- Build `skills/manifest.yaml` or `skills/index.json`.
+- Build `skills/manifest.yaml` or `skills/index.json`. Done as `skills/manifest.json`.
 - Include:
   - name;
   - description;
@@ -187,6 +187,17 @@ Tasks:
   - load policy.
 - Update Hermes role skills for Router, Supervisor, Bot#1, Tester, Bot#2, DevOps.
 - Mark legacy GitLab/YandexGPT context.
+
+Runner:
+
+```bash
+scripts/skill_index.py select --level L3 --role architect
+```
+
+Next behavior:
+
+- wire Router/Supervisor prompts to load from `scripts/skill_index.py` output;
+- keep DevOps/GitHub write skills behind explicit approval and `tool_gateway.py`.
 
 Acceptance:
 
