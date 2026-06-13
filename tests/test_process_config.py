@@ -23,6 +23,7 @@ def test_scripts_compile() -> None:
         SCRIPTS / "task_router.py",
         SCRIPTS / "process_orchestrator.py",
         SCRIPTS / "bot2_gate.py",
+        SCRIPTS / "tool_gateway.py",
         SCRIPTS / "dual_bot_lab.py",
         SCRIPTS / "dual_bot_suite.py",
     ]

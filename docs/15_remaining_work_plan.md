@@ -110,11 +110,11 @@ Acceptance:
 
 ## P1: DevOps / Tool Gateway
 
-Status: partial shell fail-closed exists, unified gateway not done.
+Status: repository gateway implemented; server rollout still pending.
 
 Tasks:
 
-- Create `scripts/tool_gateway.py`.
+- Create `scripts/tool_gateway.py`. Done.
 - Require linked Supervisor approval for dangerous actions:
   - `git push`;
   - `git merge`;
@@ -124,7 +124,12 @@ Tasks:
   - `sqlite UPDATE/DELETE`;
   - secret writes;
   - auth/payment/db/CI changes.
-- Distinguish `approved_action=execute` from `approved_action=refuse`.
+- Distinguish `approved_action=execute` from `approved_action=refuse`. Done.
+
+Next behavior:
+
+- route server DevOps commands through `scripts/tool_gateway.py run`;
+- add server smoke checks before enabling gateway as an operational wrapper.
 
 Acceptance:
 
