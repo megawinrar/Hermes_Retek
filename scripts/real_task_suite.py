@@ -181,6 +181,7 @@ def run_suite(*, report_dir: Path) -> dict[str, Any]:
                 expected={
                     "summary.status": "approved",
                     "summary.task_level": "L2",
+                    "summary.task_type": "supplier_price_deadline_analysis",
                     "summary.risk_level": "high",
                     "summary.bot2.required": True,
                     "summary.bot2.status": "APPROVE",
