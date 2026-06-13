@@ -77,25 +77,30 @@ Acceptance:
 
 ## P1: Bot#2 Retry / Repair
 
-Status: partial.
+Status: implemented in repository; server rollout still pending.
 
 Current behavior:
 
 - invalid Bot#2 JSON becomes `INVALID_BOT2_OUTPUT` and fail-closed.
 - live dual Bot#1/Bot#2 path performs one strict JSON-only Bot#2 repair
   attempt when the first Bot#2 response is not machine-readable.
+- repo-side `scripts/bot2_gate.py` mirrors the same one-repair/fail-closed
+  contract for the host-side review gate.
 - dry-run `INVALID_BOT2_OUTPUT` still fails closed and is used as a guardrail
   test case.
 - dual-bot lab run metadata, stored messages, CLI previews, and Markdown reports
   are redacted before persistence.
+- host-side Bot#2 gate storage, events, stdout, verdicts, and raw outputs are
+  redacted before persistence/output.
 - repaired live verdicts include `repair_attempted` and `repair_status`; failed
   repair attempts remain fail-closed and auditable.
 
 Next behavior:
 
-- if retry is invalid, keep fail-closed status;
-- extend the same repair/redaction contract to the server `scripts/bot2_gate.py`
-  copy if that host-side script remains outside this repository.
+- deploy repo-side `scripts/bot2_gate.py` to the server only after review,
+  backup, and smoke test;
+- verify server cron/manual commands use the repo copy instead of a drifting
+  host-only script.
 
 Acceptance:
 
