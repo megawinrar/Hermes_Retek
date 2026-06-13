@@ -110,7 +110,7 @@ Acceptance:
 
 ## P1: DevOps / Tool Gateway
 
-Status: repository gateway implemented; server rollout still pending.
+Status: repository gateway and resource locks implemented; server rollout still pending.
 
 Tasks:
 
@@ -139,7 +139,7 @@ Acceptance:
 
 ## P1: Process State Machine
 
-Status: supervisor task transitions implemented; process resource locks still pending.
+Status: supervisor task transitions and loop guard implemented.
 
 Tasks:
 
@@ -154,8 +154,13 @@ Tasks:
   - `failed`
   - `blocked`
 - Add illegal transition tests. Done.
-- Add loop guard for repeated Bot#1/Bot#2 cycles.
-- Add write/deploy resource locks.
+- Add loop guard for repeated Bot#1/Bot#2 cycles. Done.
+- Add write/deploy resource locks. Done.
+
+Next behavior:
+
+- deploy `scripts/tool_gateway.py` and updated Supervisor schema to the server;
+- wrap operational write/deploy commands with `tool_gateway.py run`.
 
 Acceptance:
 

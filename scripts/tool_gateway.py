@@ -13,7 +13,16 @@ from pathlib import Path
 from typing import Any
 
 from human_notification import redact_payload, redact_text
-from supervisor_common import APPROVED_STATUSES, add_event, connect, get_task, loads
+from supervisor_common import (
+    APPROVED_STATUSES,
+    acquire_resource_locks,
+    active_resource_lock,
+    add_event,
+    connect,
+    get_task,
+    loads,
+    release_resource_locks,
+)
 
 
 ALLOWED_SUPERVISOR_STATUS = "approved"
@@ -129,6 +138,29 @@ def classify_command(argv: list[str]) -> dict[str, Any]:
     }
 
 
+def resources_for_risks(risks: list[str]) -> list[str]:
+    resources: set[str] = set()
+    for risk in risks:
+        if risk.startswith("git_"):
+            resources.add("git-write")
+        if risk in {"deploy_release", "docker_restart", "docker_compose_runtime_change", "kubernetes_runtime_change"}:
+            resources.add("runtime-deploy")
+        if risk in {"sqlite_write"}:
+            resources.add("database-write")
+        if risk in {"secret_write", "protected_config_or_domain_write"}:
+            resources.add("protected-config-write")
+    return sorted(resources)
+
+
+def lock_conflicts(resources: list[str], *, task_id: str, store_path: Path | str | None = None) -> list[dict[str, Any]]:
+    conflicts: list[dict[str, Any]] = []
+    for resource in resources:
+        lock = active_resource_lock(resource, store_path=store_path)
+        if lock and str(lock.get("task_id") or "") != task_id:
+            conflicts.append(lock)
+    return conflicts
+
+
 def latest_bot2_verdict(task_id: str, *, store_path: Path | str | None = None) -> dict[str, Any] | None:
     with connect(store_path) as con:
         row = con.execute(
@@ -228,12 +260,21 @@ def gateway_decision(
 ) -> dict[str, Any]:
     classification = classify_command(argv)
     decision = approval_decision(task_id=task_id, classification=classification, store_path=store_path)
+    resources = resources_for_risks(list(classification.get("risks") or []))
+    conflicts = lock_conflicts(resources, task_id=task_id, store_path=store_path)
+    if decision.get("allowed") and conflicts:
+        decision = {
+            "allowed": False,
+            "reason": "resource_lock_conflict",
+            "lock_conflicts": conflicts,
+        }
     payload = redact_payload(
         {
             "task_id": task_id,
             "command": classification.get("command", ""),
             "dangerous": classification.get("dangerous", False),
             "risks": classification.get("risks", []),
+            "resources": resources,
             **decision,
         }
     )
@@ -262,10 +303,25 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not result.get("allowed"):
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 2
-    completed = subprocess.run(argv, text=True, check=False)
-    result["exit_code"] = completed.returncode
-    print(json.dumps(redact_payload(result), ensure_ascii=False, indent=2, sort_keys=True))
-    return completed.returncode
+    resources = list(result.get("resources") or [])
+    acquired = acquire_resource_locks(
+        args.task_id or "",
+        resources,
+        reason=str(result.get("reason") or "tool_gateway_run"),
+        command=str(result.get("command") or ""),
+        store_path=args.store,
+    )
+    try:
+        completed = subprocess.run(argv, text=True, capture_output=True, check=False)
+        result["exit_code"] = completed.returncode
+        result["stdout_chars"] = len(completed.stdout or "")
+        result["stderr_chars"] = len(completed.stderr or "")
+        result["stdout_preview"] = redact_text((completed.stdout or "")[:2000])
+        result["stderr_preview"] = redact_text((completed.stderr or "")[:2000])
+        print(json.dumps(redact_payload(result), ensure_ascii=False, indent=2, sort_keys=True))
+        return completed.returncode
+    finally:
+        release_resource_locks(args.task_id or "", acquired, store_path=args.store)
 
 
 def build_parser() -> argparse.ArgumentParser:

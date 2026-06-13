@@ -11,12 +11,15 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from supervisor_common import (  # noqa: E402
+    acquire_resource_locks,
+    active_resource_lock,
     connect,
     create_human_escalation,
     create_task,
     get_task,
     link_bot2,
     record_human_decision,
+    release_resource_locks,
     update_task,
 )
 
@@ -177,3 +180,64 @@ def test_gateway_allows_safe_read_command_without_task(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["allowed"] is True
     assert payload["reason"] == "command_not_dangerous"
+
+
+def test_gateway_blocks_when_resource_is_locked_by_another_task(tmp_path: Path) -> None:
+    store = tmp_path / "supervisor.db"
+    holder = create_approved_task(store)
+    challenger = create_approved_task(store)
+    acquire_resource_locks(
+        holder,
+        ["runtime-deploy"],
+        reason="test lock",
+        command="docker restart hermes-agent",
+        store_path=store,
+    )
+
+    try:
+        result = run_cli(
+            sys.executable,
+            str(SCRIPTS / "tool_gateway.py"),
+            "--store",
+            str(store),
+            "check",
+            "--task-id",
+            challenger,
+            "--",
+            "docker",
+            "restart",
+            "hermes-agent",
+        )
+        assert result.returncode == 2
+        payload = json.loads(result.stdout)
+        assert payload["allowed"] is False
+        assert payload["reason"] == "resource_lock_conflict"
+        assert payload["lock_conflicts"][0]["resource"] == "runtime-deploy"
+    finally:
+        release_resource_locks(holder, ["runtime-deploy"], store_path=store)
+
+
+def test_gateway_run_releases_resource_lock_after_command(tmp_path: Path) -> None:
+    store = tmp_path / "supervisor.db"
+    task_id = create_approved_task(store)
+
+    result = run_cli(
+        sys.executable,
+        str(SCRIPTS / "tool_gateway.py"),
+        "--store",
+        str(store),
+        "run",
+        "--task-id",
+        task_id,
+        "--",
+        "sh",
+        "-c",
+        "echo gateway-ok",
+        "deploy",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["allowed"] is True
+    assert payload["resources"] == ["runtime-deploy"]
+    assert payload["stdout_preview"] == "gateway-ok\n"
+    assert active_resource_lock("runtime-deploy", store_path=store) is None
