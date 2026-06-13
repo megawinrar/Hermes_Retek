@@ -86,11 +86,14 @@ Current behavior:
   attempt when the first Bot#2 response is not machine-readable.
 - dry-run `INVALID_BOT2_OUTPUT` still fails closed and is used as a guardrail
   test case.
+- dual-bot lab run metadata, stored messages, CLI previews, and Markdown reports
+  are redacted before persistence.
 
 Next behavior:
 
 - if retry is invalid, keep fail-closed status;
-- store raw transcript with redaction.
+- extend the same repair/redaction contract to the server `scripts/bot2_gate.py`
+  copy if that host-side script remains outside this repository.
 
 Acceptance:
 

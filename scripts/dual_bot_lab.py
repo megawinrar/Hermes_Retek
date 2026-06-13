@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from human_notification import redact_payload, redact_text
+
 
 PROJECT_DIR = Path(os.environ.get("HERMES_PROJECT_DIR", "/opt/hermes-assistant"))
 ENV_FILE = PROJECT_DIR / ".env"
@@ -125,25 +127,29 @@ def db() -> sqlite3.Connection:
 
 
 def add_run(run_id_value: str, task: str, acceptance: str, bot1_model: str, bot2_model: str) -> None:
+    safe_task = redact_text(task)
+    safe_acceptance = redact_text(acceptance)
     with db() as con:
         con.execute(
             """
             INSERT INTO dual_bot_runs(id, created_at, task, acceptance, bot1_model, bot2_model, status)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (run_id_value, utc_now(), task, acceptance, bot1_model, bot2_model, "created"),
+            (run_id_value, utc_now(), safe_task, safe_acceptance, bot1_model, bot2_model, "created"),
         )
         con.commit()
 
 
 def add_message(run_id_value: str, speaker: str, model: str, content: str, metadata: dict[str, Any] | None = None) -> None:
+    safe_content = redact_text(content)
+    safe_metadata = redact_payload(metadata or {})
     with db() as con:
         con.execute(
             """
             INSERT INTO dual_bot_messages(run_id, created_at, speaker, model, content, metadata_json)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (run_id_value, utc_now(), speaker, model, content, json.dumps(metadata or {}, ensure_ascii=False)),
+            (run_id_value, utc_now(), speaker, model, safe_content, json.dumps(safe_metadata, ensure_ascii=False)),
         )
         con.commit()
 
@@ -221,7 +227,7 @@ def call_chat_payload(*, base_url: str, api_key: str, payload: dict[str, Any], t
         if content:
             return content, data
         errors.append(f"empty_content: {json.dumps(data, ensure_ascii=False)[:500]}")
-    raise RuntimeError("Bothub chat completion failed: " + " | ".join(errors))
+    raise RuntimeError(redact_text("Bothub chat completion failed: " + " | ".join(errors)))
 
 
 def bot1_messages(task: str, acceptance: str) -> list[dict[str, str]]:
@@ -330,6 +336,10 @@ def write_report(
 ) -> Path:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     path = REPORT_DIR / f"{run_id_value}.md"
+    safe_task = redact_text(task)
+    safe_acceptance = redact_text(acceptance)
+    safe_bot1_result = redact_text(bot1_result)
+    safe_bot2_result = redact_text(bot2_result)
     path.write_text(
         f"""# Dual Bot Lab Run
 
@@ -340,19 +350,19 @@ def write_report(
 
 ## Task
 
-{task}
+{safe_task}
 
 ## Acceptance
 
-{acceptance}
+{safe_acceptance}
 
 ## Bot#1 Transcript
 
-{bot1_result}
+{safe_bot1_result}
 
 ## Bot#2 Transcript
 
-{bot2_result}
+{safe_bot2_result}
 """,
         encoding="utf-8",
     )
@@ -404,8 +414,8 @@ def cmd_run(args: argparse.Namespace) -> None:
                 "bot1_model": args.bot1_model,
                 "bot2_model": args.bot2_model,
                 "report_path": str(report),
-                "bot1_preview": bot1[:600],
-                "bot2_preview": bot2[:600],
+                "bot1_preview": redact_text(bot1[:600]),
+                "bot2_preview": redact_text(bot2[:600]),
             },
             ensure_ascii=False,
             indent=2,

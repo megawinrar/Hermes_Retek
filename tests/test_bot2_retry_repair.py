@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -78,3 +79,44 @@ def test_live_dual_result_repairs_invalid_bot2_json_once(monkeypatch, tmp_path: 
     assert len(calls) == 3
     assert "Return ONLY valid JSON matching this schema" in calls[2][1]["content"]
     assert [speaker for speaker, _content in messages] == ["Bot#1", "Bot#2", "Bot#2-repair"]
+
+
+def test_dual_bot_lab_storage_and_report_are_redacted(monkeypatch, tmp_path: Path) -> None:
+    store = tmp_path / "dual_bot_lab.db"
+    reports = tmp_path / "reports"
+    secret = "github_pat_" + "A" * 30
+
+    monkeypatch.setattr(dual_bot_lab, "STORE_PATH", store)
+    monkeypatch.setattr(dual_bot_lab, "REPORT_DIR", reports)
+
+    dual_bot_lab.add_run("dual-redact", f"Task with {secret}", f"Acceptance {secret}", "bot1", "bot2")
+    dual_bot_lab.add_message(
+        "dual-redact",
+        "Bot#1",
+        "bot1",
+        f"Bot#1 saw {secret}",
+        {"raw": f"metadata {secret}"},
+    )
+    report = dual_bot_lab.write_report(
+        run_id_value="dual-redact",
+        task=f"Task with {secret}",
+        acceptance=f"Acceptance {secret}",
+        bot1_model="bot1",
+        bot1_result=f"Bot#1 transcript {secret}",
+        bot2_model="bot2",
+        bot2_result=f"Bot#2 transcript {secret}",
+    )
+
+    with sqlite3.connect(store) as con:
+        run = con.execute("SELECT task, acceptance FROM dual_bot_runs WHERE id='dual-redact'").fetchone()
+        message = con.execute("SELECT content, metadata_json FROM dual_bot_messages WHERE run_id='dual-redact'").fetchone()
+
+    assert run is not None
+    assert message is not None
+    stored_text = "\n".join([run[0], run[1], message[0], message[1]])
+    assert secret not in stored_text
+    assert "[REDACTED]" in stored_text
+
+    report_text = report.read_text(encoding="utf-8")
+    assert secret not in report_text
+    assert "[REDACTED]" in report_text
