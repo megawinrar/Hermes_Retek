@@ -20,6 +20,8 @@ from human_notification import (
 from supervisor_common import (
     BOT2_VERDICT_STATUSES,
     INVALID_BOT2_STATUS,
+    NO_MEANING,
+    YES_MEANING,
     add_event as add_supervisor_event,
     add_role_run,
     create_human_escalation,
@@ -30,6 +32,7 @@ from supervisor_common import (
     link_bot2,
     parse_bot2_verdict,
     supervisor_status_for_verdict,
+    task_details,
     update_task,
 )
 from task_router import classify_task
@@ -476,27 +479,224 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def process_details(pid: str, *, store_path: Path | str | None = None) -> dict[str, Any]:
+def process_event_rows(pid: str, *, limit: int = 0, store_path: Path | str | None = None) -> list[dict[str, Any]]:
+    limit_clause = "LIMIT ?" if limit > 0 else ""
+    params: tuple[Any, ...] = (pid, limit) if limit > 0 else (pid,)
+    with connect(store_path) as con:
+        rows = con.execute(
+            f"""
+            SELECT created_at, event_type, payload_json
+            FROM process_events
+            WHERE process_id=?
+            ORDER BY id DESC
+            {limit_clause}
+            """,
+            params,
+        ).fetchall()
+    events = [dict(row) | {"payload": json.loads(row["payload_json"])} for row in rows]
+    for event in events:
+        event.pop("payload_json", None)
+    return list(reversed(events))
+
+
+def latest_assignment(assignments: list[dict[str, Any]], worker: str) -> dict[str, Any]:
+    for assignment in reversed(assignments):
+        if assignment.get("worker") == worker:
+            return assignment
+    return {}
+
+
+def latest_event(events: list[dict[str, Any]], event_type: str) -> dict[str, Any]:
+    for event in reversed(events):
+        if event.get("event_type") == event_type:
+            return event
+    return {}
+
+
+def blocked_reason(status: str, events: list[dict[str, Any]], assignments: list[dict[str, Any]]) -> str:
+    if status != "blocked":
+        return ""
+    event = latest_event(events, "bot2_verdict")
+    verdict = (event.get("payload") or {}).get("verdict") or latest_assignment(assignments, "bot2").get("output", {}).get("verdict") or {}
+    risks = verdict.get("risks") or verdict.get("required_fixes") or []
+    if isinstance(risks, list) and risks:
+        return "; ".join(str(item) for item in risks)
+    return str(verdict.get("summary") or "blocked without detailed reason")
+
+
+def process_summary(
+    data: dict[str, Any],
+    *,
+    supervisor: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    assignments = list(data.get("assignments") or [])
+    events = list(data.get("events") or [])
+    route = data.get("router") or {}
+    bot2_assignment = latest_assignment(assignments, "bot2")
+    bot2_event = latest_event(events, "bot2_verdict")
+    human_event = latest_event(events, "human_notification")
+    bot2_verdict = (
+        (bot2_event.get("payload") or {}).get("verdict")
+        or (bot2_assignment.get("output") or {}).get("verdict")
+        or {}
+    )
+    notification_payload = human_event.get("payload") or {}
+    notification_delivery = notification_payload.get("delivery") or {}
+    human_decision: dict[str, Any] = {}
+    if supervisor:
+        escalations = supervisor.get("human_escalations") or []
+        if escalations:
+            latest = escalations[-1]
+            human_decision = {
+                "required": True,
+                "status": latest.get("status", ""),
+                "choice": latest.get("choice"),
+                "meaning": latest.get("meaning"),
+                "reason": latest.get("reason", ""),
+                "bot2_session_id": latest.get("bot2_session_id", ""),
+                "yes_meaning": YES_MEANING,
+                "no_meaning": NO_MEANING,
+            }
+    if not human_decision and human_event:
+        human_decision = {
+            "required": True,
+            "status": "awaiting_decision",
+            "choice": None,
+            "yes_meaning": YES_MEANING,
+            "no_meaning": NO_MEANING,
+        }
+
+    status = str(data.get("status") or "")
+    bot2_required = route_requires_bot2(route)
+    actors = [str(item.get("worker") or "") for item in assignments if item.get("worker")]
+    last_event = events[-1] if events else {}
+
+    return {
+        "process_id": data.get("id", ""),
+        "supervisor_task_id": data.get("supervisor_task_id", ""),
+        "status": status,
+        "current_phase": data.get("current_phase", ""),
+        "waiting_on": "human" if status == "awaiting_human_decision" else "",
+        "blocked_reason": blocked_reason(status, events, assignments),
+        "supervisor_available": supervisor is not None,
+        "task_level": route.get("task_level", ""),
+        "task_type": route.get("task_type", ""),
+        "risk_level": route.get("risk_level", ""),
+        "actors": actors,
+        "actor_runs": [
+            {
+                "worker": item.get("worker", ""),
+                "phase": item.get("phase", ""),
+                "status": item.get("status", ""),
+            }
+            for item in assignments
+        ],
+        "route": {
+            "task_level": route.get("task_level", ""),
+            "task_type": route.get("task_type", ""),
+            "risk_level": route.get("risk_level", ""),
+            "review_required": bool(route.get("review_required")),
+            "human_gate_required": bool(route.get("human_gate_required")),
+        },
+        "bot2": {
+            "required": bot2_required,
+            "session_id": (bot2_event.get("payload") or {}).get("bot2_session_id")
+            or (bot2_assignment.get("output") or {}).get("session_id", ""),
+            "status": bot2_verdict.get("status", ""),
+            "summary": bot2_verdict.get("summary", ""),
+            "risks": bot2_verdict.get("risks", []),
+            "repair_attempted": bool(bot2_verdict.get("repair_attempted")),
+            "repair_status": bot2_verdict.get("repair_status", ""),
+        },
+        "human_decision": human_decision or {
+            "required": False,
+            "status": "",
+            "choice": None,
+            "yes_meaning": YES_MEANING,
+            "no_meaning": NO_MEANING,
+        },
+        "notification": {
+            "sent": bool(notification_delivery.get("telegram_delivered")),
+            "mode": notification_delivery.get("mode", ""),
+            "provider": "telegram" if notification_delivery.get("telegram_requested") else "",
+        },
+        "reports": {
+            "dual_bot_report": next(
+                (
+                    value
+                    for value in [
+                        (latest_event(events, "report").get("payload") or {}).get("report_path"),
+                        (latest_assignment(assignments, "bot1").get("output") or {}).get("report_path"),
+                    ]
+                    if value
+                ),
+                "",
+            )
+        },
+        "event_count": len(events),
+        "assignment_count": len(assignments),
+        "last_event_type": last_event.get("event_type", ""),
+        "last_event_at": last_event.get("created_at", ""),
+    }
+
+
+def process_timeline(data: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for event in data.get("events") or []:
+        items.append(
+            {
+                "created_at": event.get("created_at", ""),
+                "kind": "event",
+                "event_type": event.get("event_type", ""),
+                "actor": "",
+                "phase": "",
+                "status": "",
+            }
+        )
+    for assignment in data.get("assignments") or []:
+        items.append(
+            {
+                "created_at": assignment.get("created_at", ""),
+                "kind": "assignment",
+                "event_type": "",
+                "actor": assignment.get("worker", ""),
+                "phase": assignment.get("phase", ""),
+                "status": assignment.get("status", ""),
+            }
+        )
+    return sorted(items, key=lambda item: str(item.get("created_at") or ""))
+
+
+def process_details(
+    pid: str,
+    *,
+    store_path: Path | str | None = None,
+    supervisor_store_path: Path | str | None = None,
+) -> dict[str, Any]:
     with connect(store_path) as con:
         run = con.execute("SELECT * FROM process_runs WHERE id=?", (pid,)).fetchone()
         if not run:
             raise SystemExit(f"process run not found: {pid}")
-        events = con.execute(
-            "SELECT created_at, event_type, payload_json FROM process_events WHERE process_id=? ORDER BY id",
-            (pid,),
-        ).fetchall()
         assignments = con.execute(
             "SELECT created_at, worker, phase, status, output_json FROM process_assignments WHERE process_id=? ORDER BY id",
             (pid,),
         ).fetchall()
     data = dict(run)
     data["router"] = json.loads(data.pop("router_json"))
-    data["events"] = [dict(row) | {"payload": json.loads(row["payload_json"])} for row in events]
+    data["events"] = process_event_rows(pid, store_path=store_path)
     data["assignments"] = [dict(row) | {"output": json.loads(row["output_json"])} for row in assignments]
-    for row in data["events"]:
-        row.pop("payload_json", None)
     for row in data["assignments"]:
         row.pop("output_json", None)
+    supervisor: dict[str, Any] | None = None
+    if supervisor_store_path is not None:
+        try:
+            supervisor = task_details(str(data["supervisor_task_id"]), store_path=supervisor_store_path)
+        except SystemExit:
+            supervisor = None
+    if supervisor:
+        data["supervisor"] = supervisor
+    data["summary"] = process_summary(data, supervisor=supervisor)
+    data["timeline"] = process_timeline(data)
     return redact_payload(data)
 
 
@@ -509,7 +709,22 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 
 def cmd_show(args: argparse.Namespace) -> None:
-    print(json.dumps(process_details(args.process_id, store_path=args.process_store), ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            process_details(
+                args.process_id,
+                store_path=args.process_store,
+                supervisor_store_path=args.supervisor_store,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+def cmd_events(args: argparse.Namespace) -> None:
+    for event in process_event_rows(args.process_id, limit=args.limit, store_path=args.process_store):
+        print(json.dumps(redact_payload(event), ensure_ascii=False, sort_keys=True))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -540,6 +755,11 @@ def build_parser() -> argparse.ArgumentParser:
     show = sub.add_parser("show")
     show.add_argument("process_id")
     show.set_defaults(func=cmd_show)
+
+    events = sub.add_parser("events", help="Print process events as JSONL")
+    events.add_argument("process_id")
+    events.add_argument("--limit", type=int, default=0)
+    events.set_defaults(func=cmd_events)
     return parser
 
 

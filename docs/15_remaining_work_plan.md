@@ -18,6 +18,7 @@ Reason:
 Reference:
 
 - `docs/17_hermes_runtime_integration.md`
+- `docs/18_server_rollout_checklist.md`
 
 ## P0: Rotate Exposed Secrets
 
@@ -98,7 +99,7 @@ Current behavior:
 Next behavior:
 
 - deploy repo-side `scripts/bot2_gate.py` to the server only after review,
-  backup, and smoke test;
+  backup, and smoke test using `docs/18_server_rollout_checklist.md`;
 - verify server cron/manual commands use the repo copy instead of a drifting
   host-only script.
 
@@ -195,7 +196,7 @@ Acceptance:
 
 ## P2: Observability Dashboard
 
-Status: basic `show` exists, richer dashboard not done.
+Status: repository dashboard summary and JSONL event tail implemented; server rollout still pending.
 
 Tasks:
 
@@ -213,7 +214,14 @@ scripts/process_orchestrator.py show <process_id>
   - human decision;
   - reports;
   - blocked reason.
-- Add JSONL live event tail.
+- Add JSONL live event tail. Done.
+
+Next behavior:
+
+- use `scripts/process_orchestrator.py show <process_id>` during server smoke
+  checks;
+- use `scripts/process_orchestrator.py events <process_id>` for redacted JSONL
+  event inspection.
 
 Acceptance:
 

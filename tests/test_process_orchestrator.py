@@ -48,6 +48,12 @@ def test_process_l1_approve_path_without_bot2(tmp_path: Path) -> None:
     assert shown.returncode == 0, shown.stderr
     details = json.loads(shown.stdout)
     assert {item["worker"] for item in details["assignments"]} == {"router", "supervisor", "bot1"}
+    assert details["summary"]["status"] == "approved"
+    assert details["summary"]["task_level"] == "L1"
+    assert details["summary"]["bot2"]["required"] is False
+    assert details["summary"]["waiting_on"] == ""
+    assert details["summary"]["supervisor_available"] is False
+    assert details["timeline"]
 
 
 def test_process_reject_creates_human_escalation(tmp_path: Path) -> None:
@@ -145,10 +151,19 @@ def test_human_gate_blocks_approved_high_risk_deploy(tmp_path: Path) -> None:
         str(SCRIPTS / "process_orchestrator.py"),
         "--process-store",
         str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
         "show",
         payload["process_id"],
     )
     details = json.loads(shown.stdout)
+    assert details["summary"]["status"] == "awaiting_human_decision"
+    assert details["summary"]["waiting_on"] == "human"
+    assert details["summary"]["human_decision"]["required"] is True
+    assert details["summary"]["human_decision"]["status"] == "awaiting_decision"
+    assert "Bot#2" in details["summary"]["human_decision"]["yes_meaning"]
+    assert details["summary"]["notification"]["mode"] == "record_only"
+    assert details["summary"]["supervisor_available"] is True
     notification_events = [event for event in details["events"] if event["event_type"] == "human_notification"]
     assert len(notification_events) == 1
     notification = notification_events[0]["payload"]["notification"]
@@ -218,6 +233,45 @@ def test_human_notification_dry_run_payload_is_redacted(tmp_path: Path) -> None:
     assert shown.returncode == 0, shown.stderr
     assert secret not in shown.stdout
     details = json.loads(shown.stdout)
+    assert details["summary"]["human_decision"]["required"] is True
+    assert details["summary"]["notification"]["mode"] == "dry_run"
     notification_events = [event for event in details["events"] if event["event_type"] == "human_notification"]
     assert len(notification_events) == 1
     assert notification_events[0]["payload"]["delivery"]["mode"] == "dry_run"
+    assert secret not in json.dumps(details["summary"], ensure_ascii=False)
+    assert secret not in json.dumps(details["timeline"], ensure_ascii=False)
+
+
+def test_process_events_command_outputs_redacted_jsonl(tmp_path: Path) -> None:
+    process_store = tmp_path / "process.db"
+    supervisor_store = tmp_path / "supervisor.db"
+    secret = "tok_" + "B" * 32
+    result = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "run",
+        "--task",
+        f"Change python code and deploy production with API_KEY='{secret}'",
+        "--bot2-status",
+        "NEEDS_HUMAN",
+        "--notification-dry-run",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+
+    events = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "events",
+        payload["process_id"],
+    )
+    assert events.returncode == 0, events.stderr
+    assert secret not in events.stdout
+    lines = [json.loads(line) for line in events.stdout.splitlines() if line.strip()]
+    assert {line["event_type"] for line in lines} >= {"routed", "bot2_verdict", "human_notification"}
