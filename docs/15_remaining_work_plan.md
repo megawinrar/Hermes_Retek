@@ -231,7 +231,7 @@ Acceptance:
 
 ## Stage 2 Battle Suite
 
-Status: not run after all remaining P1 work.
+Status: deterministic repository runner implemented and passing locally.
 
 Cases:
 
@@ -245,6 +245,12 @@ Cases:
 8. Bad Bot#2 JSON retry/fail-closed.
 9. Human disagreement with visible Yes/No.
 10. DevOps gate blocked before approval.
+
+Runner:
+
+```bash
+scripts/stage2_battle_suite.py
+```
 
 Acceptance:
 

@@ -27,6 +27,7 @@ def test_scripts_compile() -> None:
         SCRIPTS / "supervisor_common.py",
         SCRIPTS / "dual_bot_lab.py",
         SCRIPTS / "dual_bot_suite.py",
+        SCRIPTS / "stage2_battle_suite.py",
     ]
     with tempfile.TemporaryDirectory() as tmp:
         for script in scripts:
