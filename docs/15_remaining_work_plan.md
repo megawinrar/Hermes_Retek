@@ -287,6 +287,25 @@ Acceptance:
 - secret writes are blocked before approval;
 - synthetic token-like values are redacted from stdout, JSON, and Markdown reports.
 
+## Bot#1/Bot#2 Supervisor Transcript
+
+Status: transcript command added for process debugging.
+
+Runner:
+
+```bash
+scripts/process_orchestrator.py transcript <process_id>
+```
+
+The transcript shows:
+
+- Router route;
+- Bot#1 result;
+- Tester evidence;
+- Bot#2 verdict and session id;
+- Supervisor human-gate message, notification payload, and delivery mode;
+- audit event names without exposing secrets.
+
 Runner:
 
 ```bash

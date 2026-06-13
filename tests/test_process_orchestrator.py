@@ -81,6 +81,58 @@ def test_process_reject_creates_human_escalation(tmp_path: Path) -> None:
     assert payload["route"]["task_level"] == "L4"
 
 
+def test_process_transcript_shows_bot1_bot2_and_human_gate(tmp_path: Path) -> None:
+    process_store = tmp_path / "process.db"
+    supervisor_store = tmp_path / "supervisor.db"
+    bot1_result = "Bot#1 proposal: change supplier import, add tests, wait for deploy approval."
+    result = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "run",
+        "--task",
+        "Change CRM supplier import and deploy to production server",
+        "--acceptance",
+        "Need Bot#1/Bot#2 transcript",
+        "--bot1-result",
+        bot1_result,
+        "--evidence",
+        "tests=not_run; rollback=restore previous import script",
+        "--bot2-status",
+        "REJECT",
+        "--notification-dry-run",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+
+    transcript = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "transcript",
+        payload["process_id"],
+    )
+    assert transcript.returncode == 0, transcript.stderr
+    data = json.loads(transcript.stdout)
+    assert data["status"] == "awaiting_human_decision"
+    by_actor = {item["actor"]: item for item in data["conversation"]}
+    assert by_actor["bot1"]["content"] == bot1_result
+    assert by_actor["tester"]["content"] == "tests=not_run; rollback=restore previous import script"
+    assert by_actor["bot2"]["status"] == "REJECT"
+    assert by_actor["bot2"]["content"]["summary"] == "Dry Bot#2 verdict: REJECT"
+    assert data["human_gate"]["required"] is True
+    assert data["human_gate"]["status"] == "awaiting_decision"
+    assert "Версия Bot#1" in data["human_gate"]["message"]
+    assert data["human_gate"]["delivery"]["mode"] == "dry_run"
+    assert {run["role"] for run in data["audit"]["role_runs"]} == {"bot1", "tester", "bot2"}
+
+
 def test_route_command_outputs_process_contract(tmp_path: Path) -> None:
     result = run_cli(
         sys.executable,
