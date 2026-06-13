@@ -75,3 +75,12 @@ def test_migration_plan_is_l3_not_deploy_gate() -> None:
     assert route["task_type"] == "database_migration_plan"
     assert route["review_required"] is True
     assert route["human_gate_required"] is False
+
+
+def test_migration_write_has_specific_l4_route() -> None:
+    route = classify_task("Apply database migration and write schema rollback evidence")
+    assert route["task_level"] == "L4"
+    assert route["task_type"] == "database_migration_change"
+    assert route["risk_level"] == "high"
+    assert route["review_required"] is True
+    assert route["human_gate_required"] is True

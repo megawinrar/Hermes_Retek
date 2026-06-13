@@ -155,10 +155,10 @@ def classify_task(task: str) -> dict[str, Any]:
         level, task_type, reason = "L0", "command_or_status", "Command/status can run without LLM."
     elif github_lookup:
         level, task_type, reason = "L2", "github_lookup", "Read-only GitHub lookup is not a code change."
-    elif git_write:
-        level, task_type, reason = "L4", "git_write_or_deploy", "Git push/merge/deploy is an external write."
     elif migration_write:
         level, task_type, reason = "L4", "database_migration_change", "Migration changes require code/data gate and rollback evidence."
+    elif git_write:
+        level, task_type, reason = "L4", "git_write_or_deploy", "Git push/merge/deploy is an external write."
     elif migration:
         level, task_type, reason = "L3", "database_migration_plan", "Migration planning requires architecture, rollback, and review."
     elif code and (high_risk or "multi" in lower or "deploy" in lower or "депло" in lower):
