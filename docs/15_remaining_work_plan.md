@@ -4,13 +4,20 @@ Date: 2026-06-13
 
 ## Recommended Next Step
 
-Next implementation target: `P1 Human Notification / Telegram DevLog`.
+Next implementation target: `P1 Runtime-Compatible Hermes Integration`.
 
 Reason:
 
-- The process can already produce `awaiting_human_decision`.
-- The user now needs to see Bot#1/Bot#2 disagreement in real time.
-- This makes the system observable and usable, not only testable in SQLite/JSON.
+- The live Telegram agent runs inside the `hermes-agent` Docker container.
+- The Retek scripts are host-side Supervisor/Bot#2/process gates, not imported
+  by the container.
+- Future work should target the correct layer first: `AGENTS.md`/skills/config
+  for agent behavior, scripts/configs for host-side gates, and `hermes-core`
+  only for upstream-aware runtime changes.
+
+Reference:
+
+- `docs/17_hermes_runtime_integration.md`
 
 ## P0: Rotate Exposed Secrets
 
