@@ -52,7 +52,7 @@ CORRECT_KEY="$(load_bothub_key)"
 if [ -f "$CONFIG_PATH" ]; then
   sed -i "s|default: yandexgpt/latest|default: $CORRECT_MODEL|" "$CONFIG_PATH"
   sed -i "s|base_url: http://hermes-yandex-proxy:8000/v1|base_url: $CORRECT_URL|" "$CONFIG_PATH"
-  sed -i "s|api_key: sk-hermes-retek-proxy-2026|api_key: $CORRECT_KEY|" "$CONFIG_PATH"
+  sed -i -E "s|api_key: .*|api_key: $CORRECT_KEY|" "$CONFIG_PATH"
   echo "[$(date)] config.yaml repaired"
 fi
 if [ -f "$STATE_DB" ]; then
