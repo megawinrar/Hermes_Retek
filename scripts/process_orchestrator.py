@@ -12,6 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from human_notification import (
+    build_human_notification_payload,
+    dispatch_human_notification,
+    redact_payload,
+)
 from supervisor_common import (
     BOT2_VERDICT_STATUSES,
     add_event as add_supervisor_event,
@@ -91,6 +96,7 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
 
 
 def add_process_event(pid: str, event_type: str, payload: dict[str, Any], *, store_path: Path | str | None = None) -> None:
+    payload = redact_payload(payload)
     with connect(store_path) as con:
         con.execute(
             "INSERT INTO process_events(process_id, created_at, event_type, payload_json) VALUES (?, ?, ?, ?)",
@@ -314,6 +320,8 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
     verdict: dict[str, Any] = {}
     report_path = ""
     human_message = ""
+    human_notification: dict[str, Any] = {}
+    notification_delivery: dict[str, Any] = {}
 
     if route_requires_bot1(route):
         if args.live_dual and route_requires_bot2(route):
@@ -394,10 +402,43 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
     update_task(supervisor_task_id, status=final_status, store_path=args.supervisor_store)
     if final_status == "awaiting_human_decision":
         task_state = get_task(supervisor_task_id, store_path=args.supervisor_store)
-        create_human_escalation(task_state, bot2_session_id, verdict, store_path=args.supervisor_store)
-        human_message = escalation_text(task_state, verdict)
-        add_supervisor_event(supervisor_task_id, "human_escalation", {"message": human_message}, store_path=args.supervisor_store)
-        add_assignment(pid, "supervisor", "human_decision", "waiting", {"message": human_message}, store_path=args.process_store)
+        safe_task_state = redact_payload(task_state)
+        safe_verdict = redact_payload(verdict)
+        create_human_escalation(safe_task_state, bot2_session_id, safe_verdict, store_path=args.supervisor_store)
+        human_message = escalation_text(safe_task_state, safe_verdict)
+        human_notification = build_human_notification_payload(
+            process_id=pid,
+            supervisor_task_id=supervisor_task_id,
+            task=safe_task_state,
+            route=route,
+            bot2_session_id=bot2_session_id,
+            verdict=safe_verdict,
+        )
+        notification_delivery = dispatch_human_notification(
+            human_notification,
+            telegram=args.notify_telegram,
+            dry_run=args.notification_dry_run,
+        )
+        add_supervisor_event(
+            supervisor_task_id,
+            "human_escalation",
+            {"message": human_message, "notification": human_notification, "delivery": notification_delivery},
+            store_path=args.supervisor_store,
+        )
+        add_process_event(
+            pid,
+            "human_notification",
+            {"notification": human_notification, "delivery": notification_delivery},
+            store_path=args.process_store,
+        )
+        add_assignment(
+            pid,
+            "supervisor",
+            "human_decision",
+            "waiting",
+            {"message": human_message, "notification_event": "human_notification", "delivery": notification_delivery},
+            store_path=args.process_store,
+        )
 
     update_process(pid, status=final_status, current_phase=final_status, store_path=args.process_store)
     return {
@@ -409,6 +450,8 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
         "bot2_verdict": verdict,
         "report_path": report_path,
         "human_message": human_message,
+        "human_notification": human_notification,
+        "notification_delivery": notification_delivery,
     }
 
 
@@ -433,7 +476,7 @@ def process_details(pid: str, *, store_path: Path | str | None = None) -> dict[s
         row.pop("payload_json", None)
     for row in data["assignments"]:
         row.pop("output_json", None)
-    return data
+    return redact_payload(data)
 
 
 def cmd_route(args: argparse.Namespace) -> None:
@@ -469,6 +512,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--bot2-model", default="gpt-5.3-codex")
     run.add_argument("--timeout", type=int, default=180)
     run.add_argument("--max-tokens", type=int, default=1400)
+    run.add_argument("--notify-telegram", action="store_true", help="Send human-gate notification to Telegram via DevLog settings")
+    run.add_argument("--notification-dry-run", action="store_true", help="Build and record the notification payload without network delivery")
     run.set_defaults(func=cmd_run)
 
     show = sub.add_parser("show")
