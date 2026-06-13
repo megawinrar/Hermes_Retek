@@ -262,6 +262,31 @@ Cases:
 9. Human disagreement with visible Yes/No.
 10. DevOps gate blocked before approval.
 
+## Retek Real Task Dogfood Suite
+
+Status: deterministic repository runner added for Retek-shaped tasks.
+
+Runner:
+
+```bash
+scripts/real_task_suite.py --report-dir reports/real_tasks
+```
+
+Current cases:
+
+1. Retek CRM supplier price/deadline/risk comparison.
+2. Retek CRM SQLite -> Postgres migration plan.
+3. Unsafe push/restart without tests.
+4. Human-gate task containing a synthetic token-like value.
+5. Secret write attempt through shell command.
+
+Acceptance:
+
+- Russian Retek tasks route to the expected process level/risk;
+- unsafe deploy waits for human;
+- secret writes are blocked before approval;
+- synthetic token-like values are redacted from stdout, JSON, and Markdown reports.
+
 Runner:
 
 ```bash

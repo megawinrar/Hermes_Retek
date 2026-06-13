@@ -28,6 +28,7 @@ def test_scripts_compile() -> None:
         SCRIPTS / "dual_bot_lab.py",
         SCRIPTS / "dual_bot_suite.py",
         SCRIPTS / "stage2_battle_suite.py",
+        SCRIPTS / "real_task_suite.py",
         SCRIPTS / "skill_index.py",
         SCRIPTS / "secret_audit.py",
         SCRIPTS / "secret_patterns.py",
