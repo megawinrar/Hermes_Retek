@@ -50,7 +50,10 @@ def create_approved_task(store: Path, *, approved_action: str = "execute") -> st
 
 
 def test_gateway_blocks_git_push_without_supervisor_task(tmp_path: Path) -> None:
-    store = tmp_path / "supervisor.db"
+    store_parent = tmp_path / "no-access"
+    store_parent.mkdir()
+    store_parent.chmod(0o500)
+    store = store_parent / "supervisor.db"
     result = run_cli(
         sys.executable,
         str(SCRIPTS / "tool_gateway.py"),

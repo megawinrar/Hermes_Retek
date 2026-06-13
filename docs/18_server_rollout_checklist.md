@@ -80,7 +80,7 @@ Run compile checks first:
 
 ```bash
 cd /opt/hermes-assistant
-python3 -m py_compile scripts/bot2_gate.py scripts/tool_gateway.py scripts/supervisor_common.py scripts/process_orchestrator.py
+sudo python3 -m py_compile scripts/bot2_gate.py scripts/tool_gateway.py scripts/supervisor_common.py scripts/process_orchestrator.py
 ```
 
 Check Bot#2 fail-closed path without Telegram:
@@ -106,13 +106,22 @@ Expected: non-zero exit with `allowed=false`.
 Check process dashboard and JSONL events:
 
 ```bash
-RUN_JSON=$(python3 scripts/process_orchestrator.py run \
+SMOKE_DIR=$(mktemp -d)
+RUN_JSON=$(python3 scripts/process_orchestrator.py \
+  --process-store "$SMOKE_DIR/process.db" \
+  --supervisor-store "$SMOKE_DIR/supervisor.db" \
+  run \
   --task "merge PR #12, push to main, and deploy production" \
   --bot2-status APPROVE \
   --notification-dry-run)
 PID=$(printf "%s" "$RUN_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["process_id"])')
-python3 scripts/process_orchestrator.py show "$PID"
-python3 scripts/process_orchestrator.py events "$PID"
+python3 scripts/process_orchestrator.py \
+  --process-store "$SMOKE_DIR/process.db" \
+  --supervisor-store "$SMOKE_DIR/supervisor.db" \
+  show "$PID"
+python3 scripts/process_orchestrator.py \
+  --process-store "$SMOKE_DIR/process.db" \
+  events "$PID"
 ```
 
 Expected:

@@ -261,13 +261,14 @@ def gateway_decision(
     classification = classify_command(argv)
     decision = approval_decision(task_id=task_id, classification=classification, store_path=store_path)
     resources = resources_for_risks(list(classification.get("risks") or []))
-    conflicts = lock_conflicts(resources, task_id=task_id, store_path=store_path)
-    if decision.get("allowed") and conflicts:
-        decision = {
-            "allowed": False,
-            "reason": "resource_lock_conflict",
-            "lock_conflicts": conflicts,
-        }
+    if decision.get("allowed"):
+        conflicts = lock_conflicts(resources, task_id=task_id, store_path=store_path)
+        if conflicts:
+            decision = {
+                "allowed": False,
+                "reason": "resource_lock_conflict",
+                "lock_conflicts": conflicts,
+            }
     payload = redact_payload(
         {
             "task_id": task_id,
