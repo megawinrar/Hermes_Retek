@@ -14,7 +14,13 @@ def iter_scanned_files() -> list[Path]:
     files: list[Path] = []
     for folder in [ROOT / "scripts", ROOT / "configs"]:
         if folder.exists():
-            files.extend(path for path in folder.rglob("*") if path.is_file())
+            files.extend(
+                path
+                for path in folder.rglob("*")
+                if path.is_file()
+                and "__pycache__" not in path.parts
+                and path.suffix not in {".pyc", ".pyo"}
+            )
     return files
 
 
