@@ -3,39 +3,10 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
+from secret_patterns import SECRET_PATTERNS, redact_payload, redact_text
 from supervisor_common import YES_MEANING, NO_MEANING
-
-SECRET_PATTERNS = [
-    re.compile(r"eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}"),
-    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
-    re.compile(r"glpat-[A-Za-z0-9_-]{20,}"),
-    re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{30,}\b"),
-    re.compile(r"Authorization:\s*Bearer\s+[A-Za-z0-9_.-]{20,}", re.I),
-    re.compile(r"\b[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD)\s*=\s*['\"]?[A-Za-z0-9_.:-]{20,}['\"]?", re.I),
-    re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----.*?-----END (?:RSA |OPENSSH |EC )?PRIVATE KEY-----", re.S),
-]
-
-
-def redact_text(text: str) -> str:
-    redacted = text
-    for pattern in SECRET_PATTERNS:
-        redacted = pattern.sub("[REDACTED]", redacted)
-    return redacted
-
-
-def redact_payload(value: Any) -> Any:
-    if isinstance(value, str):
-        return redact_text(value)
-    if isinstance(value, list):
-        return [redact_payload(item) for item in value]
-    if isinstance(value, tuple):
-        return [redact_payload(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): redact_payload(item) for key, item in value.items()}
-    return value
 
 
 def _join_items(items: Any, default: str) -> str:

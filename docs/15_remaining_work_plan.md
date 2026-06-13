@@ -22,12 +22,15 @@ Reference:
 
 ## P0: Rotate Exposed Secrets
 
-Status: still required.
+Status: repository audit tooling added; provider-side rotation still required.
 
 Why:
 
 - Current tracked files no longer contain the hardcoded key.
 - But the old key existed in git history, so it must be treated as compromised.
+- `scripts/secret_audit.py --current --json` currently returns zero findings.
+- `scripts/secret_audit.py --history --paths scripts configs AGENTS.md skills --json`
+  reports historical metadata-only findings for the old key.
 
 Tasks:
 
@@ -41,6 +44,8 @@ Tasks:
 - Restrict file permissions.
 - Verify `scripts/check_api_limits.sh` works via env/secret file.
 - Decide whether git history rewrite is needed or revoke/rotate is enough.
+- Use `docs/19_secret_rotation_runbook.md` and `scripts/secret_audit.py` to
+  audit current files and reachable git history without printing secret values.
 
 Acceptance:
 
