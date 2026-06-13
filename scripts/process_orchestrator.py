@@ -280,9 +280,14 @@ def live_dual_result(
         )
         lab.add_message(rid, "Bot#2-repair", bot2_model, bot2_repair, {"usage": bot2_repair_raw.get("usage", {})})
         repaired_verdict = parse_verdict(bot2_repair)
+        repaired_verdict["repair_attempted"] = True
         if repaired_verdict.get("status") != INVALID_BOT2_STATUS:
+            repaired_verdict["repair_status"] = "repaired"
             verdict = repaired_verdict
             bot2 = f"{bot2}\n\n## Bot#2 JSON Repair\n\n{bot2_repair}"
+        else:
+            verdict["repair_attempted"] = True
+            verdict["repair_status"] = "failed_closed"
     report = lab.write_report(
         run_id_value=rid,
         task=task,

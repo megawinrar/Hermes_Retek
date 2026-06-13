@@ -88,6 +88,8 @@ Current behavior:
   test case.
 - dual-bot lab run metadata, stored messages, CLI previews, and Markdown reports
   are redacted before persistence.
+- repaired live verdicts include `repair_attempted` and `repair_status`; failed
+  repair attempts remain fail-closed and auditable.
 
 Next behavior:
 
