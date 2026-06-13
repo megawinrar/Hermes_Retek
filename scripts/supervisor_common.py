@@ -44,6 +44,8 @@ ESCALATION_STATUSES = {
     "REFACTORING_REQUIRED",
 }
 BLOCKED_STATUSES = {"BLOCKED_BY_POLICY", "LOOP_DETECTED"}
+INVALID_BOT2_STATUS = "INVALID_BOT2_OUTPUT"
+BOT2_VERDICT_STATUSES = APPROVED_STATUSES | ESCALATION_STATUSES | BLOCKED_STATUSES | {INVALID_BOT2_STATUS}
 
 YES_MEANING = "Agree with Bot#2 and return Bot#1 to fixes."
 NO_MEANING = "Reject Bot#2 objection and accept Bot#1 result as-is."
@@ -316,12 +318,48 @@ def normalize_verdict_status(verdict: dict[str, Any]) -> str:
 def supervisor_status_for_verdict(verdict: dict[str, Any]) -> str:
     status = normalize_verdict_status(verdict)
     if status in APPROVED_STATUSES:
+        if str(verdict.get("approved_action") or "execute").lower() == "refuse":
+            return "approved_refusal"
         return "approved"
     if status in ESCALATION_STATUSES:
         return "awaiting_human_decision"
     if status in BLOCKED_STATUSES:
         return "blocked"
     return "failed"
+
+
+def invalid_bot2_verdict(reason: str, raw: str = "") -> dict[str, Any]:
+    return {
+        "status": INVALID_BOT2_STATUS,
+        "summary": "Bot#2 output failed the machine-readable verdict contract.",
+        "risks": [reason],
+        "required_fixes": ["Retry Bot#2 with the strict JSON contract or inspect the transcript."],
+        "confidence": 0.0,
+        "raw_chars": len(raw or ""),
+    }
+
+
+def _strip_single_json_fence(raw: str) -> str:
+    stripped = raw.strip()
+    match = re.fullmatch(r"```(?:json)?\s*(\{.*\})\s*```", stripped, flags=re.S)
+    return match.group(1).strip() if match else stripped
+
+
+def parse_bot2_verdict(raw: str) -> dict[str, Any]:
+    payload = _strip_single_json_fence(raw)
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return invalid_bot2_verdict("invalid_json", raw)
+    if not isinstance(data, dict):
+        return invalid_bot2_verdict("json_not_object", raw)
+    status = normalize_verdict_status(data)
+    if status not in BOT2_VERDICT_STATUSES or status == INVALID_BOT2_STATUS:
+        return invalid_bot2_verdict(f"unknown_status:{status}", raw)
+    data["status"] = status
+    if status in APPROVED_STATUSES:
+        data.setdefault("approved_action", "execute")
+    return data
 
 
 def escalation_text(task: dict[str, Any], verdict: dict[str, Any]) -> str:
@@ -435,18 +473,14 @@ def python_script_cmd(path: Path) -> list[str]:
 
 
 def extract_json_object(raw: str) -> dict[str, Any]:
-    stripped = raw.strip()
+    stripped = _strip_single_json_fence(raw)
     try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        pass
-    for match in re.finditer(r"\{", raw):
-        candidate = raw[match.start() :].strip()
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-    raise ValueError("no JSON object found in subprocess output")
+        data = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise ValueError("subprocess output must be exactly one JSON object") from exc
+    if not isinstance(data, dict):
+        raise ValueError("subprocess output must be a JSON object")
+    return data
 
 
 def call_bot2_gate(
@@ -481,6 +515,7 @@ def call_bot2_gate(
     verdict = data.get("verdict") or {}
     if not session_id or not isinstance(verdict, dict):
         raise ValueError(f"bot2_gate output missing session_id/verdict: {raw.strip()}")
+    verdict = parse_bot2_verdict(json.dumps(verdict, ensure_ascii=False))
     return session_id, verdict, raw
 
 

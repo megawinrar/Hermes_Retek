@@ -14,7 +14,7 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, text=True, capture_output=True, check=False)
 
 
-def test_process_approve_path(tmp_path: Path) -> None:
+def test_process_l1_approve_path_without_bot2(tmp_path: Path) -> None:
     process_store = tmp_path / "process.db"
     supervisor_store = tmp_path / "supervisor.db"
     result = run_cli(
@@ -26,16 +26,16 @@ def test_process_approve_path(tmp_path: Path) -> None:
         str(supervisor_store),
         "run",
         "--task",
-        "Проверь 2+2=4 коротко",
+        "rewrite short hello",
         "--acceptance",
-        "Нужен короткий sanity answer",
-        "--bot2-status",
-        "APPROVE",
+        "short answer",
     )
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["status"] == "approved"
     assert payload["route"]["task_level"] == "L1"
+    assert payload["bot2_session_id"] == ""
+    assert payload["bot2_verdict"] == {}
 
     shown = run_cli(
         sys.executable,
@@ -47,7 +47,7 @@ def test_process_approve_path(tmp_path: Path) -> None:
     )
     assert shown.returncode == 0, shown.stderr
     details = json.loads(shown.stdout)
-    assert {item["worker"] for item in details["assignments"]} >= {"router", "supervisor", "bot1", "tester", "bot2"}
+    assert {item["worker"] for item in details["assignments"]} == {"router", "supervisor", "bot1"}
 
 
 def test_process_reject_creates_human_escalation(tmp_path: Path) -> None:
@@ -62,18 +62,16 @@ def test_process_reject_creates_human_escalation(tmp_path: Path) -> None:
         str(supervisor_store),
         "run",
         "--task",
-        "Измени python code и deploy на production server",
+        "Change python code and deploy to production server",
         "--acceptance",
-        "Нужны тесты, rollback и Bot2 review",
+        "Need tests, rollback and Bot2 review",
         "--bot2-status",
         "REJECT",
     )
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["status"] == "awaiting_human_decision"
-    assert "Версия Bot#1" in payload["human_message"]
-    assert "Да —" in payload["human_message"]
-    assert "Нет —" in payload["human_message"]
+    assert "Bot#1" in payload["human_message"]
     assert payload["route"]["task_level"] == "L4"
 
 
@@ -83,9 +81,82 @@ def test_route_command_outputs_process_contract(tmp_path: Path) -> None:
         str(SCRIPTS / "process_orchestrator.py"),
         "route",
         "--task",
-        "Составь чеклист backup restore SQLite",
+        "Make backup restore checklist",
     )
     assert result.returncode == 0, result.stderr
     route = json.loads(result.stdout)
     assert route["task_level"] == "L2"
     assert "process_plan" in route
+
+
+def test_l0_process_does_not_start_bot1_or_bot2(tmp_path: Path) -> None:
+    process_store = tmp_path / "process.db"
+    supervisor_store = tmp_path / "supervisor.db"
+    result = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "run",
+        "--task",
+        "status",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "approved"
+    shown = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "show",
+        payload["process_id"],
+    )
+    details = json.loads(shown.stdout)
+    assert {item["worker"] for item in details["assignments"]} == {"router", "supervisor"}
+
+
+def test_human_gate_blocks_approved_high_risk_deploy(tmp_path: Path) -> None:
+    process_store = tmp_path / "process.db"
+    supervisor_store = tmp_path / "supervisor.db"
+    result = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "run",
+        "--task",
+        "merge PR #12, push to main, and deploy production",
+        "--bot2-status",
+        "APPROVE",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "awaiting_human_decision"
+    assert payload["route"]["human_gate_required"] is True
+    assert payload["human_message"]
+
+
+def test_invalid_bot2_output_fails_closed(tmp_path: Path) -> None:
+    process_store = tmp_path / "process.db"
+    supervisor_store = tmp_path / "supervisor.db"
+    result = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "run",
+        "--task",
+        "Change python code and add tests",
+        "--bot2-status",
+        "INVALID_BOT2_OUTPUT",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "failed"

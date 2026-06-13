@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
-"""Process-oriented Hermes Supervisor MVP.
-
-This is not a daemon yet. It is the executable contract that can later be split
-into systemd workers or Redis consumers while preserving the same state model.
-"""
+"""Process-oriented Hermes Supervisor MVP."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import re
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -18,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from supervisor_common import (
+    BOT2_VERDICT_STATUSES,
     add_event as add_supervisor_event,
     add_role_run,
     create_human_escalation,
@@ -26,6 +22,7 @@ from supervisor_common import (
     escalation_text,
     get_task,
     link_bot2,
+    parse_bot2_verdict,
     supervisor_status_for_verdict,
     update_task,
 )
@@ -161,22 +158,21 @@ def create_process_run(
 
 
 def parse_verdict(text: str) -> dict[str, Any]:
-    fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.S)
-    candidates = fenced + re.findall(r"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})", text, flags=re.S)
-    for candidate in candidates:
-        try:
-            data = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(data, dict) and "status" in data:
-            return data
-    return {
-        "status": "NEEDS_HUMAN",
-        "summary": "Bot#2 did not return machine-readable JSON.",
-        "risks": ["unparseable_bot2_output"],
-        "required_fixes": ["Inspect Bot#2 transcript."],
-        "confidence": 0.0,
-    }
+    return parse_bot2_verdict(text)
+
+
+def route_requires_bot1(route: dict[str, Any]) -> bool:
+    return route.get("task_level") != "L0" and "bot1" in route.get("process_plan", [])
+
+
+def route_requires_tester(route: dict[str, Any]) -> bool:
+    return "tester" in route.get("process_plan", []) and bool(
+        route.get("review_required") or route.get("task_level") in {"L3", "L4"}
+    )
+
+
+def route_requires_bot2(route: dict[str, Any]) -> bool:
+    return bool(route.get("review_required") or route.get("human_gate_required") or route.get("task_level") in {"L3", "L4"})
 
 
 def dry_bot1_result(task: str, acceptance: str, route: dict[str, Any]) -> str:
@@ -193,19 +189,55 @@ def dry_bot1_result(task: str, acceptance: str, route: dict[str, Any]) -> str:
 
 def dry_verdict(status: str) -> dict[str, Any]:
     normalized = status.upper()
-    risks = [] if normalized == "APPROVE" else ["dry_run_risk_for_human_review"]
-    fixes = [] if normalized == "APPROVE" else ["Resolve Bot#1/Bot#2 disagreement or ask user Да/Нет."]
+    approved = normalized in {"APPROVE", "APPROVE_WITH_EVIDENCE"}
     return {
         "status": normalized,
         "summary": f"Dry Bot#2 verdict: {normalized}",
+        "approved_action": "execute" if approved else "needs_human",
         "evidence_checked": ["dry-run evidence package"],
-        "risks": risks,
-        "required_fixes": fixes,
-        "confidence": 0.9 if normalized == "APPROVE" else 0.65,
+        "risks": [] if approved else ["dry_run_risk_for_human_review"],
+        "required_fixes": [] if approved else ["Resolve Bot#1/Bot#2 disagreement or ask user Da/Net."],
+        "confidence": 0.9 if approved else 0.0 if normalized == "INVALID_BOT2_OUTPUT" else 0.65,
     }
 
 
-def live_dual_result(task: str, acceptance: str, *, bot1_model: str, bot2_model: str, max_tokens: int, timeout: int) -> tuple[str, str, dict[str, Any], str]:
+def live_bot1_result(task: str, acceptance: str, *, bot1_model: str, max_tokens: int, timeout: int) -> tuple[str, str, str]:
+    import dual_bot_lab as lab
+
+    cfg = lab.bothub_config()
+    rid = lab.run_id()
+    lab.add_run(rid, task, acceptance, bot1_model, "")
+    bot1, bot1_raw = lab.call_chat(
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        model=bot1_model,
+        messages=lab.bot1_messages(task, acceptance),
+        max_tokens=max_tokens,
+        timeout=timeout,
+    )
+    lab.add_message(rid, "Bot#1", bot1_model, bot1, {"usage": bot1_raw.get("usage", {})})
+    report = lab.write_report(
+        run_id_value=rid,
+        task=task,
+        acceptance=acceptance,
+        bot1_model=bot1_model,
+        bot1_result=bot1,
+        bot2_model="not-required",
+        bot2_result="Bot#2 was not required by route policy.",
+    )
+    lab.update_run(rid, "completed", str(report))
+    return bot1, rid, str(report)
+
+
+def live_dual_result(
+    task: str,
+    acceptance: str,
+    *,
+    bot1_model: str,
+    bot2_model: str,
+    max_tokens: int,
+    timeout: int,
+) -> tuple[str, str, dict[str, Any], str]:
     import dual_bot_lab as lab
 
     cfg = lab.bothub_config()
@@ -242,6 +274,17 @@ def live_dual_result(task: str, acceptance: str, *, bot1_model: str, bot2_model:
     return bot1, rid, parse_verdict(bot2), str(report)
 
 
+def route_policy_verdict() -> dict[str, Any]:
+    return {
+        "status": "NEEDS_HUMAN",
+        "summary": "Route policy requires explicit human approval before this action can continue.",
+        "risks": ["route_human_gate_required"],
+        "required_fixes": ["Ask the user for Da/Net before DevOps or external write."],
+        "confidence": 1.0,
+        "approved_action": "needs_human",
+    }
+
+
 def run_process(args: argparse.Namespace) -> dict[str, Any]:
     task = args.task.strip()
     acceptance = args.acceptance.strip()
@@ -257,44 +300,98 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
     )
     add_process_event(pid, "routed", route, store_path=args.process_store)
     add_assignment(pid, "router", "intake", "completed", route, store_path=args.process_store)
-
     add_assignment(pid, "supervisor", "create_contract", "completed", supervisor_created, store_path=args.process_store)
-    add_supervisor_event(supervisor_task_id, "process_router_attached", {"process_id": pid, "route": route}, store_path=args.supervisor_store)
+    add_supervisor_event(
+        supervisor_task_id,
+        "process_router_attached",
+        {"process_id": pid, "route": route},
+        store_path=args.supervisor_store,
+    )
     update_process(pid, status="running", current_phase="bot1", store_path=args.process_store)
     update_task(supervisor_task_id, status="running", store_path=args.supervisor_store)
 
-    if args.live_dual:
-        bot1_result, bot2_session_id, verdict, report_path = live_dual_result(
-            task,
-            acceptance,
-            bot1_model=args.bot1_model,
-            bot2_model=args.bot2_model,
-            max_tokens=args.max_tokens,
-            timeout=args.timeout,
+    bot2_session_id = ""
+    verdict: dict[str, Any] = {}
+    report_path = ""
+    human_message = ""
+
+    if route_requires_bot1(route):
+        if args.live_dual and route_requires_bot2(route):
+            bot1_result, bot2_session_id, verdict, report_path = live_dual_result(
+                task,
+                acceptance,
+                bot1_model=args.bot1_model,
+                bot2_model=args.bot2_model,
+                max_tokens=args.max_tokens,
+                timeout=args.timeout,
+            )
+        elif args.live_dual:
+            bot1_result, bot2_session_id, report_path = live_bot1_result(
+                task,
+                acceptance,
+                bot1_model=args.bot1_model,
+                max_tokens=args.max_tokens,
+                timeout=args.timeout,
+            )
+        else:
+            bot1_result = args.bot1_result or dry_bot1_result(task, acceptance, route)
+            if route_requires_bot2(route):
+                bot2_session_id = f"{pid}-bot2-dry"
+                verdict = dry_verdict(args.bot2_status)
+        evidence = args.evidence or bot1_result
+        update_task(supervisor_task_id, bot1_result=bot1_result, evidence=evidence, store_path=args.supervisor_store)
+        add_assignment(pid, "bot1", "execution", "completed", {"result_chars": len(bot1_result)}, store_path=args.process_store)
+        add_role_run(
+            supervisor_task_id,
+            "bot1",
+            "completed",
+            "Bot#1 process completed.",
+            {"process_id": pid},
+            store_path=args.supervisor_store,
         )
+        if route_requires_tester(route):
+            add_assignment(pid, "tester", "verification", "completed", {"evidence_chars": len(evidence)}, store_path=args.process_store)
+            add_role_run(
+                supervisor_task_id,
+                "tester",
+                "completed",
+                "Tester evidence package completed.",
+                {"process_id": pid},
+                store_path=args.supervisor_store,
+            )
     else:
         bot1_result = args.bot1_result or dry_bot1_result(task, acceptance, route)
-        bot2_session_id = f"{pid}-bot2-dry"
-        verdict = dry_verdict(args.bot2_status)
-        report_path = ""
+        evidence = bot1_result
+        update_task(supervisor_task_id, bot1_result=bot1_result, evidence=evidence, store_path=args.supervisor_store)
+        add_process_event(pid, "no_llm_route_completed", {"route": route}, store_path=args.process_store)
 
-    evidence = args.evidence or bot1_result
-    update_task(supervisor_task_id, bot1_result=bot1_result, evidence=evidence, store_path=args.supervisor_store)
-    add_assignment(pid, "bot1", "execution", "completed", {"result_chars": len(bot1_result)}, store_path=args.process_store)
-    add_role_run(supervisor_task_id, "bot1", "completed", "Bot#1 process completed.", {"process_id": pid}, store_path=args.supervisor_store)
+    needs_bot2 = route_requires_bot2(route)
+    final_status = supervisor_status_for_verdict(verdict) if needs_bot2 else "approved"
+    if route.get("human_gate_required") and final_status in {"approved", "approved_refusal"}:
+        verdict = route_policy_verdict()
+        final_status = "awaiting_human_decision"
+        if needs_bot2 and not bot2_session_id:
+            bot2_session_id = f"{pid}-route-policy"
 
-    add_assignment(pid, "tester", "verification", "completed", {"evidence_chars": len(evidence)}, store_path=args.process_store)
-    add_role_run(supervisor_task_id, "tester", "completed", "Tester evidence package completed.", {"process_id": pid}, store_path=args.supervisor_store)
+    if needs_bot2:
+        link_bot2(supervisor_task_id, bot2_session_id, verdict, store_path=args.supervisor_store)
+        add_assignment(pid, "bot2", "quality_gate", "completed", {"session_id": bot2_session_id, "verdict": verdict}, store_path=args.process_store)
+        add_role_run(
+            supervisor_task_id,
+            "bot2",
+            "completed",
+            f"Bot#2 verdict: {verdict.get('status')}",
+            {"process_id": pid, "verdict": verdict},
+            store_path=args.supervisor_store,
+        )
+        add_process_event(
+            pid,
+            "bot2_verdict",
+            {"bot2_session_id": bot2_session_id, "verdict": verdict, "supervisor_status": final_status},
+            store_path=args.process_store,
+        )
 
-    link_bot2(supervisor_task_id, bot2_session_id, verdict, store_path=args.supervisor_store)
-    add_assignment(pid, "bot2", "quality_gate", "completed", {"session_id": bot2_session_id, "verdict": verdict}, store_path=args.process_store)
-    add_role_run(supervisor_task_id, "bot2", "completed", f"Bot#2 verdict: {verdict.get('status')}", {"process_id": pid, "verdict": verdict}, store_path=args.supervisor_store)
-
-    final_status = supervisor_status_for_verdict(verdict)
     update_task(supervisor_task_id, status=final_status, store_path=args.supervisor_store)
-    add_process_event(pid, "bot2_verdict", {"bot2_session_id": bot2_session_id, "verdict": verdict, "supervisor_status": final_status}, store_path=args.process_store)
-
-    human_message = ""
     if final_status == "awaiting_human_decision":
         task_state = get_task(supervisor_task_id, store_path=args.supervisor_store)
         create_human_escalation(task_state, bot2_session_id, verdict, store_path=args.supervisor_store)
@@ -320,8 +417,14 @@ def process_details(pid: str, *, store_path: Path | str | None = None) -> dict[s
         run = con.execute("SELECT * FROM process_runs WHERE id=?", (pid,)).fetchone()
         if not run:
             raise SystemExit(f"process run not found: {pid}")
-        events = con.execute("SELECT created_at, event_type, payload_json FROM process_events WHERE process_id=? ORDER BY id", (pid,)).fetchall()
-        assignments = con.execute("SELECT created_at, worker, phase, status, output_json FROM process_assignments WHERE process_id=? ORDER BY id", (pid,)).fetchall()
+        events = con.execute(
+            "SELECT created_at, event_type, payload_json FROM process_events WHERE process_id=? ORDER BY id",
+            (pid,),
+        ).fetchall()
+        assignments = con.execute(
+            "SELECT created_at, worker, phase, status, output_json FROM process_assignments WHERE process_id=? ORDER BY id",
+            (pid,),
+        ).fetchall()
     data = dict(run)
     data["router"] = json.loads(data.pop("router_json"))
     data["events"] = [dict(row) | {"payload": json.loads(row["payload_json"])} for row in events]
@@ -360,7 +463,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--acceptance", default="Result must satisfy the task with concrete evidence and risk notes.")
     run.add_argument("--bot1-result", default="")
     run.add_argument("--evidence", default="")
-    run.add_argument("--bot2-status", default="APPROVE", choices=["APPROVE", "REJECT", "NEEDS_HUMAN"])
+    run.add_argument("--bot2-status", default="APPROVE", choices=sorted(BOT2_VERDICT_STATUSES))
     run.add_argument("--live-dual", action="store_true")
     run.add_argument("--bot1-model", default="deepseek-v4-flash")
     run.add_argument("--bot2-model", default="gpt-5.3-codex")

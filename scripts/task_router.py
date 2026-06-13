@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic Hermes task router for process orchestration.
-
-The LLM prompt in prompts/task_router_prompt.md is the policy source. This
-script is the executable MVP: cheap, deterministic, and easy to test.
-"""
+"""Deterministic Hermes task router for process orchestration."""
 
 from __future__ import annotations
 
@@ -82,16 +78,33 @@ PROCESS_PLAN: dict[str, list[str]] = {
 
 HIGH_RISK_RE = re.compile(
     r"\b(prod|production|deploy|server|token|secret|auth|permission|database|db|schema|"
-    r"docker|cron|env|payment|money|client|supplier|tender|security|api contract)\b|"
-    r"(прод|депло|сервер|токен|секрет|баз[аы] данных|схем|деньг|клиент|поставщик|тендер|безопас)",
+    r"docker|cron|env|payment|money|client|supplier|tender|security|api contract|price|deadline|main branch)\b|"
+    r"(прод|депло|сервер|токен|секрет|баз|схем|деньг|клиент|поставщик|цен|срок|безопас|гитхаб|пуш|мердж)",
     re.I,
 )
-CODE_RE = re.compile(r"\b(code|python|script|test|pytest|refactor|bug|diff|merge|github|ci|pipeline)\b|код|тест|рефактор|баг|скрипт|пайплайн", re.I)
-ARCH_RE = re.compile(r"\b(architecture|architect|strategy|design|multi-agent|agent|supervisor|process|worker)\b|архитект|стратег|агент|процесс", re.I)
-DOC_RE = re.compile(r"\b(document|pdf|excel|report|compare|analy[sz]e|checklist|summary)\b|документ|отч[её]т|сравн|чеклист|анализ", re.I)
-SIMPLE_RE = re.compile(r"\b(translate|rewrite|short|explain|sanity|2\+2|hello)\b|переведи|перепиши|коротк|объясни", re.I)
-COMMAND_RE = re.compile(r"^(status|list|show|logs?|health|date|time|tasks?)(\s|$)|^(статус|логи|покажи|список)(\s|$)", re.I)
-ADVERSARIAL_RE = re.compile(r"просто выкат|без тест|skip tests|bypass|обойти|срочно.*депло|не готов.*review", re.I)
+CODE_RE = re.compile(
+    r"\b(code|python|script|test|pytest|refactor|bug|fix|diff|ci|pipeline|task_router\.py|\.py)\b|"
+    r"(код|тест|рефак|баг|скрипт)",
+    re.I,
+)
+ARCH_RE = re.compile(
+    r"\b(architecture|architect|strategy|design|multi-agent|agent|supervisor|process|worker)\b|"
+    r"(архитект|стратег|агент|процесс)",
+    re.I,
+)
+DOC_RE = re.compile(r"\b(document|pdf|excel|report|compare|analy[sz]e|checklist|summary)\b", re.I)
+SIMPLE_RE = re.compile(r"\b(translate|rewrite|short|explain|sanity|2\+2|hello)\b|(перепиш|корот|объясн)", re.I)
+COMMAND_RE = re.compile(r"^(status|list|show|logs?|health|date|time|tasks?)(\s|$)|^(статус|лог|покаж|список)(\s|$)", re.I)
+ADVERSARIAL_RE = re.compile(r"skip tests|bypass|without tests|without review|без тест|обойт|срочн|просто выкат", re.I)
+GITHUB_CONTEXT_RE = re.compile(r"\b(github|pull request|pr|issue)\b|(гитхаб|гитхабе|гитхаба)", re.I)
+GITHUB_READ_RE = re.compile(r"\b(look up|lookup|read|show|list|summari[sz]e|status|comment|inspect|find)\b|(найд|покаж|посмотр|статус)", re.I)
+GIT_WRITE_RE = re.compile(r"\b(push|merge|deploy|release|tag|commit|write|delete|close|reopen|main)\b|(запуш|пуш|мердж|депло|в main)", re.I)
+MIGRATION_RE = re.compile(r"\b(migration|migrate|sqlite|postgres|postgresql|schema rollback|database migration)\b|(миграц|постгрес|схем)", re.I)
+MIGRATION_WRITE_RE = re.compile(
+    r"\b(apply|run|execute|create|edit|write|implement|deploy|production)\b.*\b(migration|schema)\b|"
+    r"(примен|запуст|выкат)",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -131,43 +144,49 @@ def classify_task(task: str) -> dict[str, Any]:
     simple = bool(SIMPLE_RE.search(text))
     command = bool(COMMAND_RE.search(text)) and len(text) < 80
     adversarial = bool(ADVERSARIAL_RE.search(text))
+    github_context = bool(GITHUB_CONTEXT_RE.search(text))
+    git_write = bool(GIT_WRITE_RE.search(text))
+    github_lookup = github_context and bool(GITHUB_READ_RE.search(text)) and not git_write
+    migration = bool(MIGRATION_RE.search(text))
+    migration_write = migration and bool(MIGRATION_WRITE_RE.search(text))
     long = len(text) > 450
 
     if command:
-        level, task_type, reason = "L0", "command_or_status", "Команда/статус можно выполнить без LLM."
-    elif code and (high_risk or "multi" in lower or "несколько" in lower or "deploy" in lower or "депло" in lower):
-        level, task_type, reason = "L4", "code_or_deploy_project", "Код/деплой с высоким риском требует project pipeline."
+        level, task_type, reason = "L0", "command_or_status", "Command/status can run without LLM."
+    elif github_lookup:
+        level, task_type, reason = "L2", "github_lookup", "Read-only GitHub lookup is not a code change."
+    elif git_write:
+        level, task_type, reason = "L4", "git_write_or_deploy", "Git push/merge/deploy is an external write."
+    elif migration_write:
+        level, task_type, reason = "L4", "database_migration_change", "Migration changes require code/data gate and rollback evidence."
+    elif migration:
+        level, task_type, reason = "L3", "database_migration_plan", "Migration planning requires architecture, rollback, and review."
+    elif code and (high_risk or "multi" in lower or "deploy" in lower or "депло" in lower):
+        level, task_type, reason = "L4", "code_or_deploy_project", "High-risk code/deploy requires project pipeline."
     elif code:
-        level, task_type, reason = "L4", "code_change", "Изменение кода требует Bot#2 code gate и тесты."
+        level, task_type, reason = "L4", "code_change", "Code changes require Bot#2 code gate and tests."
     elif arch or long:
-        level, task_type, reason = "L3", "architecture_or_strategy", "Нужны архитектура, роли или многошаговое решение."
+        level, task_type, reason = "L3", "architecture_or_strategy", "Architecture, roles, or multi-step solution required."
     elif doc:
-        level, task_type, reason = "L2", "analysis_or_checklist", "Нужно структурирование/анализ одного контекста."
+        level, task_type, reason = "L2", "analysis_or_checklist", "Structured analysis/checklist task."
     elif simple:
-        level, task_type, reason = "L1", "simple_text_task", "Простая короткая задача."
+        level, task_type, reason = "L1", "simple_text_task", "Simple short text task."
     else:
-        level, task_type, reason = "L2", "standard_task", "Нужен обычный анализ без multi-agent execution."
+        level, task_type, reason = "L2", "standard_task", "Standard task without multi-agent execution."
 
-    risk = "high" if high_risk or adversarial else "medium" if level in {"L2", "L3", "L4"} else "low"
-    if level in {"L3", "L4"} or risk == "high":
-        review_required = True
-    elif level == "L2":
-        review_required = high_risk
-    else:
+    high_risk = high_risk or adversarial or git_write or migration
+    risk = "high" if high_risk else "medium" if level in {"L2", "L3", "L4"} else "low"
+    review_required = level in {"L3", "L4"} or risk == "high"
+    if level == "L1":
+        review_required = risk == "high"
+    if level == "L0":
         review_required = False
-    human_gate_required = adversarial or (risk == "high" and level in {"L3", "L4"})
+    human_gate_required = adversarial or git_write or migration_write or (
+        risk == "high" and level == "L4" and any(word in lower for word in ["deploy", "production", "prod", "депло"])
+    )
     stress_profile = "adversarial" if adversarial else "normal"
 
-    route = Route(
-        task_level=level,
-        task_type=task_type,
-        risk_level=risk,
-        reason=reason,
-        stress_profile=stress_profile,
-        review_required=review_required,
-        human_gate_required=human_gate_required,
-    )
-    return route.as_dict()
+    return Route(level, task_type, risk, reason, stress_profile, review_required, human_gate_required).as_dict()
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -271,7 +271,8 @@ Return Markdown with:
 
 Verdict JSON schema:
 {{
-  "status": "APPROVE" | "REJECT" | "NEEDS_HUMAN",
+  "status": "APPROVE" | "APPROVE_WITH_EVIDENCE" | "REQUEST_CHANGES" | "REJECT" | "NEEDS_HUMAN" | "INSUFFICIENT_EVIDENCE" | "MISSING_TESTS_FOR_CODE_CHANGE" | "FAKE_IMPLEMENTATION_DETECTED" | "TEST_THEATER_DETECTED" | "RUBBER_STAMP_RISK" | "BLOCKED_BY_POLICY" | "LOOP_DETECTED",
+  "approved_action": "execute" | "refuse" | "no_op" | "needs_human",
   "summary": "...",
   "evidence_checked": ["..."],
   "risks": ["..."],
