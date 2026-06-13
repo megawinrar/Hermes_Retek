@@ -139,7 +139,7 @@ Acceptance:
 
 ## P1: Process State Machine
 
-Status: partial.
+Status: supervisor task transitions implemented; process resource locks still pending.
 
 Tasks:
 
@@ -153,7 +153,7 @@ Tasks:
   - `accepted_by_user_override`
   - `failed`
   - `blocked`
-- Add illegal transition tests.
+- Add illegal transition tests. Done.
 - Add loop guard for repeated Bot#1/Bot#2 cycles.
 - Add write/deploy resource locks.
 

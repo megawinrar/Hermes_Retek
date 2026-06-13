@@ -41,6 +41,7 @@ def create_approved_task(store: Path, *, approved_action: str = "execute") -> st
         },
         store_path=store,
     )
+    update_task(task_id, status="running", store_path=store)
     update_task(task_id, status="approved" if approved_action == "execute" else "approved_refusal", store_path=store)
     return task_id
 
@@ -124,6 +125,7 @@ def test_gateway_allows_linked_execute_approval_and_records_event(tmp_path: Path
 def test_gateway_allows_explicit_user_override(tmp_path: Path) -> None:
     store = tmp_path / "supervisor.db"
     task_id = create_task("Deploy despite Bot2 objection", store_path=store)["task_id"]
+    update_task(task_id, status="running", store_path=store)
     update_task(task_id, status="awaiting_human_decision", bot1_result="Bot1 says deploy", store_path=store)
     task = get_task(task_id, store_path=store)
     create_human_escalation(

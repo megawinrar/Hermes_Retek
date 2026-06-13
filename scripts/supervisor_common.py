@@ -50,6 +50,29 @@ BOT2_VERDICT_STATUSES = APPROVED_STATUSES | ESCALATION_STATUSES | BLOCKED_STATUS
 YES_MEANING = "Agree with Bot#2 and return Bot#1 to fixes."
 NO_MEANING = "Reject Bot#2 objection and accept Bot#1 result as-is."
 
+SUPERVISOR_STATUSES = {
+    "created",
+    "running",
+    "approved",
+    "approved_refusal",
+    "awaiting_human_decision",
+    "return_to_bot1",
+    "accepted_by_user_override",
+    "failed",
+    "blocked",
+}
+ALLOWED_STATUS_TRANSITIONS = {
+    "created": {"running", "failed", "blocked"},
+    "running": {"approved", "approved_refusal", "awaiting_human_decision", "failed", "blocked"},
+    "awaiting_human_decision": {"return_to_bot1", "accepted_by_user_override", "failed", "blocked"},
+    "return_to_bot1": {"running", "failed", "blocked"},
+    "approved": set(),
+    "approved_refusal": set(),
+    "accepted_by_user_override": set(),
+    "failed": set(),
+    "blocked": set(),
+}
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -269,6 +292,19 @@ def add_role_run(
         con.commit()
 
 
+def validate_status_transition(current_status: str, next_status: str) -> None:
+    current = str(current_status or "").strip()
+    next_value = str(next_status or "").strip()
+    if current == next_value:
+        return
+    if current not in SUPERVISOR_STATUSES:
+        raise SystemExit(f"unknown current supervisor status: {current}")
+    if next_value not in SUPERVISOR_STATUSES:
+        raise SystemExit(f"unknown next supervisor status: {next_value}")
+    if next_value not in ALLOWED_STATUS_TRANSITIONS[current]:
+        raise SystemExit(f"illegal supervisor transition: {current} -> {next_value}")
+
+
 def update_task(
     task_id_value: str,
     *,
@@ -287,6 +323,11 @@ def update_task(
     assignments = ", ".join(f"{key}=?" for key in fields)
     values = list(fields.values()) + [task_id_value]
     with connect(store_path) as con:
+        if status is not None:
+            row = con.execute("SELECT status FROM supervisor_tasks WHERE id=?", (task_id_value,)).fetchone()
+            if not row:
+                raise SystemExit(f"task not found: {task_id_value}")
+            validate_status_transition(str(row["status"]), status)
         con.execute(f"UPDATE supervisor_tasks SET {assignments} WHERE id=?", values)
         con.commit()
 
