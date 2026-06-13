@@ -211,6 +211,15 @@ def dry_verdict(status: str) -> dict[str, Any]:
     }
 
 
+def configured_bot2_verdict(args: argparse.Namespace) -> dict[str, Any]:
+    if not args.bot2_verdict_json:
+        return dry_verdict(args.bot2_status)
+    verdict = parse_verdict(args.bot2_verdict_json)
+    if verdict.get("status") == INVALID_BOT2_STATUS:
+        raise SystemExit("--bot2-verdict-json must be a valid Bot#2 verdict JSON object")
+    return verdict
+
+
 def live_bot1_result(task: str, acceptance: str, *, bot1_model: str, max_tokens: int, timeout: int) -> tuple[str, str, str]:
     import dual_bot_lab as lab
 
@@ -369,7 +378,7 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
             bot1_result = args.bot1_result or dry_bot1_result(task, acceptance, route)
             if route_requires_bot2(route):
                 bot2_session_id = f"{pid}-bot2-dry"
-                verdict = dry_verdict(args.bot2_status)
+                verdict = configured_bot2_verdict(args)
         evidence = args.evidence or bot1_result
         update_task(supervisor_task_id, bot1_result=bot1_result, evidence=evidence, store_path=args.supervisor_store)
         add_assignment(pid, "bot1", "execution", "completed", {"result_chars": len(bot1_result)}, store_path=args.process_store)
@@ -840,6 +849,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--bot1-result", default="")
     run.add_argument("--evidence", default="")
     run.add_argument("--bot2-status", default="APPROVE", choices=sorted(BOT2_VERDICT_STATUSES))
+    run.add_argument("--bot2-verdict-json", default="", help="Use an explicit Bot#2 verdict JSON object in dry-run mode")
     run.add_argument("--live-dual", action="store_true")
     run.add_argument("--bot1-model", default="deepseek-v4-flash")
     run.add_argument("--bot2-model", default="gpt-5.3-codex")

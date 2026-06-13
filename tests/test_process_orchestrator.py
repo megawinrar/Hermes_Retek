@@ -133,6 +133,61 @@ def test_process_transcript_shows_bot1_bot2_and_human_gate(tmp_path: Path) -> No
     assert {run["role"] for run in data["audit"]["role_runs"]} == {"bot1", "tester", "bot2"}
 
 
+def test_process_transcript_accepts_explicit_bot2_verdict_json(tmp_path: Path) -> None:
+    process_store = tmp_path / "process.db"
+    supervisor_store = tmp_path / "supervisor.db"
+    bot1_result = "Bot#1 action: changed scripts/task_router.py and tests/test_task_router.py."
+    verdict = {
+        "status": "APPROVE_WITH_EVIDENCE",
+        "summary": "Bot#2 reviewed the router diff and focused tests; supplier task type is now explicit.",
+        "approved_action": "execute",
+        "evidence_checked": ["pytest tests/test_task_router.py -q", "manual route smoke"],
+        "risks": ["live LLM/API not exercised until keys are rotated"],
+        "required_fixes": [],
+        "confidence": 0.88,
+    }
+    result = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "run",
+        "--task",
+        "Change task_router.py Python code and add pytest coverage",
+        "--acceptance",
+        "Show concrete Bot#1 and Bot#2 actions in transcript",
+        "--bot1-result",
+        bot1_result,
+        "--evidence",
+        "tests/test_task_router.py passed",
+        "--bot2-verdict-json",
+        json.dumps(verdict),
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "approved"
+
+    transcript = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "transcript",
+        payload["process_id"],
+    )
+    assert transcript.returncode == 0, transcript.stderr
+    data = json.loads(transcript.stdout)
+    by_actor = {item["actor"]: item for item in data["conversation"]}
+    assert by_actor["bot1"]["content"] == bot1_result
+    assert by_actor["bot2"]["status"] == "APPROVE_WITH_EVIDENCE"
+    assert by_actor["bot2"]["content"]["summary"] == verdict["summary"]
+    assert by_actor["bot2"]["content"]["evidence_checked"] == verdict["evidence_checked"]
+
+
 def test_route_command_outputs_process_contract(tmp_path: Path) -> None:
     result = run_cli(
         sys.executable,

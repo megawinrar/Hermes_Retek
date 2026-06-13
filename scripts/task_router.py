@@ -105,6 +105,11 @@ MIGRATION_WRITE_RE = re.compile(
     r"(примен|запуст|выкат)",
     re.I,
 )
+SUPPLIER_PRICE_DEADLINE_RE = re.compile(
+    r"\b(supplier|vendor|price|deadline|delivery|lead time|tender|crm parts?)\b|"
+    r"(поставщик|поставщиков|цен|стоимост|срок|доставк|тендер|закупк|детал|комплектующ)",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -149,6 +154,7 @@ def classify_task(task: str) -> dict[str, Any]:
     github_lookup = github_context and bool(GITHUB_READ_RE.search(text)) and not git_write
     migration = bool(MIGRATION_RE.search(text))
     migration_write = migration and bool(MIGRATION_WRITE_RE.search(text))
+    supplier_price_deadline = bool(SUPPLIER_PRICE_DEADLINE_RE.search(text))
     long = len(text) > 450
 
     if command:
@@ -161,6 +167,12 @@ def classify_task(task: str) -> dict[str, Any]:
         level, task_type, reason = "L4", "git_write_or_deploy", "Git push/merge/deploy is an external write."
     elif migration:
         level, task_type, reason = "L3", "database_migration_plan", "Migration planning requires architecture, rollback, and review."
+    elif supplier_price_deadline:
+        level, task_type, reason = (
+            "L2",
+            "supplier_price_deadline_analysis",
+            "Supplier price/deadline analysis affects money, delivery dates, and CRM purchasing decisions.",
+        )
     elif code and (high_risk or "multi" in lower or "deploy" in lower or "депло" in lower):
         level, task_type, reason = "L4", "code_or_deploy_project", "High-risk code/deploy requires project pipeline."
     elif code:

@@ -84,3 +84,12 @@ def test_migration_write_has_specific_l4_route() -> None:
     assert route["risk_level"] == "high"
     assert route["review_required"] is True
     assert route["human_gate_required"] is True
+
+
+def test_supplier_price_deadline_analysis_has_specific_l2_route() -> None:
+    route = classify_task("Проверь CRM Ретек: сравнить поставщиков по цене, срокам доставки и риску задержки для закупки деталей")
+    assert route["task_level"] == "L2"
+    assert route["task_type"] == "supplier_price_deadline_analysis"
+    assert route["risk_level"] == "high"
+    assert route["review_required"] is True
+    assert route["human_gate_required"] is False
