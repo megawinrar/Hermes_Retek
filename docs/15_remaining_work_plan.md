@@ -77,15 +77,18 @@ Acceptance:
 
 ## P1: Bot#2 Retry / Repair
 
-Status: not done.
+Status: partial.
 
 Current behavior:
 
 - invalid Bot#2 JSON becomes `INVALID_BOT2_OUTPUT` and fail-closed.
+- live dual Bot#1/Bot#2 path performs one strict JSON-only Bot#2 repair
+  attempt when the first Bot#2 response is not machine-readable.
+- dry-run `INVALID_BOT2_OUTPUT` still fails closed and is used as a guardrail
+  test case.
 
 Next behavior:
 
-- make one retry with strict JSON-only repair prompt;
 - if retry is invalid, keep fail-closed status;
 - store raw transcript with redaction.
 

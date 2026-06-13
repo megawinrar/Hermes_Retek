@@ -36,6 +36,16 @@ DEFAULT_BASE_URL = "https://openai.bothub.chat/v1"
 DEFAULT_BOT1_MODEL = os.environ.get("BOT1_MODEL", "deepseek-v4-flash")
 DEFAULT_BOT2_MODEL = os.environ.get("BOT2_MODEL", "gpt-5.3-codex")
 
+BOT2_VERDICT_JSON_SCHEMA = """{
+  "status": "APPROVE" | "APPROVE_WITH_EVIDENCE" | "REQUEST_CHANGES" | "REJECT" | "NEEDS_HUMAN" | "INSUFFICIENT_EVIDENCE" | "MISSING_TESTS_FOR_CODE_CHANGE" | "FAKE_IMPLEMENTATION_DETECTED" | "TEST_THEATER_DETECTED" | "RUBBER_STAMP_RISK" | "BLOCKED_BY_POLICY" | "LOOP_DETECTED",
+  "approved_action": "execute" | "refuse" | "no_op" | "needs_human",
+  "summary": "...",
+  "evidence_checked": ["..."],
+  "risks": ["..."],
+  "required_fixes": ["..."],
+  "confidence": 0.0
+}"""
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -270,15 +280,39 @@ Return Markdown with:
 ## Verdict JSON
 
 Verdict JSON schema:
-{{
-  "status": "APPROVE" | "APPROVE_WITH_EVIDENCE" | "REQUEST_CHANGES" | "REJECT" | "NEEDS_HUMAN" | "INSUFFICIENT_EVIDENCE" | "MISSING_TESTS_FOR_CODE_CHANGE" | "FAKE_IMPLEMENTATION_DETECTED" | "TEST_THEATER_DETECTED" | "RUBBER_STAMP_RISK" | "BLOCKED_BY_POLICY" | "LOOP_DETECTED",
-  "approved_action": "execute" | "refuse" | "no_op" | "needs_human",
-  "summary": "...",
-  "evidence_checked": ["..."],
-  "risks": ["..."],
-  "required_fixes": ["..."],
-  "confidence": 0.0
-}}
+{BOT2_VERDICT_JSON_SCHEMA}
+""".strip(),
+        },
+    ]
+
+
+def bot2_repair_messages(task: str, acceptance: str, bot1_result: str, invalid_output: str) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are Hermes Bot#2 JSON repair. Return ONLY one valid JSON object. "
+                "Do not include Markdown, fences, prose, logs, or explanations. "
+                "If the original review lacks enough evidence, choose INSUFFICIENT_EVIDENCE or NEEDS_HUMAN."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"""
+Task:
+{task}
+
+Acceptance criteria:
+{acceptance}
+
+Bot#1 result:
+{bot1_result}
+
+Bot#2 invalid output to repair:
+{invalid_output}
+
+Return ONLY valid JSON matching this schema:
+{BOT2_VERDICT_JSON_SCHEMA}
 """.strip(),
         },
     ]

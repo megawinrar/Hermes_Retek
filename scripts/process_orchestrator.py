@@ -19,6 +19,7 @@ from human_notification import (
 )
 from supervisor_common import (
     BOT2_VERDICT_STATUSES,
+    INVALID_BOT2_STATUS,
     add_event as add_supervisor_event,
     add_role_run,
     create_human_escalation,
@@ -267,6 +268,21 @@ def live_dual_result(
         timeout=timeout,
     )
     lab.add_message(rid, "Bot#2", bot2_model, bot2, {"usage": bot2_raw.get("usage", {})})
+    verdict = parse_verdict(bot2)
+    if verdict.get("status") == INVALID_BOT2_STATUS:
+        bot2_repair, bot2_repair_raw = lab.call_chat(
+            base_url=cfg["base_url"],
+            api_key=cfg["api_key"],
+            model=bot2_model,
+            messages=lab.bot2_repair_messages(task, acceptance, bot1, bot2),
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+        lab.add_message(rid, "Bot#2-repair", bot2_model, bot2_repair, {"usage": bot2_repair_raw.get("usage", {})})
+        repaired_verdict = parse_verdict(bot2_repair)
+        if repaired_verdict.get("status") != INVALID_BOT2_STATUS:
+            verdict = repaired_verdict
+            bot2 = f"{bot2}\n\n## Bot#2 JSON Repair\n\n{bot2_repair}"
     report = lab.write_report(
         run_id_value=rid,
         task=task,
@@ -277,7 +293,7 @@ def live_dual_result(
         bot2_result=bot2,
     )
     lab.update_run(rid, "completed", str(report))
-    return bot1, rid, parse_verdict(bot2), str(report)
+    return bot1, rid, verdict, str(report)
 
 
 def route_policy_verdict() -> dict[str, Any]:
