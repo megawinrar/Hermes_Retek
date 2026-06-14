@@ -127,8 +127,8 @@ def capped_llm_tokens(requested: int, *, env_name: str, default_cap: int = 0) ->
 TOKEN_POLICY_PROFILES: dict[str, dict[str, int]] = {
     "L0": {"bot1": 384, "bot1_revision": 512, "bot1_self_check": 512, "bot2_verdict": 384, "bot2_repair": 384},
     "L1": {"bot1": 512, "bot1_revision": 700, "bot1_self_check": 700, "bot2_verdict": 512, "bot2_repair": 384},
-    "L2": {"bot1": 900, "bot1_revision": 1100, "bot1_self_check": 900, "bot2_verdict": 650, "bot2_repair": 500},
-    "L3": {"bot1": 1400, "bot1_revision": 1400, "bot1_self_check": 1200, "bot2_verdict": 800, "bot2_repair": 650},
+    "L2": {"bot1": 900, "bot1_revision": 1100, "bot1_self_check": 900, "bot2_verdict": 1000, "bot2_repair": 900},
+    "L3": {"bot1": 1400, "bot1_revision": 1400, "bot1_self_check": 1200, "bot2_verdict": 1200, "bot2_repair": 1000},
     "L4": {"bot1": 0, "bot1_revision": 0, "bot1_self_check": 0, "bot2_verdict": 1000, "bot2_repair": 800},
 }
 ROLE_ENV_TOKEN_CAPS = {
@@ -203,12 +203,15 @@ def llm_completion_budget(response: dict[str, Any], *, max_tokens: int) -> dict[
     if not isinstance(completion_tokens, int):
         completion_tokens = 0
     finish_reason = str(meta.get("finish_reason") or "")
+    over_budget = max_tokens > 0 and completion_tokens > max_tokens + 8
     return {
         "max_tokens": max_tokens,
         "completion_tokens": completion_tokens,
         "finish_reason": finish_reason,
         "content_chars": int(meta.get("content_chars") or 0),
-        "hit_cap": finish_reason == "length" or (max_tokens > 0 and completion_tokens >= max_tokens - 8),
+        "hit_cap": finish_reason == "length"
+        or (max_tokens > 0 and 0 < completion_tokens <= max_tokens and completion_tokens >= max_tokens - 8),
+        "over_budget": over_budget,
     }
 
 
@@ -1318,12 +1321,17 @@ def build_process_performance(
     live_review_http_timing = {
         "request_count": 0,
         "total": 0,
+        "end_to_end_total": 0,
         "time_to_headers": 0,
         "read_body": 0,
+        "failed_attempt_count": 0,
+        "failed_attempt_total": 0,
     }
     live_review_completion_budget = {
         "cap_hit_count": 0,
         "cap_hit_roles": [],
+        "over_budget_count": 0,
+        "over_budget_roles": [],
     }
     for cycle in review_cycles:
         latencies = cycle.get("latency_ms") or {}
@@ -1336,17 +1344,32 @@ def build_process_performance(
                 if not isinstance(timing, dict) or not timing:
                     continue
                 live_review_http_timing["request_count"] += 1
-                for key in ["total", "time_to_headers", "read_body"]:
+                for key in [
+                    "total",
+                    "end_to_end_total",
+                    "time_to_headers",
+                    "read_body",
+                    "failed_attempt_count",
+                    "failed_attempt_total",
+                ]:
                     value = timing.get(key)
                     if isinstance(value, int):
                         live_review_http_timing[key] += value
+                if "end_to_end_total" not in timing:
+                    live_review_http_timing["end_to_end_total"] += int(timing.get("total") or 0)
         budgets = cycle.get("completion_budget") or {}
         if isinstance(budgets, dict):
             for role, budget in budgets.items():
                 if not isinstance(budget, dict) or not budget.get("hit_cap"):
+                    if isinstance(budget, dict) and budget.get("over_budget"):
+                        live_review_completion_budget["over_budget_count"] += 1
+                        live_review_completion_budget["over_budget_roles"].append(str(role))
                     continue
                 live_review_completion_budget["cap_hit_count"] += 1
                 live_review_completion_budget["cap_hit_roles"].append(str(role))
+                if budget.get("over_budget"):
+                    live_review_completion_budget["over_budget_count"] += 1
+                    live_review_completion_budget["over_budget_roles"].append(str(role))
         live_review_calls += 2
         if cycle.get("bot1_self_check"):
             live_review_calls += 1

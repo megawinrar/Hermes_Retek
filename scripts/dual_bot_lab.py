@@ -94,12 +94,21 @@ SEMANTIC_LEVEL_PROFILES: dict[str, dict[str, Any]] = {
         "depth": "compact_task_answer",
         "bot1_must_include": ["answer", "minimal evidence", "obvious risk if any"],
         "bot1_omit": ["background tutorial", "multi-phase plan", "unrequested alternatives"],
+        "bot1_output_contract": [
+            "Use 1-2 short paragraphs or a tiny table.",
+            "Evidence and risks stay to one bullet each unless acceptance requires more.",
+        ],
         "bot2_issue_budget": 1,
     },
     "L2": {
         "depth": "focused_decision_or_analysis",
         "bot1_must_include": ["decision logic", "calculation/check where relevant", "data risks"],
         "bot1_omit": ["production rollout detail unless requested", "generic best practices"],
+        "bot1_output_contract": [
+            "For scoring/math tasks, use one formula, one compact table, and one final ranking.",
+            "State the normalization and rounding rule once, then apply it consistently.",
+            "Keep Evidence to the calculation check and keep Risks to concrete data risks only.",
+        ],
         "bot2_issue_budget": 2,
     },
     "L3": {
@@ -166,6 +175,7 @@ def semantic_budget_for_route(route: dict[str, Any] | None, role: str) -> dict[s
                     "removal of stale contradictions",
                     "evidence that the fix is closed",
                 ],
+                "output_contract": profile.get("bot1_output_contract", []),
                 "omit": ["new architecture unless required by a fix", "debate with Bot#2"],
             }
         )
@@ -174,6 +184,7 @@ def semantic_budget_for_route(route: dict[str, Any] | None, role: str) -> dict[s
             {
                 "objective": "Answer at the minimum depth that satisfies acceptance criteria.",
                 "must_include": profile["bot1_must_include"],
+                "output_contract": profile.get("bot1_output_contract", []),
                 "omit": profile["bot1_omit"],
             }
         )
@@ -349,6 +360,45 @@ def writable_report_dir(preferred: Path | None = None) -> Path:
     raise RuntimeError("No writable dual-bot report directory: " + " | ".join(errors))
 
 
+def http_attempt_record(
+    *,
+    attempt_index: int,
+    attempt_count: int,
+    payload_shape: str,
+    temperature_sent: bool,
+    total_ms: int,
+    request_bytes: int,
+    response_bytes: int = 0,
+    ok: bool = False,
+    http_status: int = 0,
+    time_to_headers: int | None = None,
+    read_body: int | None = None,
+    error_type: str = "",
+    error_preview: str = "",
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "attempt_index": attempt_index,
+        "attempt_count": attempt_count,
+        "ok": ok,
+        "method": "POST",
+        "http_status": int(http_status),
+        "payload_shape": payload_shape,
+        "temperature_sent": temperature_sent,
+        "total": total_ms,
+        "request_bytes": request_bytes,
+        "response_bytes": response_bytes,
+    }
+    if time_to_headers is not None:
+        record["time_to_headers"] = time_to_headers
+    if read_body is not None:
+        record["read_body"] = read_body
+    if error_type:
+        record["error_type"] = error_type
+    if error_preview:
+        record["error_preview"] = redact_text(error_preview[:240])
+    return record
+
+
 def call_chat(
     *,
     base_url: str,
@@ -377,8 +427,11 @@ def call_chat_payload(*, base_url: str, api_key: str, payload: dict[str, Any], t
     attempts.append(alt_no_temp)
 
     errors: list[str] = []
+    attempt_records: list[dict[str, Any]] = []
     for attempt_index, body in enumerate(attempts, start=1):
         request_body = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        payload_shape = "max_completion_tokens" if "max_completion_tokens" in body else "max_tokens"
+        temperature_sent = "temperature" in body
         request = urllib.request.Request(
             f"{base_url}/chat/completions",
             data=request_body,
@@ -398,27 +451,117 @@ def call_chat_payload(*, base_url: str, api_key: str, payload: dict[str, Any], t
                 total_ms = int((time.perf_counter() - started_at) * 1000)
                 http_status = getattr(response, "status", 0) or getattr(response, "code", 0) or 0
         except urllib.error.HTTPError as exc:
+            total_ms = int((time.perf_counter() - started_at) * 1000)
             raw = exc.read().decode("utf-8", errors="replace")
+            attempt_records.append(
+                http_attempt_record(
+                    attempt_index=attempt_index,
+                    attempt_count=len(attempts),
+                    payload_shape=payload_shape,
+                    temperature_sent=temperature_sent,
+                    total_ms=total_ms,
+                    request_bytes=len(request_body),
+                    response_bytes=len(raw.encode("utf-8")),
+                    http_status=int(exc.code),
+                    error_type="http_error",
+                    error_preview=raw,
+                )
+            )
             errors.append(f"http_{exc.code}: {raw[:500]}")
             continue
         except urllib.error.URLError as exc:
+            total_ms = int((time.perf_counter() - started_at) * 1000)
+            attempt_records.append(
+                http_attempt_record(
+                    attempt_index=attempt_index,
+                    attempt_count=len(attempts),
+                    payload_shape=payload_shape,
+                    temperature_sent=temperature_sent,
+                    total_ms=total_ms,
+                    request_bytes=len(request_body),
+                    error_type="url_error",
+                    error_preview=str(exc.reason),
+                )
+            )
             errors.append(f"url_error: {exc.reason}")
             continue
         except TimeoutError:
+            total_ms = int((time.perf_counter() - started_at) * 1000)
+            attempt_records.append(
+                http_attempt_record(
+                    attempt_index=attempt_index,
+                    attempt_count=len(attempts),
+                    payload_shape=payload_shape,
+                    temperature_sent=temperature_sent,
+                    total_ms=total_ms,
+                    request_bytes=len(request_body),
+                    error_type="timeout",
+                    error_preview="timeout",
+                )
+            )
             errors.append("timeout")
             continue
 
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
+            attempt_records.append(
+                http_attempt_record(
+                    attempt_index=attempt_index,
+                    attempt_count=len(attempts),
+                    payload_shape=payload_shape,
+                    temperature_sent=temperature_sent,
+                    total_ms=total_ms,
+                    request_bytes=len(request_body),
+                    response_bytes=len(raw.encode("utf-8")),
+                    http_status=int(http_status),
+                    time_to_headers=headers_ms,
+                    read_body=read_body_ms,
+                    error_type="bad_json",
+                    error_preview=raw,
+                )
+            )
             errors.append(f"bad_json: {raw[:500]}")
             continue
         if "error" in data:
+            error_preview = json.dumps(data["error"], ensure_ascii=False)[:240]
+            attempt_records.append(
+                http_attempt_record(
+                    attempt_index=attempt_index,
+                    attempt_count=len(attempts),
+                    payload_shape=payload_shape,
+                    temperature_sent=temperature_sent,
+                    total_ms=total_ms,
+                    request_bytes=len(request_body),
+                    response_bytes=len(raw.encode("utf-8")),
+                    http_status=int(http_status),
+                    time_to_headers=headers_ms,
+                    read_body=read_body_ms,
+                    error_type="api_error",
+                    error_preview=error_preview,
+                )
+            )
             errors.append(json.dumps(data["error"], ensure_ascii=False)[:500])
             continue
         content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
         if content:
             choice = (data.get("choices") or [{}])[0]
+            success_record = http_attempt_record(
+                attempt_index=attempt_index,
+                attempt_count=len(attempts),
+                payload_shape=payload_shape,
+                temperature_sent=temperature_sent,
+                total_ms=total_ms,
+                request_bytes=len(request_body),
+                response_bytes=len(raw.encode("utf-8")),
+                ok=True,
+                http_status=int(http_status),
+                time_to_headers=headers_ms,
+                read_body=read_body_ms,
+            )
+            failed_attempt_total = sum(
+                int(attempt.get("total") or 0) for attempt in attempt_records if not attempt.get("ok")
+            )
             data["_hermes_http_timing_ms"] = {
                 "method": "POST",
                 "attempt_index": attempt_index,
@@ -426,17 +569,37 @@ def call_chat_payload(*, base_url: str, api_key: str, payload: dict[str, Any], t
                 "time_to_headers": headers_ms,
                 "read_body": read_body_ms,
                 "total": total_ms,
+                "end_to_end_total": total_ms + failed_attempt_total,
+                "failed_attempt_count": sum(1 for attempt in attempt_records if not attempt.get("ok")),
+                "failed_attempt_total": failed_attempt_total,
                 "http_status": int(http_status),
                 "request_bytes": len(request_body),
                 "response_bytes": len(raw.encode("utf-8")),
-                "payload_shape": "max_completion_tokens" if "max_completion_tokens" in body else "max_tokens",
-                "temperature_sent": "temperature" in body,
+                "payload_shape": payload_shape,
+                "temperature_sent": temperature_sent,
             }
+            data["_hermes_http_attempts"] = attempt_records + [success_record]
             data["_hermes_response_meta"] = {
                 "finish_reason": choice.get("finish_reason", ""),
                 "content_chars": len(content),
             }
             return content, data
+        attempt_records.append(
+            http_attempt_record(
+                attempt_index=attempt_index,
+                attempt_count=len(attempts),
+                payload_shape=payload_shape,
+                temperature_sent=temperature_sent,
+                total_ms=total_ms,
+                request_bytes=len(request_body),
+                response_bytes=len(raw.encode("utf-8")),
+                http_status=int(http_status),
+                time_to_headers=headers_ms,
+                read_body=read_body_ms,
+                error_type="empty_content",
+                error_preview=json.dumps(data, ensure_ascii=False),
+            )
+        )
         errors.append(f"empty_content: {json.dumps(data, ensure_ascii=False)[:500]}")
     raise RuntimeError(redact_text("Bothub chat completion failed: " + " | ".join(errors)))
 
@@ -454,6 +617,8 @@ def bot1_messages(
             "content": (
                 "You are Hermes Bot#1, the implementer. Be concrete and concise. "
                 "Show public reasoning as short bullet assumptions/checks, not hidden chain-of-thought. "
+                "Obey the semantic budget as an output contract. For calculations, prefer compact tables, "
+                "state one formula, and verify arithmetic before finalizing. "
                 f"{RETEK_CONTEXT}"
             ),
         },
@@ -471,6 +636,11 @@ Runtime skill context:
 
 Semantic budget:
 {format_semantic_budget(semantic_budget)}
+
+Output discipline:
+- Obey any output_contract items in the semantic budget.
+- For weighted scoring, normalization, dates, money, or arithmetic: use one formula, one compact table, one rounding rule, and one final decision.
+- Keep L1/L2 answers compact enough to finish without truncation.
 
 Return Markdown with exactly these sections:
 ## Bot#1 Answer
@@ -590,8 +760,9 @@ def bot1_revision_messages(
         {
             "role": "system",
             "content": (
-                "You are Hermes Bot#1, the implementer. Produce a corrected full answer. "
+                "You are Hermes Bot#1, the implementer. Produce a corrected answer. "
                 "Use only the Supervisor package below: Bot#2 summary, required fixes, and risks. "
+                "Keep the revision compact and obey the semantic budget as an output contract. "
                 "Do not argue with Bot#2 unless a fix is impossible; if impossible, state the blocker. "
                 f"{RETEK_CONTEXT}"
             ),
@@ -624,6 +795,11 @@ Required fixes:
 Risks:
 {json.dumps(risks, ensure_ascii=False, indent=2)}
 
+Output discipline:
+- Close every required_fix without expanding scope.
+- For weighted scoring, normalization, dates, money, or arithmetic: use one formula, one compact table, one rounding rule, and one final decision.
+- Keep L1/L2 revisions compact enough to finish without truncation.
+
 Return Markdown with exactly these sections:
 ## Bot#1 Revised Answer
 ## What I Changed From Bot#2 Feedback
@@ -653,6 +829,7 @@ def bot1_self_check_messages(
                 "You are Hermes Bot#1 self-consistency gate. Rewrite the draft into the final answer "
                 "only after checking every required fix and removing stale contradictions. "
                 "If any required fix is still not closed, fix the answer before returning it. "
+                "Keep the final answer compact and obey the semantic budget as an output contract. "
                 "For zero-loss/RPO=0 tasks, any rollback phrase that allows data loss is a blocking contradiction. "
                 "For Retek naming, do not use misspellings such as retik or Retik. "
                 f"{RETEK_CONTEXT}"
@@ -687,6 +864,8 @@ Before returning, verify:
 - no older contradictory statement remains elsewhere in the answer;
 - naming is consistent with Retek/Ретек and does not contain retik/Retik;
 - if the task requires no data loss, rollback/cutover states RPO=0 and never allows losing new records.
+- for scoring/math tasks, all formulas, rounding, totals, and rankings are internally consistent.
+- the final answer is compact enough to finish without truncation.
 
 Return Markdown with exactly these sections:
 ## Bot#1 Self-Checked Answer

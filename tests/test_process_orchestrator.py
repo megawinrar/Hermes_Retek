@@ -123,6 +123,11 @@ def test_adaptive_token_budget_scales_by_task_level(monkeypatch) -> None:
     assert process_orchestrator.token_budget_for_role(
         1400,
         role="bot2_verdict",
+        route={"task_level": "L2", "risk_level": "medium"},
+    ) == 1000
+    assert process_orchestrator.token_budget_for_role(
+        1400,
+        role="bot2_verdict",
         route={"task_level": "L4", "human_gate_required": True},
     ) == 1000
 
@@ -348,14 +353,21 @@ def test_process_performance_aggregates_llm_http_timing() -> None:
                 {
                     "latency_ms": {"bot1": 1000, "bot2": 2000, "bot2_repair": 0},
                     "http_timing_ms": {
-                        "bot1": {"total": 900, "time_to_headers": 880, "read_body": 20},
+                        "bot1": {
+                            "total": 900,
+                            "end_to_end_total": 950,
+                            "time_to_headers": 880,
+                            "read_body": 20,
+                            "failed_attempt_count": 1,
+                            "failed_attempt_total": 50,
+                        },
                         "bot2": {"total": 1900, "time_to_headers": 1880, "read_body": 20},
                         "bot2_repair": {},
                     },
                     "completion_budget": {
                         "bot1": {"hit_cap": True},
                         "bot2": {"hit_cap": False},
-                        "bot2_repair": {},
+                        "bot2_repair": {"hit_cap": False, "over_budget": True},
                     },
                 }
             ]
@@ -367,13 +379,31 @@ def test_process_performance_aggregates_llm_http_timing() -> None:
     assert performance["live_review"]["http_timing_ms"] == {
         "request_count": 2,
         "total": 2800,
+        "end_to_end_total": 2850,
         "time_to_headers": 2760,
         "read_body": 40,
+        "failed_attempt_count": 1,
+        "failed_attempt_total": 50,
     }
     assert performance["live_review"]["completion_budget"] == {
         "cap_hit_count": 1,
         "cap_hit_roles": ["bot1"],
+        "over_budget_count": 1,
+        "over_budget_roles": ["bot2_repair"],
     }
+
+
+def test_llm_completion_budget_distinguishes_provider_overshoot_from_cap_hit() -> None:
+    budget = process_orchestrator.llm_completion_budget(
+        {
+            "usage": {"completion_tokens": 2085},
+            "_hermes_response_meta": {"finish_reason": "stop", "content_chars": 2522},
+        },
+        max_tokens=900,
+    )
+
+    assert budget["hit_cap"] is False
+    assert budget["over_budget"] is True
 
 
 def test_live_route_audit_cache_reuses_previous_bot2_result(monkeypatch, tmp_path: Path) -> None:
