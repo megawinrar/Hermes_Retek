@@ -29,7 +29,8 @@ def test_build_run_command_defaults_to_live_process() -> None:
     assert tool.DEFAULT_SUPERVISOR_STORE in cmd
     assert "--live-dual" in cmd
     assert "--live-route-audit" in cmd
-    assert "--notification-dry-run" in cmd
+    assert "--notify-telegram" in cmd
+    assert "--notification-dry-run" not in cmd
     assert cmd[cmd.index("--bot1-model") + 1] == "deepseek-v4-flash"
     assert cmd[cmd.index("--bot2-model") + 1] == "gpt-5.3-codex"
 
