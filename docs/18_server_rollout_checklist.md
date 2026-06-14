@@ -174,6 +174,8 @@ schema True
 ## Container Restart Policy
 
 Restart `hermes-agent` only when a mounted file needs container visibility.
+Use the guarded restart entrypoint so the action is audited and blocked while
+Bot#1/Bot#2 or a human gate is still active.
 
 Before restart:
 
@@ -181,11 +183,22 @@ Before restart:
 docker ps --filter name=hermes-agent
 ```
 
-Restart through the gateway once approval exists. Until gateway is adopted as
-the operational wrapper, manual restart remains a human-approved rollout step:
+Restart through the guarded wrapper once approval exists:
 
 ```bash
-docker restart hermes-agent
+sudo /opt/hermes-assistant/scripts/hermes_safe_restart.sh \
+  --reason "deploy_runtime_reload" \
+  --task-id "$SUPERVISOR_TASK_ID" \
+  --notify-telegram
+```
+
+Emergency restarts must be explicit and visible in the audit log:
+
+```bash
+sudo /opt/hermes-assistant/scripts/hermes_safe_restart.sh \
+  --reason "emergency_operator_restart" \
+  --force \
+  --notify-telegram
 ```
 
 After restart:
@@ -193,6 +206,7 @@ After restart:
 ```bash
 docker exec hermes-agent /bin/sh -lc 'grep -n "RUNTIME BOUNDARY" /opt/hermes-assistant/AGENTS.md || true'
 docker ps --filter name=hermes-agent
+sudo tail -n 5 /var/log/hermes-restarts.log
 ```
 
 ## Rollback

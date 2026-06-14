@@ -139,7 +139,7 @@ def test_run_case_repairs_invalid_bot2_json(monkeypatch, tmp_path: Path) -> None
         messages = kwargs["messages"]
         joined = "\n".join(item["content"] for item in messages)
         calls.append(joined)
-        if "Return ONLY valid JSON matching this schema" in joined:
+        if "Bot#2 invalid output to repair" in joined:
             return (
                 '{"status":"APPROVE_WITH_EVIDENCE","approved_action":"execute",'
                 '"summary":"repaired verdict ok","evidence_checked":["bot1"],'

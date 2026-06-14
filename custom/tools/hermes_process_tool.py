@@ -431,7 +431,7 @@ def summarize_payload(action: str, payload: Any, *, include_raw: bool = False) -
         "performance": {
             "duration_ms": performance.get("duration_ms"),
             "route_audit": performance.get("route_audit", {}),
-            "bot2": performance.get("bot2", {}),
+            "live_review": performance.get("live_review", {}),
         },
         "next_action": next_action,
     }

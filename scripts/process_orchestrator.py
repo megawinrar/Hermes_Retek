@@ -108,6 +108,22 @@ def elapsed_ms(started_at: float) -> int:
     return max(0, int((time.perf_counter() - started_at) * 1000))
 
 
+def capped_llm_tokens(requested: int, *, env_name: str, default_cap: int = 0) -> int:
+    raw = os.environ.get(env_name, "").strip()
+    if raw.lower() in {"off", "false", "no", "none"}:
+        return max(1, requested)
+    if raw:
+        try:
+            cap = int(raw)
+        except ValueError:
+            cap = default_cap
+    else:
+        cap = default_cap
+    if cap <= 0:
+        return max(1, requested)
+    return max(1, min(requested, cap))
+
+
 def process_id() -> str:
     return f"proc-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
@@ -639,6 +655,9 @@ def live_dual_result(
     import dual_bot_lab as lab
 
     cfg = lab.bothub_config()
+    bot1_max_tokens = capped_llm_tokens(max_tokens, env_name="HERMES_BOT1_MAX_TOKENS")
+    bot2_verdict_max_tokens = capped_llm_tokens(max_tokens, env_name="HERMES_BOT2_VERDICT_MAX_TOKENS", default_cap=700)
+    bot2_repair_max_tokens = capped_llm_tokens(max_tokens, env_name="HERMES_BOT2_REPAIR_MAX_TOKENS", default_cap=500)
     rid = lab.run_id()
     lab.add_run(rid, task, acceptance, bot1_model, bot2_model)
     review_cycles: list[dict[str, Any]] = []
@@ -670,7 +689,7 @@ def live_dual_result(
             api_key=cfg["api_key"],
             model=bot1_model,
             messages=bot1_messages,
-            max_tokens=max_tokens,
+            max_tokens=bot1_max_tokens,
             timeout=timeout,
         )
         bot1_latency_ms = elapsed_ms(bot1_started_at)
@@ -700,7 +719,7 @@ def live_dual_result(
                     round_no,
                     skill_context=skill_context_for_role(skill_context or {}, "bot1"),
                 ),
-                max_tokens=max_tokens,
+                max_tokens=bot1_max_tokens,
                 timeout=timeout,
             )
             self_check_latency_ms = elapsed_ms(self_check_started_at)
@@ -733,7 +752,7 @@ def live_dual_result(
                 bot1,
                 skill_context=skill_context_for_role(skill_context or {}, "bot2"),
             ),
-            max_tokens=max_tokens,
+            max_tokens=bot2_verdict_max_tokens,
             timeout=timeout,
         )
         bot2_latency_ms = elapsed_ms(bot2_started_at)
@@ -754,7 +773,7 @@ def live_dual_result(
                 api_key=cfg["api_key"],
                 model=bot2_model,
                 messages=lab.bot2_repair_messages(task, acceptance, bot1, bot2),
-                max_tokens=max_tokens,
+                max_tokens=bot2_repair_max_tokens,
                 timeout=timeout,
             )
             bot2_repair_latency_ms = elapsed_ms(bot2_repair_started_at)
@@ -854,6 +873,9 @@ def live_bot1_revision_result(
     import dual_bot_lab as lab
 
     cfg = lab.bothub_config()
+    bot1_max_tokens = capped_llm_tokens(max_tokens, env_name="HERMES_BOT1_MAX_TOKENS")
+    bot2_verdict_max_tokens = capped_llm_tokens(max_tokens, env_name="HERMES_BOT2_VERDICT_MAX_TOKENS", default_cap=700)
+    bot2_repair_max_tokens = capped_llm_tokens(max_tokens, env_name="HERMES_BOT2_REPAIR_MAX_TOKENS", default_cap=500)
     rid = lab.run_id()
     lab.add_run(rid, task, acceptance, bot1_model, bot2_model)
     previous_cycles = list(prior_verdict.get("review_cycles") or [])
@@ -873,7 +895,7 @@ def live_bot1_revision_result(
             round_no,
             skill_context=skill_context_for_role(skill_context or {}, "bot1"),
         ),
-        max_tokens=max_tokens,
+        max_tokens=bot1_max_tokens,
         timeout=timeout,
     )
     bot1_latency_ms = elapsed_ms(bot1_started_at)
@@ -898,7 +920,7 @@ def live_bot1_revision_result(
             round_no,
             skill_context=skill_context_for_role(skill_context or {}, "bot1"),
         ),
-        max_tokens=max_tokens,
+        max_tokens=bot1_max_tokens,
         timeout=timeout,
     )
     self_check_latency_ms = elapsed_ms(self_check_started_at)
@@ -930,7 +952,7 @@ def live_bot1_revision_result(
             bot1,
             skill_context=skill_context_for_role(skill_context or {}, "bot2"),
         ),
-        max_tokens=max_tokens,
+        max_tokens=bot2_verdict_max_tokens,
         timeout=timeout,
     )
     bot2_latency_ms = elapsed_ms(bot2_started_at)
@@ -952,7 +974,7 @@ def live_bot1_revision_result(
             api_key=cfg["api_key"],
             model=bot2_model,
             messages=lab.bot2_repair_messages(task, acceptance, bot1, bot2),
-            max_tokens=max_tokens,
+            max_tokens=bot2_repair_max_tokens,
             timeout=timeout,
         )
         bot2_repair_latency_ms = elapsed_ms(bot2_repair_started_at)

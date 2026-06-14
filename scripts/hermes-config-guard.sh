@@ -2,6 +2,7 @@
 set -euo pipefail
 # Hermes Config Guard. Detection-only by default.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_PATH="${HERMES_CONFIG_PATH:-/var/lib/docker/volumes/hermes-data/_data/config.yaml}"
 STATE_DB="${HERMES_STATE_DB:-/var/lib/docker/volumes/hermes-data/_data/state.db}"
 CORRECT_MODEL="${HERMES_MODEL:-deepseek-v4-flash}"
@@ -59,5 +60,15 @@ if [ -f "$STATE_DB" ]; then
   sqlite3 "$STATE_DB" "UPDATE sessions SET model='$CORRECT_MODEL', billing_base_url='$CORRECT_URL', billing_provider='custom' WHERE model LIKE '%yandex%' OR billing_base_url LIKE '%yandex-proxy%';" 2>/dev/null || true
   echo "[$(date)] state.db repaired"
 fi
-docker restart hermes-agent >/dev/null
-echo "[$(date)] hermes-agent restarted after approved repair"
+restart_args=(--reason "config_guard_repair" --container "${HERMES_RESTART_CONTAINER:-hermes-agent}")
+if [ -n "${HERMES_SUPERVISOR_TASK_ID:-}" ]; then
+  restart_args+=(--task-id "$HERMES_SUPERVISOR_TASK_ID")
+fi
+if [ "${HERMES_RESTART_NOTIFY_TELEGRAM:-0}" = "1" ]; then
+  restart_args+=(--notify-telegram)
+fi
+if [ "${HERMES_SAFE_RESTART_FORCE:-0}" = "1" ]; then
+  restart_args+=(--force)
+fi
+"$SCRIPT_DIR/hermes_safe_restart.sh" "${restart_args[@]}"
+echo "[$(date)] hermes-agent restart requested through safe restart guard"

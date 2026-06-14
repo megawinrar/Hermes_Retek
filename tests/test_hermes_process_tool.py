@@ -79,7 +79,11 @@ def test_summary_extracts_process_runtime_fields() -> None:
             "repair_attempted": True,
             "repair_status": "repaired",
         },
-        "performance": {"duration_ms": 321, "route_audit": {"status": "CONFIRM"}},
+        "performance": {
+            "duration_ms": 321,
+            "route_audit": {"status": "CONFIRM"},
+            "live_review": {"cycle_count": 1, "llm_call_count": 2, "latency_ms": 123},
+        },
     }
 
     summary = tool.summarize_payload("run", payload)
@@ -91,6 +95,8 @@ def test_summary_extracts_process_runtime_fields() -> None:
     assert summary["bot2"]["review_cycle_count"] == 2
     assert summary["bot2"]["repair_attempted"] is True
     assert summary["performance"]["duration_ms"] == 321
+    assert summary["performance"]["live_review"]["llm_call_count"] == 2
+    assert summary["performance"]["live_review"]["latency_ms"] == 123
 
 
 def test_summary_marks_human_decision_required_from_run_payload() -> None:

@@ -316,7 +316,9 @@ def bot2_messages(
             "role": "system",
             "content": (
                 "You are Hermes Bot#2, the independent Codex reviewer. "
-                "Do not rubber-stamp. Provide public review notes and a JSON verdict. "
+                "Do not rubber-stamp. Return ONLY one valid JSON object matching the verdict schema. "
+                "Do not include Markdown, fences, prose, logs, or explanations outside the JSON object. "
+                "Keep fields concise so the whole verdict fits in one response. "
                 "Do not reveal hidden chain-of-thought. "
                 f"{RETEK_CONTEXT} {SUPERVISOR_TRANSCRIPT_CONTEXT}"
             ),
@@ -339,12 +341,7 @@ Runtime skill context for Bot#2:
 Supervisor context:
 {SUPERVISOR_TRANSCRIPT_CONTEXT}
 
-Return Markdown with:
-## Bot#2 Review
-## Public Reasoning
-## Verdict JSON
-
-Verdict JSON schema:
+Return ONLY valid JSON matching this schema:
 {BOT2_VERDICT_JSON_SCHEMA}
 """.strip(),
         },

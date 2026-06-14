@@ -28,6 +28,21 @@ def test_bot2_repair_prompt_requires_json_only() -> None:
     assert "MISSING_TESTS_FOR_CODE_CHANGE" in messages[1]["content"]
 
 
+def test_bot2_primary_prompt_requires_json_only() -> None:
+    messages = dual_bot_lab.bot2_messages(
+        "Change code",
+        "Need tests and evidence",
+        "Bot#1 result",
+    )
+
+    assert messages[0]["role"] == "system"
+    assert "Return ONLY one valid JSON object" in messages[0]["content"]
+    assert "Do not include Markdown" in messages[0]["content"]
+    assert "Return ONLY valid JSON matching this schema" in messages[1]["content"]
+    assert "## Bot#2 Review" not in messages[1]["content"]
+    assert "## Verdict JSON" not in messages[1]["content"]
+
+
 def test_live_dual_result_repairs_invalid_bot2_json_once(monkeypatch, tmp_path: Path) -> None:
     calls: list[list[dict[str, str]]] = []
     messages: list[tuple[str, str]] = []
@@ -84,6 +99,51 @@ def test_live_dual_result_repairs_invalid_bot2_json_once(monkeypatch, tmp_path: 
     assert len(calls) == 3
     assert "Return ONLY valid JSON matching this schema" in calls[2][1]["content"]
     assert [speaker for speaker, _content in messages] == ["Bot#1", "Bot#2-1", "Bot#2-repair-1"]
+
+
+def test_live_dual_result_applies_per_role_token_caps(monkeypatch, tmp_path: Path) -> None:
+    seen_tokens: list[int] = []
+
+    def fake_call_chat(
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        timeout: int,
+    ) -> tuple[str, dict[str, object]]:
+        seen_tokens.append(max_tokens)
+        if len(seen_tokens) == 1:
+            return "Bot#1 implementation result", {"usage": {"total_tokens": 10}}
+        if len(seen_tokens) == 2:
+            return "Bot#2 prose without JSON", {"usage": {"total_tokens": 12}}
+        return (
+            '{"status":"APPROVE","approved_action":"execute","summary":"repair ok",'
+            '"evidence_checked":["bot1 result"],"risks":[],"required_fixes":[],"confidence":0.8}',
+            {"usage": {"total_tokens": 14}},
+        )
+
+    monkeypatch.setenv("HERMES_BOT2_VERDICT_MAX_TOKENS", "333")
+    monkeypatch.setenv("HERMES_BOT2_REPAIR_MAX_TOKENS", "222")
+    monkeypatch.setattr(dual_bot_lab, "bothub_config", lambda: {"base_url": "https://example.test/v1", "api_key": "test"})
+    monkeypatch.setattr(dual_bot_lab, "run_id", lambda: "dual-test")
+    monkeypatch.setattr(dual_bot_lab, "add_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(dual_bot_lab, "call_chat", fake_call_chat)
+    monkeypatch.setattr(dual_bot_lab, "add_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(dual_bot_lab, "update_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(dual_bot_lab, "write_report", lambda **kwargs: tmp_path / "report.md")
+
+    live_dual_result(
+        "Change code and add tests",
+        "Need tests and evidence",
+        bot1_model="bot1-model",
+        bot2_model="bot2-model",
+        max_tokens=1200,
+        timeout=10,
+    )
+
+    assert seen_tokens == [1200, 333, 222]
 
 
 def test_live_dual_result_stays_fail_closed_when_repair_is_invalid(monkeypatch, tmp_path: Path) -> None:
