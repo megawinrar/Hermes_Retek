@@ -37,6 +37,17 @@ REPORT_DIR = PROJECT_DIR / "reports"
 DEFAULT_BASE_URL = "https://openai.bothub.chat/v1"
 DEFAULT_BOT1_MODEL = os.environ.get("BOT1_MODEL", "deepseek-v4-flash")
 DEFAULT_BOT2_MODEL = os.environ.get("BOT2_MODEL", "gpt-5.3-codex")
+RETEK_CONTEXT = (
+    "Domain context: the project/customer name is exactly Retek, written in Russian as \"Ретек\". "
+    "Do not substitute \"Ретейл\", \"Retail\", or another similar-looking name. "
+    "For CRM tasks, preserve the exact phrase \"CRM Ретек\" when the user uses it."
+)
+SUPERVISOR_TRANSCRIPT_CONTEXT = (
+    "Supervisor evidence context: the Supervisor transcript is generated after Bot#2 returns its verdict "
+    "from the stored Router/Bot#1/Tester/Bot#2 records. Bot#2 must not mark a result as insufficient "
+    "solely because that future transcript is not embedded inside Bot#1's answer. Review Bot#1's answer, "
+    "the stated acceptance criteria, and the evidence currently provided."
+)
 
 BOT2_VERDICT_JSON_SCHEMA = """{
   "status": "APPROVE" | "APPROVE_WITH_EVIDENCE" | "REQUEST_CHANGES" | "REJECT" | "NEEDS_HUMAN" | "INSUFFICIENT_EVIDENCE" | "MISSING_TESTS_FOR_CODE_CHANGE" | "FAKE_IMPLEMENTATION_DETECTED" | "TEST_THEATER_DETECTED" | "RUBBER_STAMP_RISK" | "BLOCKED_BY_POLICY" | "LOOP_DETECTED",
@@ -236,7 +247,8 @@ def bot1_messages(task: str, acceptance: str) -> list[dict[str, str]]:
             "role": "system",
             "content": (
                 "You are Hermes Bot#1, the implementer. Be concrete and concise. "
-                "Show public reasoning as short bullet assumptions/checks, not hidden chain-of-thought."
+                "Show public reasoning as short bullet assumptions/checks, not hidden chain-of-thought. "
+                f"{RETEK_CONTEXT}"
             ),
         },
         {
@@ -265,7 +277,8 @@ def bot2_messages(task: str, acceptance: str, bot1_result: str) -> list[dict[str
             "content": (
                 "You are Hermes Bot#2, the independent Codex reviewer. "
                 "Do not rubber-stamp. Provide public review notes and a JSON verdict. "
-                "Do not reveal hidden chain-of-thought."
+                "Do not reveal hidden chain-of-thought. "
+                f"{RETEK_CONTEXT} {SUPERVISOR_TRANSCRIPT_CONTEXT}"
             ),
         },
         {
@@ -279,6 +292,9 @@ Acceptance criteria:
 
 Bot#1 result:
 {bot1_result}
+
+Supervisor context:
+{SUPERVISOR_TRANSCRIPT_CONTEXT}
 
 Return Markdown with:
 ## Bot#2 Review

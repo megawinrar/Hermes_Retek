@@ -306,6 +306,23 @@ The transcript shows:
 - Supervisor human-gate message, notification payload, and delivery mode;
 - audit event names without exposing secrets.
 
+## Live LLM Quality
+
+Status: first live Bot#1/Bot#2 smoke passed; prompt-quality guardrails added.
+
+Current behavior:
+
+- Bot#1 and Bot#2 prompts preserve the exact Retek/`CRM Ретек` domain name.
+- Bot#2 is told that Supervisor transcript is generated after its verdict, so
+  absence of that future transcript inside Bot#1's answer is not sufficient by
+  itself for `INSUFFICIENT_EVIDENCE`.
+- Live LLM path stores redacted reports/transcripts through Supervisor tooling.
+
+Next behavior:
+
+- After provider key rotation, add a scheduled or manual live smoke suite.
+- Tune Bot#2 to request concrete fixes without over-escalating valid L2 analysis.
+
 Runner:
 
 ```bash
