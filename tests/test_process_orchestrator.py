@@ -697,6 +697,137 @@ def test_human_gate_blocks_approved_high_risk_deploy(tmp_path: Path) -> None:
     assert notification["recommendation"]
     assert "yes" in notification["decision_semantics"]
     assert "no" in notification["decision_semantics"]
+    assert notification["decision_commands"]["yes"].endswith(f"decide {payload['process_id']} --choice yes --reason \"...\"")
+    assert notification["decision_commands"]["no"].endswith(f"decide {payload['process_id']} --choice no --reason \"...\"")
+
+
+def test_process_decide_yes_returns_bot1_to_fixes(tmp_path: Path) -> None:
+    process_store = tmp_path / "process.db"
+    supervisor_store = tmp_path / "supervisor.db"
+    verdict = {
+        "status": "REQUEST_CHANGES",
+        "summary": "Bot#2 found missing rollback evidence.",
+        "approved_action": "needs_human",
+        "evidence_checked": ["bot1"],
+        "risks": ["rollback_not_proven"],
+        "required_fixes": ["Add rollback evidence and rerun tests."],
+        "confidence": 0.72,
+    }
+    result = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "run",
+        "--task",
+        "Change python code and deploy to production server",
+        "--bot2-verdict-json",
+        json.dumps(verdict),
+        "--notification-dry-run",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "awaiting_human_decision"
+
+    decided = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "decide",
+        payload["process_id"],
+        "--choice",
+        "yes",
+        "--reason",
+        "Bot2 is right",
+    )
+    assert decided.returncode == 0, decided.stderr
+    decision = json.loads(decided.stdout)
+    assert decision["status"] == "return_to_bot1"
+    assert decision["decision"]["choice"] == "yes"
+    assert decision["next_action"]["action"] == "return_to_bot1_with_bot2_fixes"
+    assert decision["next_action"]["target_worker"] == "bot1"
+    assert decision["next_action"]["required_fixes"] == ["Add rollback evidence and rerun tests."]
+
+    shown = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "show",
+        payload["process_id"],
+    )
+    assert shown.returncode == 0, shown.stderr
+    details = json.loads(shown.stdout)
+    assert details["summary"]["status"] == "return_to_bot1"
+    assert details["summary"]["current_phase"] == "bot1_revision"
+    assert details["summary"]["human_decision"]["choice"] == "yes"
+    assert details["summary"]["next_action"]["action"] == "return_to_bot1_with_bot2_fixes"
+    assert {"human_decision", "process_next_action"} <= {event["event_type"] for event in details["events"]}
+    pending_bot1_revision = [
+        item for item in details["assignments"] if item["worker"] == "bot1" and item["phase"] == "revision"
+    ]
+    assert pending_bot1_revision
+    assert pending_bot1_revision[-1]["status"] == "pending"
+
+
+def test_process_decide_no_accepts_bot1_user_override(tmp_path: Path) -> None:
+    process_store = tmp_path / "process.db"
+    supervisor_store = tmp_path / "supervisor.db"
+    result = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "run",
+        "--task",
+        "Change python code and deploy to production server",
+        "--bot2-status",
+        "REJECT",
+        "--notification-dry-run",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+
+    decided = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "decide",
+        payload["process_id"],
+        "--choice",
+        "no",
+        "--reason",
+        "User accepts Bot1",
+    )
+    assert decided.returncode == 0, decided.stderr
+    decision = json.loads(decided.stdout)
+    assert decision["status"] == "accepted_by_user_override"
+    assert decision["decision"]["choice"] == "no"
+    assert decision["next_action"]["action"] == "accept_bot1_user_override"
+    assert decision["next_action"]["target_worker"] == "supervisor"
+    assert decision["next_action"]["devops_allowed_after_override"] is True
+
+    details = process_orchestrator.process_details(
+        payload["process_id"],
+        store_path=process_store,
+        supervisor_store_path=supervisor_store,
+    )
+    assert details["summary"]["status"] == "accepted_by_user_override"
+    assert details["summary"]["current_phase"] == "final_decision"
+    assert details["summary"]["human_decision"]["choice"] == "no"
+    assert details["summary"]["next_action"]["action"] == "accept_bot1_user_override"
 
 
 def test_invalid_bot2_output_fails_closed(tmp_path: Path) -> None:
