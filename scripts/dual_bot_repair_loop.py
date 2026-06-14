@@ -197,6 +197,62 @@ Return Markdown with exactly these sections:
     ]
 
 
+def bot1_self_check_messages(
+    *,
+    task: str,
+    acceptance: str,
+    draft_answer: str,
+    bot2_verdict: dict[str, Any],
+    round_no: int,
+) -> list[dict[str, str]]:
+    fixes = bot2_verdict.get("required_fixes") or []
+    risks = bot2_verdict.get("risks") or []
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are Hermes Bot#1 self-consistency gate. Rewrite the draft into the final answer "
+                "only after checking every required fix and removing stale contradictions. "
+                "If any required fix is still not closed, fix the answer before returning it. "
+                "For zero-loss/RPO=0 tasks, any rollback phrase that allows data loss is a blocking contradiction. "
+                "For Retek naming, do not use misspellings such as retik or Retik. "
+                f"{lab.RETEK_CONTEXT}"
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"""
+Task:
+{task}
+
+Acceptance criteria:
+{acceptance}
+
+Bot#2 required fixes for round {round_no}:
+{json.dumps(fixes, ensure_ascii=False, indent=2)}
+
+Bot#2 risks:
+{json.dumps(risks, ensure_ascii=False, indent=2)}
+
+Bot#1 draft answer to self-check:
+{draft_answer}
+
+Before returning, verify:
+- every required fix is explicitly closed in the answer;
+- no older contradictory statement remains elsewhere in the answer;
+- naming is consistent with Retek/Ретек and does not contain retik/Retik;
+- if the task requires no data loss, rollback/cutover states RPO=0 and never allows losing new records.
+
+Return Markdown with exactly these sections:
+## Bot#1 Self-Checked Answer
+## Self-Consistency Checklist
+## Evidence
+## Remaining Risks
+""".strip(),
+        },
+    ]
+
+
 def write_report(
     *,
     sid: str,
@@ -255,6 +311,19 @@ def write_report(
                     "",
                     redact_text(turn["bot1"]),
                     "",
+                ]
+            )
+            if turn.get("bot1_self_check"):
+                lines.extend(
+                    [
+                        f"#### Round {turn['round']} Bot#1 Self-Check",
+                        "",
+                        redact_text(turn["bot1_self_check"]),
+                        "",
+                    ]
+                )
+            lines.extend(
+                [
                     f"#### Round {turn['round']} Bot#2",
                     "",
                     "```json",
@@ -280,6 +349,7 @@ def run_case(
     timeout: int,
     pause: int,
     preview_chars: int,
+    bot1_self_check: bool = True,
 ) -> dict[str, Any]:
     rid = lab.run_id()
     lab.add_run(rid, case["task"], case["acceptance"], bot1_model, bot2_model)
@@ -323,6 +393,34 @@ def run_case(
         )
         lab.add_message(rid, f"Bot#1 round {round_no}", bot1_model, current_answer, {"usage": bot1_raw.get("usage", {})})
         print_block(f"ОТВЕТ BOT#1 РАУНД {round_no}", concise(current_answer, preview_chars), pause=pause)
+
+        self_check_answer = ""
+        if bot1_self_check and round_no > 1:
+            previous_verdict = turns[-1]["verdict"]
+            print_block(f"BOT#1 SELF-CHECK РАУНД {round_no}: проверка противоречий", f"model={bot1_model}", pause=0)
+            self_check_answer, self_check_raw = lab.call_chat(
+                base_url=cfg["base_url"],
+                api_key=cfg["api_key"],
+                model=bot1_model,
+                messages=bot1_self_check_messages(
+                    task=case["task"],
+                    acceptance=case["acceptance"],
+                    draft_answer=current_answer,
+                    bot2_verdict=previous_verdict,
+                    round_no=round_no,
+                ),
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+            lab.add_message(
+                rid,
+                f"Bot#1 self-check round {round_no}",
+                bot1_model,
+                self_check_answer,
+                {"usage": self_check_raw.get("usage", {})},
+            )
+            current_answer = self_check_answer
+            print_block(f"ОТВЕТ BOT#1 SELF-CHECK РАУНД {round_no}", concise(current_answer, preview_chars), pause=pause)
 
         print_block(f"BOT#2 РАУНД {round_no}: проверка", f"model={bot2_model}", pause=0)
         bot2_raw, bot2_usage = lab.call_chat(
@@ -369,7 +467,15 @@ def run_case(
             },
             pause=pause,
         )
-        turns.append({"round": round_no, "bot1": current_answer, "bot2_raw": bot2_raw, "verdict": verdict})
+        turns.append(
+            {
+                "round": round_no,
+                "bot1": current_answer,
+                "bot1_self_check": self_check_answer,
+                "bot2_raw": bot2_raw,
+                "verdict": verdict,
+            }
+        )
 
         if verdict.get("status") in APPROVED_STATUSES:
             print_block("ИТОГ ПО ЗАДАЧЕ", f"Bot#2 одобрил на раунде {round_no}.", pause=pause)
@@ -422,6 +528,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             "only_level": args.only_level,
             "max_rounds": args.max_rounds,
             "pause_seconds": args.pause,
+            "bot1_self_check": not args.skip_bot1_self_check,
         },
         pause=args.pause,
     )
@@ -437,6 +544,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                 timeout=args.timeout,
                 pause=args.pause,
                 preview_chars=args.preview_chars,
+                bot1_self_check=not args.skip_bot1_self_check,
             )
         except Exception as exc:
             result = {
@@ -480,6 +588,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-tokens", type=int, default=1400)
     parser.add_argument("--pause", type=int, default=15)
     parser.add_argument("--preview-chars", type=int, default=2800)
+    parser.add_argument("--skip-bot1-self-check", action="store_true", help="Disable Bot#1 self-check between Bot#1 revision and Bot#2 review")
     parser.set_defaults(func=cmd_run)
     return parser
 

@@ -56,6 +56,27 @@ def test_bot1_revision_messages_send_only_supervisor_fix_package() -> None:
     assert "## What I Changed From Bot#2 Feedback" in messages[1]["content"]
 
 
+def test_bot1_self_check_messages_require_closing_each_fix() -> None:
+    messages = repair_loop.bot1_self_check_messages(
+        task="SQLite to Postgres migration",
+        acceptance="Need RPO=0",
+        draft_answer="Rollback may lose new data after migration starts.",
+        bot2_verdict={
+            "summary": "RPO contradiction",
+            "required_fixes": ["Rewrite cutover/rollback to RPO=0"],
+            "risks": ["data loss"],
+        },
+        round_no=2,
+    )
+
+    assert messages[0]["role"] == "system"
+    assert "self-consistency gate" in messages[0]["content"]
+    assert "RPO=0" in messages[0]["content"]
+    assert "Rewrite cutover/rollback to RPO=0" in messages[1]["content"]
+    assert "every required fix is explicitly closed" in messages[1]["content"]
+    assert "## Self-Consistency Checklist" in messages[1]["content"]
+
+
 def test_run_case_counts_request_changes(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
 
@@ -63,9 +84,11 @@ def test_run_case_counts_request_changes(monkeypatch, tmp_path: Path) -> None:
         messages = kwargs["messages"]
         joined = "\n".join(item["content"] for item in messages)
         calls.append(joined)
+        if "Bot#1 draft answer to self-check" in joined:
+            return "self-checked revised answer with inverse normalization", {"usage": {"total_tokens": 12}}
         if "Previous Bot#1 answer" in joined:
             return "revised answer with inverse normalization", {"usage": {"total_tokens": 11}}
-        if "Bot#1 result:" in joined and "revised answer" in joined:
+        if "Bot#1 result:" in joined and "self-checked revised answer" in joined:
             return (
                 '{"status":"APPROVE","approved_action":"execute","summary":"ok",'
                 '"evidence_checked":["revision"],"risks":[],"required_fixes":[],"confidence":0.9}',
@@ -103,7 +126,9 @@ def test_run_case_counts_request_changes(monkeypatch, tmp_path: Path) -> None:
     assert result["final_status"] == "APPROVE"
     assert result["correction_count"] == 1
     assert len(result["turns"]) == 2
+    assert result["turns"][1]["bot1_self_check"] == "self-checked revised answer with inverse normalization"
     assert any("Previous Bot#1 answer" in call for call in calls)
+    assert any("Bot#1 draft answer to self-check" in call for call in calls)
 
 
 def test_run_case_repairs_invalid_bot2_json(monkeypatch, tmp_path: Path) -> None:
