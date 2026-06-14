@@ -230,6 +230,14 @@ def format_skill_context(skill_context: dict[str, Any] | None) -> str:
     return json.dumps(redact_payload(compact), ensure_ascii=False, indent=2, sort_keys=True)
 
 
+def prompt_text(value: Any) -> str:
+    return redact_text(str(value or ""))
+
+
+def prompt_json(data: Any) -> str:
+    return json.dumps(redact_payload(data), ensure_ascii=False, indent=2, sort_keys=True)
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -613,6 +621,8 @@ def bot1_messages(
     skill_context: dict[str, Any] | None = None,
     semantic_budget: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
+    safe_task = prompt_text(task)
+    safe_acceptance = prompt_text(acceptance)
     return [
         {
             "role": "system",
@@ -628,10 +638,10 @@ def bot1_messages(
             "role": "user",
             "content": f"""
 Task:
-{task}
+{safe_task}
 
 Acceptance criteria:
-{acceptance}
+{safe_acceptance}
 
 Runtime skill context:
 {format_skill_context(skill_context)}
@@ -662,6 +672,9 @@ def bot2_messages(
     skill_context: dict[str, Any] | None = None,
     semantic_budget: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
+    safe_task = prompt_text(task)
+    safe_acceptance = prompt_text(acceptance)
+    safe_bot1_result = prompt_text(bot1_result)
     return [
         {
             "role": "system",
@@ -678,13 +691,13 @@ def bot2_messages(
             "role": "user",
             "content": f"""
 Task:
-{task}
+{safe_task}
 
 Acceptance criteria:
-{acceptance}
+{safe_acceptance}
 
 Bot#1 result:
-{bot1_result}
+{safe_bot1_result}
 
 Runtime skill context for Bot#2:
 {format_skill_context(skill_context)}
@@ -705,6 +718,8 @@ Return ONLY valid JSON matching this schema:
 
 
 def bot2_route_audit_messages(task: str, route: dict[str, Any]) -> list[dict[str, str]]:
+    safe_task = prompt_text(task)
+    safe_route = prompt_json(route)
     return [
         {
             "role": "system",
@@ -720,10 +735,10 @@ def bot2_route_audit_messages(task: str, route: dict[str, Any]) -> list[dict[str
             "role": "user",
             "content": f"""
 Task:
-{task}
+{safe_task}
 
 Router classification:
-{json.dumps(route, ensure_ascii=False, indent=2)}
+{safe_route}
 
 Return ONLY valid JSON matching this schema:
 {{
@@ -758,6 +773,12 @@ def bot1_revision_messages(
 ) -> list[dict[str, str]]:
     fixes = bot2_verdict.get("required_fixes") or []
     risks = bot2_verdict.get("risks") or []
+    safe_task = prompt_text(task)
+    safe_acceptance = prompt_text(acceptance)
+    safe_previous_answer = prompt_text(previous_answer)
+    safe_summary = prompt_text(bot2_verdict.get("summary", ""))
+    safe_fixes = prompt_json(fixes)
+    safe_risks = prompt_json(risks)
     return [
         {
             "role": "system",
@@ -773,10 +794,10 @@ def bot1_revision_messages(
             "role": "user",
             "content": f"""
 Task:
-{task}
+{safe_task}
 
 Acceptance criteria:
-{acceptance}
+{safe_acceptance}
 
 Runtime skill context:
 {format_skill_context(skill_context)}
@@ -785,17 +806,17 @@ Semantic budget:
 {format_semantic_budget(semantic_budget)}
 
 Previous Bot#1 answer:
-{previous_answer}
+{safe_previous_answer}
 
 Supervisor correction package from Bot#2, round {round_no}:
 Summary:
-{bot2_verdict.get("summary", "")}
+{safe_summary}
 
 Required fixes:
-{json.dumps(fixes, ensure_ascii=False, indent=2)}
+{safe_fixes}
 
 Risks:
-{json.dumps(risks, ensure_ascii=False, indent=2)}
+{safe_risks}
 
 Output discipline:
 - Close every required_fix without expanding scope.
@@ -824,6 +845,11 @@ def bot1_self_check_messages(
 ) -> list[dict[str, str]]:
     fixes = bot2_verdict.get("required_fixes") or []
     risks = bot2_verdict.get("risks") or []
+    safe_task = prompt_text(task)
+    safe_acceptance = prompt_text(acceptance)
+    safe_draft_answer = prompt_text(draft_answer)
+    safe_fixes = prompt_json(fixes)
+    safe_risks = prompt_json(risks)
     return [
         {
             "role": "system",
@@ -841,10 +867,10 @@ def bot1_self_check_messages(
             "role": "user",
             "content": f"""
 Task:
-{task}
+{safe_task}
 
 Acceptance criteria:
-{acceptance}
+{safe_acceptance}
 
 Runtime skill context:
 {format_skill_context(skill_context)}
@@ -853,13 +879,13 @@ Semantic budget:
 {format_semantic_budget(semantic_budget)}
 
 Bot#2 required fixes for round {round_no}:
-{json.dumps(fixes, ensure_ascii=False, indent=2)}
+{safe_fixes}
 
 Bot#2 risks:
-{json.dumps(risks, ensure_ascii=False, indent=2)}
+{safe_risks}
 
 Bot#1 draft answer to self-check:
-{draft_answer}
+{safe_draft_answer}
 
 Before returning, verify:
 - every required fix is explicitly closed in the answer;
@@ -887,6 +913,10 @@ def bot2_repair_messages(
     *,
     semantic_budget: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
+    safe_task = prompt_text(task)
+    safe_acceptance = prompt_text(acceptance)
+    safe_bot1_result = prompt_text(bot1_result)
+    safe_invalid_output = prompt_text(invalid_output)
     return [
         {
             "role": "system",
@@ -901,19 +931,19 @@ def bot2_repair_messages(
             "role": "user",
             "content": f"""
 Task:
-{task}
+{safe_task}
 
 Acceptance criteria:
-{acceptance}
+{safe_acceptance}
 
 Bot#1 result:
-{bot1_result}
+{safe_bot1_result}
 
 Semantic budget:
 {format_semantic_budget(semantic_budget)}
 
 Bot#2 invalid output to repair:
-{invalid_output}
+{safe_invalid_output}
 
 Return ONLY valid JSON matching this schema:
 {BOT2_VERDICT_JSON_SCHEMA}

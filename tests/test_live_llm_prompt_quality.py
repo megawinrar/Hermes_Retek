@@ -108,6 +108,85 @@ def test_bot_prompt_includes_startup_context_pack_without_cookie_values() -> Non
     assert "[REDACTED]" in combined
 
 
+def test_bot2_prompt_redacts_startup_context_pack_secret_values() -> None:
+    api_key = "API_KEY=" + "D" * 32
+    bearer = "Authorization: Bearer " + "E" * 32
+    cookie = "auth.sid=" + "F" * 32
+    messages = dual_bot_lab.bot2_messages(
+        "Review restart guard",
+        "Need Bot#2 verdict.",
+        "Bot#1 result is public.",
+        skill_context={
+            "role": "bot2",
+            "startup_context_pack": {
+                "session_strategy": "fresh_session_with_durable_context_pack",
+                "required_fixes": [f"Remove leaked {api_key}"],
+                "previous_attempts": [
+                    {"worker": "bot1", "status": "failed", "error_preview": bearer}
+                ],
+                "human_decision": {"reason": cookie},
+            },
+        },
+    )
+    combined = "\n".join(message["content"] for message in messages)
+
+    assert "fresh_session_with_durable_context_pack" in combined
+    assert "Remove leaked" in combined
+    assert "error_preview" in combined
+    assert api_key not in combined
+    assert bearer not in combined
+    assert cookie not in combined
+    assert combined.count("[REDACTED]") >= 3
+
+
+def test_live_prompt_builders_redact_task_acceptance_and_bot_outputs() -> None:
+    secret = "API_KEY=" + "G" * 32
+    bearer = "Authorization: Bearer " + "H" * 32
+    cookie = "auth.sid=" + "I" * 32
+
+    prompt_sets = [
+        dual_bot_lab.bot1_messages(
+            f"Task includes {secret}",
+            f"Acceptance includes {bearer}",
+        ),
+        dual_bot_lab.bot2_messages(
+            f"Task includes {secret}",
+            f"Acceptance includes {bearer}",
+            f"Bot1 leaked {cookie}",
+        ),
+        dual_bot_lab.bot1_revision_messages(
+            f"Task includes {secret}",
+            f"Acceptance includes {bearer}",
+            f"Previous answer leaked {cookie}",
+            {"summary": f"Summary {secret}", "required_fixes": [bearer], "risks": [cookie]},
+            2,
+        ),
+        dual_bot_lab.bot1_self_check_messages(
+            f"Task includes {secret}",
+            f"Acceptance includes {bearer}",
+            f"Draft leaked {cookie}",
+            {"required_fixes": [secret], "risks": [bearer]},
+            2,
+        ),
+        dual_bot_lab.bot2_repair_messages(
+            f"Task includes {secret}",
+            f"Acceptance includes {bearer}",
+            f"Bot1 leaked {cookie}",
+            f"Invalid review leaked {secret}",
+        ),
+        dual_bot_lab.bot2_route_audit_messages(
+            f"Task includes {secret}",
+            {"task_level": "L4", "risk_note": bearer},
+        ),
+    ]
+    combined = "\n".join(message["content"] for messages in prompt_sets for message in messages)
+
+    assert secret not in combined
+    assert bearer not in combined
+    assert cookie not in combined
+    assert combined.count("[REDACTED]") >= 10
+
+
 def test_bot2_prompt_does_not_require_future_supervisor_transcript() -> None:
     messages = dual_bot_lab.bot2_messages(
         "Live LLM smoke for CRM Ретек supplier analysis",

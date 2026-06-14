@@ -101,3 +101,150 @@ def test_startup_context_token_budget_uses_thirty_percent_with_bounds() -> None:
     assert process_context_pack.startup_context_token_budget(1000) == 300
     assert process_context_pack.startup_context_token_budget(10000) == 800
     assert process_context_pack.startup_context_token_budget(0) == 300
+
+
+def test_context_pack_rebuilds_from_process_events_assignments_and_human_decision(tmp_path: Path) -> None:
+    process_id = "proc-rebuild"
+    events = [
+        {
+            "event_type": "bot2_verdict",
+            "payload": {
+                "verdict": {
+                    "status": "REQUEST_CHANGES",
+                    "summary": "rollback missing",
+                    "required_fixes": ["Add rollback evidence.", 42],
+                    "risks": ["rollback_not_proven"],
+                }
+            },
+        },
+        {
+            "event_type": "human_decision",
+            "payload": {
+                "decision": {
+                    "status": "return_to_bot1",
+                    "choice": "yes",
+                    "meaning": "return to Bot1",
+                    "reason": "Bot2 is right",
+                    "bot2_session_id": "bot2-session",
+                }
+            },
+        },
+    ]
+    assignments = [
+        {"worker": "router", "phase": "intake", "status": "completed", "output": {"ignored": True}},
+        {"worker": "bot1", "phase": "execution", "status": "completed", "created_at": "t1", "output": {"result_chars": 120}},
+        {"worker": "tester", "phase": "verification", "status": "completed", "created_at": "t2", "output": {"evidence_chars": 80}},
+        {
+            "worker": "bot2",
+            "phase": "quality_gate",
+            "status": "completed",
+            "created_at": "t3",
+            "output": {
+                "verdict": {
+                    "status": "REQUEST_CHANGES",
+                    "summary": "assignment fallback",
+                    "required_fixes": ["fallback fix"],
+                    "risks": ["fallback risk"],
+                }
+            },
+        },
+    ]
+
+    pack = process_context_pack.build_role_context_pack(
+        role="bot1",
+        process_id=process_id,
+        task="Change restart guard",
+        acceptance="Need tests.",
+        route=route(),
+        skill_context=skill_context(),
+        phase="human_continue",
+        events=events,
+        assignments=assignments,
+        previous_answer="Previous Bot1 answer",
+        rlm_store_path=tmp_path / "missing-rlm.db",
+        workspace_root=str(tmp_path / "workspaces"),
+        token_budget=120,
+    )
+
+    assert pack["required_fixes"] == ["Add rollback evidence.", "42"]
+    assert pack["known_risks"] == ["rollback_not_proven"]
+    assert pack["human_decision"]["choice"] == "yes"
+    assert pack["human_decision"]["reason"] == "Bot2 is right"
+    assert pack["previous_answer_preview"] == "Previous Bot1 answer"
+    assert [item["worker"] for item in pack["previous_attempts"]] == ["bot1", "tester", "bot2"]
+    assert pack["previous_attempts"][-1]["verdict"]["summary"] == "assignment fallback"
+
+
+def test_context_pack_falls_back_to_assignment_verdict_without_event(tmp_path: Path) -> None:
+    pack = process_context_pack.build_role_context_pack(
+        role="bot1",
+        process_id="proc-assignment-fallback",
+        task="Fix code",
+        acceptance="Need review.",
+        route=route(),
+        skill_context=skill_context(),
+        assignments=[
+            {
+                "worker": "bot2",
+                "phase": "quality_gate",
+                "status": "completed",
+                "output": {
+                    "verdict": {
+                        "required_fixes": ["Use assignment verdict."],
+                        "risks": ["assignment_risk"],
+                    }
+                },
+            }
+        ],
+        workspace_root=str(tmp_path / "workspaces"),
+    )
+
+    assert pack["required_fixes"] == ["Use assignment verdict."]
+    assert pack["known_risks"] == ["assignment_risk"]
+
+
+def test_context_pack_handles_workspace_and_rlm_failures_without_secret_leaks(monkeypatch, tmp_path: Path) -> None:
+    token = "tok_" + "D" * 32
+
+    def fail_build_context_pack(**_kwargs: object) -> dict[str, object]:
+        raise RuntimeError(f"cannot open RLM Authorization: Bearer {token}")
+
+    monkeypatch.setattr(process_context_pack.rlm_store, "build_context_pack", fail_build_context_pack)
+
+    pack = process_context_pack.build_role_context_pack(
+        role="bot1",
+        process_id="bad/process-id",
+        task="Fix code",
+        acceptance="Need no leaks.",
+        route=route(),
+        skill_context=skill_context(),
+        rlm_enabled=True,
+        rlm_store_path=tmp_path / "rlm.db",
+    )
+    raw = json.dumps(pack, ensure_ascii=False)
+
+    assert pack["workspace"]["status"] == "unavailable"
+    assert pack["rlm_context"]["status"] == "unavailable"
+    assert token not in raw
+    assert "[REDACTED]" in raw
+
+
+def test_merge_rlm_packs_deduplicates_and_respects_budget() -> None:
+    pack = process_context_pack._merge_rlm_packs(
+        [
+            {
+                "context": "[1] kind A: short\n[2] kind B: " + ("x" * 200),
+                "records": [{"id": 1}, {"id": 2}],
+            },
+            {
+                "context": "[1] duplicate should skip\n\n[3] kind C: short",
+                "records": [{"id": 1}, {"id": 99}, {"id": 3}],
+            },
+        ],
+        token_budget=6,
+    )
+
+    assert [record["id"] for record in pack["records"]] == [1]
+    assert "[1] kind A: short" in pack["context"]
+    assert "kind B" not in pack["context"]
+    assert "duplicate should skip" not in pack["context"]

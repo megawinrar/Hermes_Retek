@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -133,3 +136,104 @@ def test_redaction_prevents_raw_secrets_in_storage_and_search_output(tmp_path: P
     with sqlite3.connect(store) as con:
         raw_rows = con.execute("SELECT title, summary, content, tags_json, metadata_json FROM rlm_records").fetchall()
     assert secret not in json.dumps(raw_rows)
+
+
+def test_get_record_kind_filter_and_artifact_fallback_ref(tmp_path: Path) -> None:
+    store = tmp_path / "rlm.db"
+    artifact = rlm_store.add_record(
+        "artifact",
+        "Browser export",
+        "Saved authenticated export metadata",
+        tags=("browser", "export", "browser"),
+        process_id="proc-artifact",
+        store_path=store,
+    )
+    rlm_store.add_record(
+        "memory",
+        "Browser note",
+        "Same tag but different kind",
+        tags=["browser"],
+        process_id="proc-artifact",
+        store_path=store,
+    )
+
+    found = rlm_store.get_record(artifact["id"], store_path=store)
+    missing = rlm_store.get_record(999999, store_path=store)
+    artifacts = rlm_store.search_records(tags=["browser"], kind="artifact", store_path=store)
+    pack = rlm_store.build_context_pack(tags=["browser"], kind="artifact", token_budget=80, store_path=store)
+
+    assert found is not None
+    assert found["content"] == ""
+    assert found["tags"] == ["browser", "export"]
+    assert missing is None
+    assert [record["id"] for record in artifacts] == [artifact["id"]]
+    assert f"artifact=rlm:{artifact['id']}" in pack["context"]
+
+
+def test_parse_metadata_rejects_non_object_and_bad_json() -> None:
+    with pytest.raises(argparse.ArgumentTypeError):
+        rlm_store._parse_metadata('["not", "an", "object"]')
+    with pytest.raises(json.JSONDecodeError):
+        rlm_store._parse_metadata("{not-json")
+
+
+def test_cli_add_and_pack_with_metadata_and_repeated_tags(tmp_path: Path) -> None:
+    store = tmp_path / "rlm.db"
+    add = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS / "rlm_store.py"),
+            "--store",
+            str(store),
+            "add",
+            "--kind",
+            "artifact",
+            "--title",
+            "Timing report",
+            "--summary",
+            "Restart timing evidence",
+            "--content",
+            "duration_ms=123",
+            "--tags",
+            "ops/restart, report",
+            "--tag",
+            "timing",
+            "--process-id",
+            "proc-cli",
+            "--metadata",
+            '{"path":"reports/timing.json"}',
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert add.returncode == 0, add.stderr
+    added = json.loads(add.stdout)
+    assert added["kind"] == "artifact"
+    assert added["tags"] == ["ops/restart", "report", "timing"]
+    assert added["metadata"]["path"] == "reports/timing.json"
+
+    pack = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS / "rlm_store.py"),
+            "--store",
+            str(store),
+            "pack",
+            "--tags",
+            "ops/restart",
+            "--process-id",
+            "proc-cli",
+            "--kind",
+            "artifact",
+            "--token-budget",
+            "80",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert pack.returncode == 0, pack.stderr
+    payload = json.loads(pack.stdout)
+    assert payload["records"][0]["id"] == added["id"]
+    assert "artifact=reports/timing.json" in payload["context"]

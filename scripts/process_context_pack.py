@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import copy
-import json
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +22,6 @@ DEFAULT_CONTEXT_TOKEN_BUDGET = 300
 MIN_CONTEXT_TOKEN_BUDGET = 120
 MAX_CONTEXT_TOKEN_BUDGET = 800
 PREVIEW_CHARS = 900
-
-
-def dumps(data: Any) -> str:
-    return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def truncate_text(value: str, *, limit: int = PREVIEW_CHARS) -> str:
@@ -117,26 +112,27 @@ def _latest_verdict(events: list[dict[str, Any]], assignments: list[dict[str, An
     return {}
 
 
-def _required_fixes(
+def _verdict_from_inputs(
     *,
     prior_verdict: dict[str, Any] | None,
     events: list[dict[str, Any]],
     assignments: list[dict[str, Any]],
-) -> list[str]:
-    verdict = prior_verdict if isinstance(prior_verdict, dict) and prior_verdict else _latest_verdict(events, assignments)
-    fixes = verdict.get("required_fixes") if isinstance(verdict, dict) else []
-    return [str(item) for item in (fixes or [])]
+) -> dict[str, Any]:
+    if isinstance(prior_verdict, dict) and prior_verdict:
+        return prior_verdict
+    return _latest_verdict(events, assignments)
 
 
-def _known_risks(
+def _verdict_string_list(
     *,
     prior_verdict: dict[str, Any] | None,
     events: list[dict[str, Any]],
     assignments: list[dict[str, Any]],
+    key: str,
 ) -> list[str]:
-    verdict = prior_verdict if isinstance(prior_verdict, dict) and prior_verdict else _latest_verdict(events, assignments)
-    risks = verdict.get("risks") if isinstance(verdict, dict) else []
-    return [str(item) for item in (risks or [])]
+    verdict = _verdict_from_inputs(prior_verdict=prior_verdict, events=events, assignments=assignments)
+    values = verdict.get(key) if isinstance(verdict, dict) else []
+    return [str(item) for item in (values or [])]
 
 
 def _previous_attempts(assignments: list[dict[str, Any]], *, limit: int = 6) -> list[dict[str, Any]]:
@@ -303,8 +299,18 @@ def build_role_context_pack(
 ) -> dict[str, Any]:
     events = list(events or [])
     assignments = list(assignments or [])
-    required_fixes = _required_fixes(prior_verdict=prior_verdict, events=events, assignments=assignments)
-    known_risks = _known_risks(prior_verdict=prior_verdict, events=events, assignments=assignments)
+    required_fixes = _verdict_string_list(
+        prior_verdict=prior_verdict,
+        events=events,
+        assignments=assignments,
+        key="required_fixes",
+    )
+    known_risks = _verdict_string_list(
+        prior_verdict=prior_verdict,
+        events=events,
+        assignments=assignments,
+        key="risks",
+    )
     rlm_context = _rlm_context_pack(
         process_id=process_id,
         route=route,
