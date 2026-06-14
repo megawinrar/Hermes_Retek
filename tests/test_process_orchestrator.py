@@ -918,6 +918,7 @@ def test_process_live_dual_repairs_invalid_bot2_json_in_main_orchestrator(monkey
     assert activity_events[0]["payload"]["usage"]["total_tokens"] == 10
     assert activity_events[0]["payload"]["output_chars"] == len(f"Bot#1 result {secret}")
     assert secret not in json.dumps([event["payload"] for event in activity_events])
+    assert activity_events[0]["payload"]["output_redacted"].endswith("[REDACTED]")
     assert "[REDACTED]" in activity_events[0]["payload"]["output_preview"]
     assert activity_events[-1]["payload"]["repair_status"] == "repaired"
 

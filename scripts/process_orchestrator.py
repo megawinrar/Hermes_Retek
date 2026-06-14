@@ -469,7 +469,8 @@ def bot_activity_payload(
     verdict_status: str = "",
     repair_status: str = "",
 ) -> dict[str, Any]:
-    preview = redact_payload(output[:BOT_ACTIVITY_PREVIEW_CHARS])
+    redacted_output = str(redact_payload(output))
+    preview = redacted_output[:BOT_ACTIVITY_PREVIEW_CHARS]
     return {
         "run_id": run_id_value,
         "actor": actor,
@@ -477,6 +478,7 @@ def bot_activity_payload(
         "round": round_no,
         "model": model,
         "output_chars": len(output),
+        "output_redacted": redacted_output,
         "output_preview": preview,
         "output_preview_truncated": len(output) > BOT_ACTIVITY_PREVIEW_CHARS,
         "usage": raw_response.get("usage", {}),
