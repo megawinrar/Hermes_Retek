@@ -64,6 +64,10 @@ def _runtime_cache_enabled() -> bool:
     return os.environ.get("HERMES_PROCESS_RAM_CACHE", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _supplier_score_calculator_enabled() -> bool:
+    return os.environ.get("HERMES_ENABLE_SUPPLIER_CALCULATOR", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _runtime_cache_ttl_seconds() -> int:
     raw = os.environ.get("HERMES_PROCESS_RAM_CACHE_TTL_SECONDS", "300")
     try:
@@ -453,11 +457,15 @@ def build_route_skill_context(route: dict[str, Any], *, include_approval_require
 
 
 def deterministic_tool_results_for_route(task: str, route: dict[str, Any]) -> list[dict[str, Any]]:
+    if not _supplier_score_calculator_enabled():
+        return []
     task_type = str(route.get("task_type") or "")
     if task_type != "supplier_price_deadline_analysis":
         return []
     result = build_supplier_score_result(task, route)
-    if result.get("status") == "not_applicable":
+    if result.get("status") != "ok":
+        return []
+    if result.get("warnings"):
         return []
     return [result]
 

@@ -272,7 +272,8 @@ def test_live_route_audit_auto_skips_low_risk_l1(monkeypatch, tmp_path: Path) ->
     assert details["summary"]["performance"]["route_audit"]["skipped"] is True
 
 
-def test_supplier_route_records_deterministic_calculator_context(tmp_path: Path) -> None:
+def test_supplier_route_skips_deterministic_calculator_by_default(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("HERMES_ENABLE_SUPPLIER_CALCULATOR", raising=False)
     task = (
         "Score CRM Retek supplier options: Alpha costs 1.2M RUB and delivers in 20 days with 99.5 SLA; "
         "Beta costs 0.95M RUB and delivers in 35 days with 98.7 SLA; "
@@ -287,7 +288,38 @@ def test_supplier_route_records_deterministic_calculator_context(tmp_path: Path)
     )
     payload = process_orchestrator.run_process(args)
 
-    tool_results = payload["route"]["skill_context"]["tool_results"]
+    assert payload["route"]["skill_context"].get("tool_results", []) == []
+
+    details = process_orchestrator.process_details(
+        payload["process_id"],
+        store_path=args.process_store,
+        supervisor_store_path=args.supervisor_store,
+    )
+    event_types = {event["event_type"] for event in details["events"]}
+    workers = {assignment["worker"] for assignment in details["assignments"]}
+    assert "deterministic_tool_results" not in event_types
+    assert "deterministic_tools" not in workers
+
+
+def test_supplier_route_records_deterministic_calculator_context_when_explicitly_enabled(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HERMES_ENABLE_SUPPLIER_CALCULATOR", "1")
+    task = (
+        "Score CRM Retek supplier options: Alpha costs 1.2M RUB and delivers in 20 days with 99.5 SLA; "
+        "Beta costs 0.95M RUB and delivers in 35 days with 98.7 SLA; "
+        "Gamma costs 1.05M RUB and delivers in 25 days with 99.1 SLA. "
+        "Use weighted scoring for cost 35%, delivery 30%, SLA 35%."
+    )
+    args = args_for_process(
+        tmp_path,
+        task=task,
+        acceptance="Return ranked suppliers with normalized weighted score.",
+        live_dual=False,
+    )
+    payload = process_orchestrator.run_process(args)
+
+    tool_results = payload["route"]["skill_context"].get("tool_results", [])
     assert tool_results[0]["tool"] == "supplier_score_calculator"
     assert tool_results[0]["status"] == "ok"
     assert tool_results[0]["winner"] == "Alpha"
@@ -302,6 +334,18 @@ def test_supplier_route_records_deterministic_calculator_context(tmp_path: Path)
     workers = {assignment["worker"] for assignment in details["assignments"]}
     assert "deterministic_tool_results" in event_types
     assert "deterministic_tools" in workers
+
+
+def test_supplier_calculator_does_not_attach_to_serial_production_task_even_when_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_ENABLE_SUPPLIER_CALCULATOR", "1")
+    task = (
+        "Мне нужно выяснить по каким признакам производство имеет серийность. "
+        "Примеры: измерительные калибры и метчики; алюминий Д16Т и торги на объемы по лому Р6М5 и Р18."
+    )
+    route = process_orchestrator.classify_task(task)
+
+    assert route["task_type"] != "supplier_price_deadline_analysis"
+    assert process_orchestrator.deterministic_tool_results_for_route(task, route) == []
 
 
 def test_live_route_audit_always_bypasses_low_risk_fast_path(monkeypatch, tmp_path: Path) -> None:
