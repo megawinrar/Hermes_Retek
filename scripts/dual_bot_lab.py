@@ -60,6 +60,37 @@ BOT2_VERDICT_JSON_SCHEMA = """{
 }"""
 
 
+def format_skill_context(skill_context: dict[str, Any] | None) -> str:
+    if not skill_context:
+        return "No runtime skill context supplied."
+    compact = {
+        "role": skill_context.get("role", ""),
+        "task_tags": skill_context.get("task_tags", []),
+        "skills": [
+            {
+                "name": item.get("name", ""),
+                "path": item.get("path", ""),
+                "tags": item.get("tags", []),
+                "matched_tags": item.get("matched_tags", []),
+                "load_policy": item.get("load_policy", ""),
+                "gateway_required": bool(item.get("gateway_required")),
+            }
+            for item in skill_context.get("skills", [])
+        ],
+        "gated_skills": [
+            {
+                "name": item.get("name", ""),
+                "path": item.get("path", ""),
+                "load_policy": item.get("load_policy", ""),
+                "gateway_required": bool(item.get("gateway_required")),
+            }
+            for item in skill_context.get("gated_skills", [])
+        ],
+        "runtime_contract": skill_context.get("runtime_contract", {}),
+    }
+    return json.dumps(compact, ensure_ascii=False, indent=2, sort_keys=True)
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -241,7 +272,7 @@ def call_chat_payload(*, base_url: str, api_key: str, payload: dict[str, Any], t
     raise RuntimeError(redact_text("Bothub chat completion failed: " + " | ".join(errors)))
 
 
-def bot1_messages(task: str, acceptance: str) -> list[dict[str, str]]:
+def bot1_messages(task: str, acceptance: str, *, skill_context: dict[str, Any] | None = None) -> list[dict[str, str]]:
     return [
         {
             "role": "system",
@@ -260,6 +291,9 @@ Task:
 Acceptance criteria:
 {acceptance}
 
+Runtime skill context:
+{format_skill_context(skill_context)}
+
 Return Markdown with exactly these sections:
 ## Bot#1 Answer
 ## Public Reasoning
@@ -270,7 +304,13 @@ Return Markdown with exactly these sections:
     ]
 
 
-def bot2_messages(task: str, acceptance: str, bot1_result: str) -> list[dict[str, str]]:
+def bot2_messages(
+    task: str,
+    acceptance: str,
+    bot1_result: str,
+    *,
+    skill_context: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
     return [
         {
             "role": "system",
@@ -292,6 +332,9 @@ Acceptance criteria:
 
 Bot#1 result:
 {bot1_result}
+
+Runtime skill context for Bot#2:
+{format_skill_context(skill_context)}
 
 Supervisor context:
 {SUPERVISOR_TRANSCRIPT_CONTEXT}
@@ -356,6 +399,8 @@ def bot1_revision_messages(
     previous_answer: str,
     bot2_verdict: dict[str, Any],
     round_no: int,
+    *,
+    skill_context: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     fixes = bot2_verdict.get("required_fixes") or []
     risks = bot2_verdict.get("risks") or []
@@ -377,6 +422,9 @@ Task:
 
 Acceptance criteria:
 {acceptance}
+
+Runtime skill context:
+{format_skill_context(skill_context)}
 
 Previous Bot#1 answer:
 {previous_answer}
@@ -407,6 +455,8 @@ def bot1_self_check_messages(
     draft_answer: str,
     bot2_verdict: dict[str, Any],
     round_no: int,
+    *,
+    skill_context: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     fixes = bot2_verdict.get("required_fixes") or []
     risks = bot2_verdict.get("risks") or []
@@ -430,6 +480,9 @@ Task:
 
 Acceptance criteria:
 {acceptance}
+
+Runtime skill context:
+{format_skill_context(skill_context)}
 
 Bot#2 required fixes for round {round_no}:
 {json.dumps(fixes, ensure_ascii=False, indent=2)}

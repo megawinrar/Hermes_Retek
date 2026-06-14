@@ -6,6 +6,20 @@
     "heavy_bundle_default": false,
     "scripts_require_gateway": true
   },
+  "task_type_tags": {
+    "analysis_or_checklist": ["analysis", "requirements", "documents", "testing"],
+    "architecture_or_strategy": ["architecture", "adr", "design", "dispatch"],
+    "code_change": ["code", "tdd", "implementation", "testing", "review"],
+    "code_or_deploy_project": ["code", "tdd", "implementation", "testing", "review", "devops", "deploy"],
+    "command_or_status": ["router", "dispatch"],
+    "database_migration_change": ["architecture", "design", "testing", "devops", "deploy"],
+    "database_migration_plan": ["architecture", "design", "testing", "review"],
+    "git_write_or_deploy": ["github", "pull-request", "merge", "devops", "deploy"],
+    "github_lookup": ["github", "review", "pull-request"],
+    "simple_text_task": ["implementation"],
+    "standard_task": ["analysis", "requirements"],
+    "supplier_price_deadline_analysis": ["analysis", "requirements", "documents", "testing", "review"]
+  },
   "skills": [
     {
       "name": "role-dispatcher",
