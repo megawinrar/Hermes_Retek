@@ -1,6 +1,80 @@
 # Hermes Retek Session Handoff
 
-Date: 2026-06-13
+Date: 2026-06-14
+
+## Current Continuation Point
+
+The current active branch is `ops-safe-restart-speed`.
+
+Latest pushed commits at handoff:
+
+- `bbfea2e feat: add hermes timing report`
+- `daf1bff feat: log hermes agent fanout timings`
+
+The live server has the timing report script physically deployed to
+`/opt/hermes-assistant/scripts/hermes_timing_report.py`. The production tree on
+the server is still on its own `custom` branch, so do not blindly switch it or
+run destructive sync commands.
+
+One-time timing report is scheduled through `yc-user` crontab for
+2026-06-15 06:05 UTC, which is 2026-06-15 10:05 Europe/Samara. It sends a
+Telegram report and writes runtime output to:
+
+```text
+/opt/data/reports/hermes_timing_report_20260615.log
+```
+
+The timing report now reads real runtime logs:
+
+- `/opt/data/logs/gateway.log`
+- `/opt/data/logs/agent.log`
+
+It reports:
+
+- Telegram turn timing: inbound, first streaming flush, final response;
+- LLM/BotHub stream latency;
+- tool latency and tool errors;
+- agent fanout: sessions, `delegate_task`, background review turns, noisy
+  sessions, agent `api_used`, history size;
+- gateway SIGTERM/start events, Telegram reconnects, session compression;
+- Process/Supervisor SQLite status counts.
+
+The latest real dry-run showed Hermes already uses agent fanout:
+
+- `agent sessions seen: 31`;
+- `delegate_task calls: 11`;
+- `background review turns: 32`;
+- slowest `delegate_task`: about `393.6s`.
+
+That means parallelization is realistic, but it must be bounded with max
+parallel agents, per-agent timeout/budget, isolated workspaces, single-writer DB
+rules, and BotHub rate/budget guards.
+
+## Start Command For Next Window
+
+Paste this into a fresh Codex window:
+
+```text
+Продолжи Hermes Retek с места остановки. Рабочая ветка: ops-safe-restart-speed. Сначала прочитай docs/16_session_handoff.md, затем проверь завтрашний Telegram timing report и /opt/data/reports/hermes_timing_report_20260615.log. После этого спроектируй bounded parallel agent orchestration: max parallel agents, per-agent timeout/budget, isolated workspace, single-writer SQLite/state, BotHub rate limits, и добавь тесты. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения.
+```
+
+Useful manual server check:
+
+```bash
+docker exec hermes-agent sh -lc 'cd /opt/hermes-assistant && python3 scripts/hermes_timing_report.py --hours 24'
+```
+
+Useful focused test:
+
+```bash
+docker exec -e UV_CACHE_DIR=/opt/data/.cache/uv -e PYTHONDONTWRITEBYTECODE=1 hermes-agent sh -lc 'cd /opt/hermes-assistant && uv run --with pytest==9.0.2 --with pytest-timeout==2.4.0 python -m pytest tests/test_hermes_timing_report.py -q -p no:cacheprovider'
+```
+
+Latest verification before this handoff:
+
+- focused timing report tests: `8 passed`;
+- full server suite: `137 passed`;
+- current-file secret audit for changed files: `0 findings`.
 
 ## Current Runtime Correction
 
