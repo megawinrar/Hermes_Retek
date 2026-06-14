@@ -25,7 +25,7 @@ https://github.com/megawinrar/Hermes_Retek/tree/ops-safe-restart-speed-g3-rlm-20
 Code baseline before this handoff update:
 
 ```text
-55b9b9e feat: add supervisor-gated agent workspace lifecycle
+9cf4894 feat: add durable startup context packs
 ```
 
 Key commits in this session:
@@ -40,6 +40,7 @@ Key commits in this session:
 - `697cb7b feat: write process summaries to rlm store`
 - `ed77da3 refactor: isolate process rlm memory writer`
 - `55b9b9e feat: add supervisor-gated agent workspace lifecycle`
+- `9cf4894 feat: add durable startup context packs`
 
 ## What Was Implemented
 
@@ -66,6 +67,21 @@ g3-inspired workspace lifecycle:
 - `set-status`, `accept`, `discard`;
 - `accept` is Supervisor-gated and never auto-merges.
 
+Bot1/Bot2 durable startup context packs:
+
+- `scripts/process_context_pack.py`
+- fresh Bot1/Bot2 sessions now receive a compact durable context pack instead
+  of relying on long chat history;
+- pack includes task, acceptance, route/risk, role skills, workspace snapshot,
+  previous attempts, Bot2 required fixes/risks, human decision state, RLM
+  records, and single-writer safety rules;
+- pack budget defaults to 30% of the requested token budget, bounded from 120
+  to 800 tokens;
+- Supervisor logs `durable_context_pack_built` and `context_engineer`
+  `session_startup` records in process SQLite;
+- Bot1/Bot2 prompt formatting includes `startup_context_pack`;
+- cookie/session-like values are redacted before prompt/event storage.
+
 Skills and browser work:
 
 - `skills/hermes-browser/SKILL.md`
@@ -87,7 +103,7 @@ Secret/runtime safety:
 Local verification before server deploy:
 
 ```text
-pytest: 242 passed
+pytest: 245 passed
 secret_audit on current tracked target paths: 0 findings
 ```
 
@@ -103,6 +119,9 @@ Focused coverage added:
 - workspace lifecycle accept/discard gates;
 - secret vault permissions/redaction;
 - bounded parallel orchestration policy.
+- durable Bot1/Bot2 startup context pack construction;
+- prompt inclusion of startup context without cookie/session leaks;
+- run/continue process logging of context pack startup.
 
 ## Server Deploy
 
@@ -211,6 +230,15 @@ This is close to the useful part of `g3`: g3 has a coach/player loop and
 session/workspace metadata, plus context thinning/compaction instead of simply
 throwing everything away. Hermes should keep that shape, but with stronger
 Supervisor/Bot2 gates.
+
+Implemented status as of `9cf4894`:
+
+- initial `run` builds startup packs for Bot1/Bot2 when Bot2/review is required
+  or RLM is enabled;
+- `continue` after human YES rebuilds packs from process SQLite/RLM and passes
+  Bot2 required fixes back into Bot1;
+- L0/simple L1 paths do not load memory by default unless RLM is enabled;
+- production `/opt/hermes-assistant` was not touched in this continuation.
 
 ## Next Session First Prompt
 
