@@ -9,7 +9,7 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import devlog  # noqa: E402
-from human_notification import build_human_notification_buttons, dispatch_human_notification  # noqa: E402
+from human_notification import build_human_notification_buttons, dispatch_human_notification, format_human_notification  # noqa: E402
 
 
 def test_build_human_notification_buttons_use_compact_process_callbacks() -> None:
@@ -51,9 +51,13 @@ def test_dispatch_human_notification_sends_buttons(monkeypatch) -> None:
             "process_id": "proc-1",
             "supervisor_task_id": "sup-1",
             "task": "deploy",
+            "task_level": "L4",
+            "task_type": "git_write_or_deploy",
+            "risk_items": ["high"],
             "risk": "high",
             "bot1_version": "result",
             "bot2_version": "needs human",
+            "missing_items": ["ask user"],
             "recommendation": "ask user",
             "decision_semantics": {"yes": "return", "no": "accept"},
         },
@@ -65,7 +69,36 @@ def test_dispatch_human_notification_sends_buttons(monkeypatch) -> None:
     assert delivery["telegram_delivered"] is True
     assert delivery["buttons"] is True
     assert delivery["message_id"] == 77
-    assert "[Hermes Supervisor: решение человека]" in calls[0]["text"]
+    assert "Hermes Supervisor" in calls[0]["text"]
     assert "Процесс: proc-1" in calls[0]["text"]
-    assert "Да = return" in calls[0]["text"]
+    assert "ЦИТАТА BOT#1\n> result" in calls[0]["text"]
+    assert "ЦИТАТА BOT#2\n> needs human" in calls[0]["text"]
+    assert "ЧЕГО НЕ ХВАТАЕТ ПО BOT#2\n1. ask user" in calls[0]["text"]
+    assert "Да: return" in calls[0]["text"]
+    assert "Decision commands" not in calls[0]["text"]
     assert calls[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "hp:y:proc-1"
+
+
+def test_format_human_notification_reads_conflict_as_card() -> None:
+    text = format_human_notification(
+        {
+            "process_id": "proc-1",
+            "supervisor_task_id": "sup-1",
+            "task_level": "L4",
+            "task_type": "deploy",
+            "task": "Deploy without tests",
+            "bot1_version": "I will push to main now.",
+            "bot2_version": "Do not push: tests are missing.",
+            "missing_items": ["Run smoke tests", "Get explicit approval"],
+            "risk_items": ["Production outage", "Unreviewed main push"],
+            "decision_semantics": {"yes": "вернуть Bot#1", "no": "принять Bot#1"},
+            "decision_commands": {"yes": "hidden", "no": "hidden"},
+        }
+    )
+
+    assert "КОНФЛИКТ" in text
+    assert "ЦИТАТА BOT#1\n> I will push to main now." in text
+    assert "ЦИТАТА BOT#2\n> Do not push: tests are missing." in text
+    assert "ЧЕГО НЕ ХВАТАЕТ ПО BOT#2\n1. Run smoke tests\n2. Get explicit approval" in text
+    assert "РИСКИ\n1. Production outage\n2. Unreviewed main push" in text
+    assert "Decision commands" not in text

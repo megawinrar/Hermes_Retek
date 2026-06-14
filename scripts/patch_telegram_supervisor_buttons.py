@@ -21,6 +21,7 @@ HELPER_FAST_PATH_MARKER = "_run_hermes_process_tool_callback"
 CALLBACK_CONTINUE_MARKER = 'result["continue_result"] = await self._run_hermes_process_callback("continue", process_id)'
 HELPER_RU_MARKER = "Автопродолжение после Да"
 CALLBACK_RU_MARKER = "Да: вернуть Bot#1 на доработку"
+CALLBACK_FAIL_SAFE_MARKER = "Ошибка Supervisor: решение не записано"
 
 
 HELPER_BLOCK = r'''
@@ -254,6 +255,13 @@ CALLBACK_BLOCK = r'''
                     reason=f"Telegram button by {user_display}",
                 )
                 label = "Да: вернуть Bot#1 на доработку" if choice == "yes" else "Нет: принять Bot#1"
+                if not result.get("ok", True):
+                    await query.answer(text="Ошибка Supervisor: решение не записано")
+                    await self._send_hermes_process_callback_followup(
+                        query,
+                        self._format_hermes_process_callback_result("decide", result),
+                    )
+                    return
                 await query.answer(text=label[:60])
                 try:
                     await query.edit_message_text(
@@ -302,7 +310,7 @@ def patch_text(text: str) -> tuple[str, list[str]]:
             raise RuntimeError("update prompt anchor not found")
         text = text.replace(update_anchor, CALLBACK_BLOCK + update_anchor, 1)
         changes.append("callback_branch")
-    elif CALLBACK_CONTINUE_MARKER not in text or CALLBACK_RU_MARKER not in text:
+    elif CALLBACK_CONTINUE_MARKER not in text or CALLBACK_RU_MARKER not in text or CALLBACK_FAIL_SAFE_MARKER not in text:
         marker_start = text.find(CALLBACK_MARKER)
         callback_start = text.rfind("\n", 0, marker_start) + 1
         callback_end = text.find(update_anchor)

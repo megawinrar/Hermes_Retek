@@ -69,6 +69,7 @@ class TelegramAdapter:
     assert "Автопродолжение после Да" in patched
     assert "Да: вернуть Bot#1 на доработку" in patched
     assert "Детали процесса" in patched
+    assert "Ошибка Supervisor: решение не записано" in patched
     assert HELPER_FAST_PATH_MARKER in patched
 
     second, second_changes = patch_text(patched)

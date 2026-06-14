@@ -17,6 +17,34 @@ def _join_items(items: Any, default: str) -> str:
     return default
 
 
+def _list_items(items: Any, fallback: str = "") -> list[str]:
+    if isinstance(items, list):
+        return [str(item).strip() for item in items if str(item).strip()]
+    if isinstance(items, str) and items.strip():
+        return [item.strip() for item in items.split(";") if item.strip()]
+    if fallback.strip():
+        return [fallback.strip()]
+    return []
+
+
+def _clip_text(value: Any, limit: int = 900) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "..."
+
+
+def _quote_block(value: Any, limit: int = 900) -> list[str]:
+    text = _clip_text(value, limit=limit) or "Нет текста."
+    return ["> " + line if line else ">" for line in text.splitlines()]
+
+
+def _numbered_block(items: list[str], *, empty: str, limit: int = 5) -> list[str]:
+    if not items:
+        return [f"1. {empty}"]
+    return [f"{idx}. {_clip_text(item, 260)}" for idx, item in enumerate(items[:limit], start=1)]
+
+
 def build_human_notification_payload(
     *,
     process_id: str,
@@ -34,10 +62,13 @@ def build_human_notification_payload(
         "task": str(task.get("tz") or ""),
         "task_level": route.get("task_level", ""),
         "task_type": route.get("task_type", ""),
+        "risk_level": route.get("risk_level", ""),
         "human_gate_required": bool(route.get("human_gate_required")),
         "bot1_version": str(task.get("bot1_result") or "Bot#1 result is empty."),
         "bot2_version": str(verdict.get("summary") or "Bot#2 did not provide a summary."),
+        "risk_items": _list_items(verdict.get("risks")),
         "risk": _join_items(verdict.get("risks"), "No explicit risk listed."),
+        "missing_items": _list_items(verdict.get("required_fixes")),
         "recommendation": _join_items(verdict.get("required_fixes"), "Ask user before continuing."),
         "decision_semantics": {
             "yes": YES_MEANING,
@@ -53,33 +84,42 @@ def build_human_notification_payload(
 
 def format_human_notification(payload: dict[str, Any]) -> str:
     semantics = payload.get("decision_semantics") or {}
+    bot1_version = payload.get("bot1_version", "")
+    bot2_version = payload.get("bot2_version", "")
+    risk_items = _list_items(payload.get("risk_items"), str(payload.get("risk") or ""))
+    missing_items = _list_items(payload.get("missing_items"), str(payload.get("recommendation") or ""))
     lines = [
-        "[Hermes Supervisor: решение человека]",
+        "Hermes Supervisor",
+        "Нужно решение человека",
+        "",
         f"Процесс: {payload.get('process_id', '')}",
-        f"Задача Supervisor: {payload.get('supervisor_task_id', '')}",
-        f"Риск: {payload.get('risk', '')}",
+        f"Supervisor: {payload.get('supervisor_task_id', '')}",
+        f"Уровень: {payload.get('task_level', '')} / риск: {payload.get('risk_level', '')}",
+        f"Тип: {payload.get('task_type', '')}",
         "",
-        f"Задача: {payload.get('task', '')}",
+        "ЗАДАЧА",
+        _clip_text(payload.get("task", ""), 600),
         "",
-        f"Версия Bot#1:\n{payload.get('bot1_version', '')}",
+        "КОНФЛИКТ",
+        "Bot#1 предлагает продолжить действие. Bot#2 останавливает процесс и просит решение человека.",
+        f"Коротко от Bot#2: {_clip_text(bot2_version, 360)}",
         "",
-        f"Версия Bot#2:\n{payload.get('bot2_version', '')}",
+        "ЦИТАТА BOT#1",
+        *_quote_block(bot1_version),
         "",
-        f"Рекомендация: {payload.get('recommendation', '')}",
+        "ЦИТАТА BOT#2",
+        *_quote_block(bot2_version),
         "",
-        f"Да = {semantics.get('yes', '')}",
-        f"Нет = {semantics.get('no', '')}",
+        "ЧЕГО НЕ ХВАТАЕТ ПО BOT#2",
+        *_numbered_block(missing_items, empty="Bot#2 не указал отдельные исправления, но требует ручное решение."),
+        "",
+        "РИСКИ",
+        *_numbered_block(risk_items, empty="Bot#2 не указал отдельные риски."),
+        "",
+        "КНОПКИ",
+        f"Да: {semantics.get('yes', '')}",
+        f"Нет: {semantics.get('no', '')}",
     ]
-    commands = payload.get("decision_commands") or {}
-    if commands:
-        lines.extend(
-            [
-                "",
-                "Команды решения:",
-                f"Да: {commands.get('yes', '')}",
-                f"Нет: {commands.get('no', '')}",
-            ]
-        )
     return redact_text("\n".join(lines))
 
 
