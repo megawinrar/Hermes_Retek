@@ -143,6 +143,13 @@ ROLE_ENV_TOKEN_CAPS = {
     "bot2_verdict": "HERMES_BOT2_VERDICT_MAX_TOKENS",
     "bot2_repair": "HERMES_BOT2_REPAIR_MAX_TOKENS",
 }
+REASONING_MODEL_MARKERS = ("codex", "gpt-5", "o1", "o3", "o4", "reasoning")
+REASONING_MODEL_MIN_TOKEN_BUDGETS: dict[str, dict[str, int]] = {
+    "L1": {"bot1": 1200, "bot1_revision": 1400, "bot1_self_check": 1400},
+    "L2": {"bot1": 2400, "bot1_revision": 2400, "bot1_self_check": 2400},
+    "L3": {"bot1": 3000, "bot1_revision": 3000, "bot1_self_check": 2600},
+    "L4": {"bot1": 3600, "bot1_revision": 3600, "bot1_self_check": 3200},
+}
 REVIEW_CYCLE_POLICY_PROFILES = {
     "L0": 1,
     "L1": 1,
@@ -167,6 +174,15 @@ def adaptive_token_budget_enabled() -> bool:
     return os.environ.get("HERMES_ADAPTIVE_TOKEN_BUDGET", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
+def reasoning_model_headroom_enabled() -> bool:
+    return os.environ.get("HERMES_REASONING_MODEL_TOKEN_HEADROOM", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def model_needs_reasoning_token_headroom(model: str = "") -> bool:
+    normalized = model.strip().lower()
+    return bool(normalized) and any(marker in normalized for marker in REASONING_MODEL_MARKERS)
+
+
 def token_policy_level(route: dict[str, Any] | None = None) -> str:
     route = route or {}
     level = str(route.get("task_level") or "L3").upper()
@@ -182,6 +198,7 @@ def token_budget_for_role(
     *,
     role: str,
     route: dict[str, Any] | None = None,
+    model: str = "",
 ) -> int:
     requested = max(1, int(requested))
     env_name = ROLE_ENV_TOKEN_CAPS.get(role, "")
@@ -191,7 +208,10 @@ def token_budget_for_role(
         return requested
     level = token_policy_level(route)
     cap = TOKEN_POLICY_PROFILES[level].get(role, 0)
-    return requested if cap <= 0 else max(1, min(requested, cap))
+    budget = requested if cap <= 0 else max(1, min(requested, cap))
+    if reasoning_model_headroom_enabled() and model_needs_reasoning_token_headroom(model):
+        budget = max(budget, REASONING_MODEL_MIN_TOKEN_BUDGETS.get(level, {}).get(role, 0))
+    return max(1, budget)
 
 
 def token_policy_snapshot(
@@ -793,7 +813,7 @@ def live_bot1_result(
     import dual_bot_lab as lab
 
     cfg = lab.bothub_config()
-    bot1_max_tokens = token_budget_for_role(max_tokens, role="bot1", route=route)
+    bot1_max_tokens = token_budget_for_role(max_tokens, role="bot1", route=route, model=bot1_model)
     semantic_budget = lab.semantic_budget_for_route(route, "bot1")
     rid = lab.run_id()
     lab.add_run(rid, task, acceptance, bot1_model, "")
@@ -857,11 +877,11 @@ def live_dual_result(
 
     cfg = lab.bothub_config()
     token_budgets = {
-        "bot1": token_budget_for_role(max_tokens, role="bot1", route=route),
-        "bot1_revision": token_budget_for_role(max_tokens, role="bot1_revision", route=route),
-        "bot1_self_check": token_budget_for_role(max_tokens, role="bot1_self_check", route=route),
-        "bot2_verdict": token_budget_for_role(max_tokens, role="bot2_verdict", route=route),
-        "bot2_repair": token_budget_for_role(max_tokens, role="bot2_repair", route=route),
+        "bot1": token_budget_for_role(max_tokens, role="bot1", route=route, model=bot1_model),
+        "bot1_revision": token_budget_for_role(max_tokens, role="bot1_revision", route=route, model=bot1_model),
+        "bot1_self_check": token_budget_for_role(max_tokens, role="bot1_self_check", route=route, model=bot1_model),
+        "bot2_verdict": token_budget_for_role(max_tokens, role="bot2_verdict", route=route, model=bot2_model),
+        "bot2_repair": token_budget_for_role(max_tokens, role="bot2_repair", route=route, model=bot2_model),
     }
     token_policy = token_policy_snapshot(requested=max_tokens, route=route, budgets=token_budgets)
     semantic_budgets = {
@@ -1148,10 +1168,10 @@ def live_bot1_revision_result(
 
     cfg = lab.bothub_config()
     token_budgets = {
-        "bot1_revision": token_budget_for_role(max_tokens, role="bot1_revision", route=route),
-        "bot1_self_check": token_budget_for_role(max_tokens, role="bot1_self_check", route=route),
-        "bot2_verdict": token_budget_for_role(max_tokens, role="bot2_verdict", route=route),
-        "bot2_repair": token_budget_for_role(max_tokens, role="bot2_repair", route=route),
+        "bot1_revision": token_budget_for_role(max_tokens, role="bot1_revision", route=route, model=bot1_model),
+        "bot1_self_check": token_budget_for_role(max_tokens, role="bot1_self_check", route=route, model=bot1_model),
+        "bot2_verdict": token_budget_for_role(max_tokens, role="bot2_verdict", route=route, model=bot2_model),
+        "bot2_repair": token_budget_for_role(max_tokens, role="bot2_repair", route=route, model=bot2_model),
     }
     token_policy = token_policy_snapshot(requested=max_tokens, route=route, budgets=token_budgets)
     semantic_budgets = {

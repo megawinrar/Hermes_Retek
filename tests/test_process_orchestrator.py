@@ -104,6 +104,7 @@ def test_adaptive_token_budget_scales_by_task_level(monkeypatch) -> None:
     monkeypatch.delenv("HERMES_BOT1_MAX_TOKENS", raising=False)
     monkeypatch.delenv("HERMES_BOT2_VERDICT_MAX_TOKENS", raising=False)
     monkeypatch.delenv("HERMES_ADAPTIVE_TOKEN_BUDGET", raising=False)
+    monkeypatch.delenv("HERMES_REASONING_MODEL_TOKEN_HEADROOM", raising=False)
 
     assert process_orchestrator.token_budget_for_role(
         1400,
@@ -130,6 +131,39 @@ def test_adaptive_token_budget_scales_by_task_level(monkeypatch) -> None:
         role="bot2_verdict",
         route={"task_level": "L4", "human_gate_required": True},
     ) == 1000
+
+
+def test_reasoning_model_token_headroom_keeps_codex_bot1_from_too_small_caps(monkeypatch) -> None:
+    monkeypatch.delenv("HERMES_BOT1_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("HERMES_ADAPTIVE_TOKEN_BUDGET", raising=False)
+    monkeypatch.delenv("HERMES_REASONING_MODEL_TOKEN_HEADROOM", raising=False)
+    route = {"task_level": "L2", "risk_level": "high"}
+
+    assert process_orchestrator.token_budget_for_role(
+        2400,
+        role="bot1",
+        route=route,
+        model="deepseek-v4-flash",
+    ) == 900
+    assert process_orchestrator.token_budget_for_role(
+        2400,
+        role="bot1",
+        route=route,
+        model="gpt-5.3-codex",
+    ) == 2400
+
+
+def test_reasoning_model_headroom_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.delenv("HERMES_BOT1_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("HERMES_ADAPTIVE_TOKEN_BUDGET", raising=False)
+    monkeypatch.setenv("HERMES_REASONING_MODEL_TOKEN_HEADROOM", "0")
+
+    assert process_orchestrator.token_budget_for_role(
+        2400,
+        role="bot1",
+        route={"task_level": "L2", "risk_level": "high"},
+        model="gpt-5.3-codex",
+    ) == 900
 
 
 def test_adaptive_review_cycle_policy_scales_by_task_level(monkeypatch) -> None:
