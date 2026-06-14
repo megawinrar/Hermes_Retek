@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -866,12 +867,13 @@ def test_process_live_dual_repairs_invalid_bot2_json_in_main_orchestrator(monkey
 
     calls: list[list[dict[str, str]]] = []
     speakers: list[str] = []
+    secret = "API_KEY=abcdefghijklmnopqrstuvwxyz123456"
 
     def fake_call_chat(**kwargs):
         messages = kwargs["messages"]
         calls.append(messages)
         if len(calls) == 1:
-            return "Bot#1 result", {"usage": {"total_tokens": 10}}
+            return f"Bot#1 result {secret}", {"usage": {"total_tokens": 10}}
         if len(calls) == 2:
             return "Bot#2 prose without JSON", {"usage": {"total_tokens": 12}}
         return (
@@ -910,6 +912,22 @@ def test_process_live_dual_repairs_invalid_bot2_json_in_main_orchestrator(monkey
     assert details["summary"]["bot2"]["repair_attempted"] is True
     assert details["summary"]["bot2"]["repair_status"] == "repaired"
     assert "bot2_json_repair" in {event["event_type"] for event in details["events"]}
+    activity_events = [event for event in details["events"] if event["event_type"] == "bot_activity"]
+    assert [event["payload"]["phase"] for event in activity_events] == ["execution", "quality_gate", "json_repair"]
+    assert [event["payload"]["actor"] for event in activity_events] == ["bot1", "bot2", "bot2"]
+    assert activity_events[0]["payload"]["usage"]["total_tokens"] == 10
+    assert activity_events[0]["payload"]["output_chars"] == len(f"Bot#1 result {secret}")
+    assert secret not in json.dumps([event["payload"] for event in activity_events])
+    assert "[REDACTED]" in activity_events[0]["payload"]["output_preview"]
+    assert activity_events[-1]["payload"]["repair_status"] == "repaired"
+
+    with sqlite3.connect(args.supervisor_store) as con:
+        rows = con.execute(
+            "SELECT payload_json FROM supervisor_events WHERE event_type = 'bot_activity' ORDER BY id"
+        ).fetchall()
+    supervisor_events = [json.loads(row[0]) for row in rows]
+    assert [event["phase"] for event in supervisor_events] == ["execution", "quality_gate", "json_repair"]
+    assert secret not in json.dumps(supervisor_events)
 
 
 def test_process_escalates_when_repair_loop_exhausts_max_cycles(monkeypatch, tmp_path: Path) -> None:

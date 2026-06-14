@@ -13,7 +13,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from human_notification import (
     build_human_notification_payload,
@@ -69,6 +69,8 @@ _INITIALIZED_PROCESS_STORES: set[str] = set()
 FAST_BOT1_MODEL = os.environ.get("HERMES_FAST_BOT1_MODEL", "deepseek-v4-flash")
 STRONG_BOT_MODEL = os.environ.get("HERMES_STRONG_BOT_MODEL", "gpt-5.3-codex")
 AUTO_MODEL_VALUES = {"", "auto", "default", "route", "policy"}
+BOT_ACTIVITY_PREVIEW_CHARS = 800
+BotActivityRecorder = Callable[[dict[str, Any]], None]
 
 
 def _runtime_cache_enabled() -> bool:
@@ -451,6 +453,48 @@ def add_process_event(pid: str, event_type: str, payload: dict[str, Any], *, sto
         con.commit()
 
 
+def bot_activity_payload(
+    *,
+    run_id_value: str,
+    actor: str,
+    phase: str,
+    round_no: int,
+    model: str,
+    output: str,
+    raw_response: dict[str, Any],
+    latency_ms: int,
+    max_tokens: int,
+    semantic_budget: dict[str, Any] | str | None,
+    token_policy: dict[str, Any],
+    verdict_status: str = "",
+    repair_status: str = "",
+) -> dict[str, Any]:
+    preview = redact_payload(output[:BOT_ACTIVITY_PREVIEW_CHARS])
+    return {
+        "run_id": run_id_value,
+        "actor": actor,
+        "phase": phase,
+        "round": round_no,
+        "model": model,
+        "output_chars": len(output),
+        "output_preview": preview,
+        "output_preview_truncated": len(output) > BOT_ACTIVITY_PREVIEW_CHARS,
+        "usage": raw_response.get("usage", {}),
+        "latency_ms": latency_ms,
+        "http_timing_ms": llm_http_timing(raw_response),
+        "completion_budget": llm_completion_budget(raw_response, max_tokens=max_tokens),
+        "semantic_budget": semantic_budget or {},
+        "token_policy": token_policy,
+        "verdict_status": verdict_status,
+        "repair_status": repair_status,
+    }
+
+
+def emit_bot_activity(recorder: BotActivityRecorder | None, payload: dict[str, Any]) -> None:
+    if recorder is not None:
+        recorder(payload)
+
+
 def add_assignment(
     pid: str,
     worker: str,
@@ -469,6 +513,26 @@ def add_assignment(
             (pid, utc_now(), worker, phase, status, dumps(output)),
         )
         con.commit()
+
+
+def make_bot_activity_recorder(
+    *,
+    process_id_value: str,
+    supervisor_task_id: str,
+    process_store: Path | str | None,
+    supervisor_store: Path | str | None,
+) -> BotActivityRecorder:
+    def _record(payload: dict[str, Any]) -> None:
+        safe_payload = redact_payload(payload)
+        add_process_event(process_id_value, "bot_activity", safe_payload, store_path=process_store)
+        add_supervisor_event(
+            supervisor_task_id,
+            "bot_activity",
+            {"process_id": process_id_value, **safe_payload},
+            store_path=supervisor_store,
+        )
+
+    return _record
 
 
 def update_process(
@@ -870,6 +934,7 @@ def live_bot1_result(
     timeout: int,
     skill_context: dict[str, Any] | None = None,
     route: dict[str, Any] | None = None,
+    bot_activity_recorder: BotActivityRecorder | None = None,
 ) -> tuple[str, str, str]:
     import dual_bot_lab as lab
 
@@ -910,6 +975,26 @@ def live_bot1_result(
             ),
         },
     )
+    emit_bot_activity(
+        bot_activity_recorder,
+        bot_activity_payload(
+            run_id_value=rid,
+            actor="bot1",
+            phase="execution",
+            round_no=1,
+            model=bot1_model,
+            output=bot1,
+            raw_response=bot1_raw,
+            latency_ms=elapsed_ms(started_at),
+            max_tokens=bot1_max_tokens,
+            semantic_budget=semantic_budget,
+            token_policy=token_policy_snapshot(
+                requested=max_tokens,
+                route=route,
+                budgets={"bot1": bot1_max_tokens},
+            ),
+        ),
+    )
     report = lab.write_report(
         run_id_value=rid,
         task=task,
@@ -933,6 +1018,7 @@ def live_dual_result(
     timeout: int,
     skill_context: dict[str, Any] | None = None,
     route: dict[str, Any] | None = None,
+    bot_activity_recorder: BotActivityRecorder | None = None,
 ) -> tuple[str, str, dict[str, Any], str]:
     import dual_bot_lab as lab
 
@@ -1004,6 +1090,22 @@ def live_dual_result(
                 "http_timing_ms": llm_http_timing(bot1_raw),
             },
         )
+        emit_bot_activity(
+            bot_activity_recorder,
+            bot_activity_payload(
+                run_id_value=rid,
+                actor="bot1",
+                phase="execution" if round_no == 1 else "revision",
+                round_no=round_no,
+                model=bot1_model,
+                output=bot1,
+                raw_response=bot1_raw,
+                latency_ms=bot1_latency_ms,
+                max_tokens=bot1_max_tokens,
+                semantic_budget=semantic_budgets["bot1"] if round_no == 1 else semantic_budgets["bot1_revision"],
+                token_policy=token_policy,
+            ),
+        )
 
         self_check = ""
         fix_closure_checklist: list[dict[str, str]] = []
@@ -1041,6 +1143,22 @@ def live_dual_result(
                     "latency_ms": self_check_latency_ms,
                     "http_timing_ms": self_check_http_timing,
                 },
+            )
+            emit_bot_activity(
+                bot_activity_recorder,
+                bot_activity_payload(
+                    run_id_value=rid,
+                    actor="bot1",
+                    phase="self_check",
+                    round_no=round_no,
+                    model=bot1_model,
+                    output=self_check,
+                    raw_response=self_check_raw,
+                    latency_ms=self_check_latency_ms,
+                    max_tokens=token_budgets["bot1_self_check"],
+                    semantic_budget=semantic_budgets["bot1_self_check"],
+                    token_policy=token_policy,
+                ),
             )
             bot1 = self_check
             fix_closure_checklist = [
@@ -1082,6 +1200,23 @@ def live_dual_result(
             },
         )
         verdict = parse_verdict(bot2)
+        emit_bot_activity(
+            bot_activity_recorder,
+            bot_activity_payload(
+                run_id_value=rid,
+                actor="bot2",
+                phase="quality_gate",
+                round_no=round_no,
+                model=bot2_model,
+                output=bot2,
+                raw_response=bot2_raw,
+                latency_ms=bot2_latency_ms,
+                max_tokens=token_budgets["bot2_verdict"],
+                semantic_budget=semantic_budgets["bot2"],
+                token_policy=token_policy,
+                verdict_status=str(verdict.get("status") or ""),
+            ),
+        )
         bot2_repair_latency_ms = 0
         if verdict.get("status") == INVALID_BOT2_STATUS:
             bot2_repair_started_at = time.perf_counter()
@@ -1114,6 +1249,26 @@ def live_dual_result(
                 },
             )
             repaired_verdict = parse_verdict(bot2_repair)
+            emit_bot_activity(
+                bot_activity_recorder,
+                bot_activity_payload(
+                    run_id_value=rid,
+                    actor="bot2",
+                    phase="json_repair",
+                    round_no=round_no,
+                    model=bot2_model,
+                    output=bot2_repair,
+                    raw_response=bot2_repair_raw,
+                    latency_ms=bot2_repair_latency_ms,
+                    max_tokens=token_budgets["bot2_repair"],
+                    semantic_budget=semantic_budgets["bot2_repair"],
+                    token_policy=token_policy,
+                    verdict_status=str(repaired_verdict.get("status") or ""),
+                    repair_status=(
+                        "repaired" if repaired_verdict.get("status") != INVALID_BOT2_STATUS else "failed_closed"
+                    ),
+                ),
+            )
             repaired_verdict["repair_attempted"] = True
             if repaired_verdict.get("status") != INVALID_BOT2_STATUS:
                 repaired_verdict["repair_status"] = "repaired"
@@ -1224,6 +1379,7 @@ def live_bot1_revision_result(
     timeout: int,
     skill_context: dict[str, Any] | None = None,
     route: dict[str, Any] | None = None,
+    bot_activity_recorder: BotActivityRecorder | None = None,
 ) -> tuple[str, str, dict[str, Any], str]:
     import dual_bot_lab as lab
 
@@ -1276,6 +1432,22 @@ def live_bot1_revision_result(
             "http_timing_ms": llm_http_timing(bot1_raw),
         },
     )
+    emit_bot_activity(
+        bot_activity_recorder,
+        bot_activity_payload(
+            run_id_value=rid,
+            actor="bot1",
+            phase="human_revision",
+            round_no=round_no,
+            model=bot1_model,
+            output=bot1,
+            raw_response=bot1_raw,
+            latency_ms=bot1_latency_ms,
+            max_tokens=token_budgets["bot1_revision"],
+            semantic_budget=semantic_budgets["bot1_revision"],
+            token_policy=token_policy,
+        ),
+    )
 
     self_check_started_at = time.perf_counter()
     self_check, self_check_raw = lab.call_chat(
@@ -1305,6 +1477,22 @@ def live_bot1_revision_result(
             "latency_ms": self_check_latency_ms,
             "http_timing_ms": llm_http_timing(self_check_raw),
         },
+    )
+    emit_bot_activity(
+        bot_activity_recorder,
+        bot_activity_payload(
+            run_id_value=rid,
+            actor="bot1",
+            phase="human_self_check",
+            round_no=round_no,
+            model=bot1_model,
+            output=self_check,
+            raw_response=self_check_raw,
+            latency_ms=self_check_latency_ms,
+            max_tokens=token_budgets["bot1_self_check"],
+            semantic_budget=semantic_budgets["bot1_self_check"],
+            token_policy=token_policy,
+        ),
     )
     bot1 = self_check
     fix_closure_checklist = [
@@ -1345,6 +1533,23 @@ def live_bot1_revision_result(
     )
 
     verdict = parse_verdict(bot2)
+    emit_bot_activity(
+        bot_activity_recorder,
+        bot_activity_payload(
+            run_id_value=rid,
+            actor="bot2",
+            phase="human_review_quality_gate",
+            round_no=round_no,
+            model=bot2_model,
+            output=bot2,
+            raw_response=bot2_raw,
+            latency_ms=bot2_latency_ms,
+            max_tokens=token_budgets["bot2_verdict"],
+            semantic_budget=semantic_budgets["bot2"],
+            token_policy=token_policy,
+            verdict_status=str(verdict.get("status") or ""),
+        ),
+    )
     bot2_repair_latency_ms = 0
     bot2_repair_usage: dict[str, Any] = {}
     bot2_repair_http_timing: dict[str, Any] = {}
@@ -1379,6 +1584,26 @@ def live_bot1_revision_result(
             },
         )
         repaired_verdict = parse_verdict(bot2_repair)
+        emit_bot_activity(
+            bot_activity_recorder,
+            bot_activity_payload(
+                run_id_value=rid,
+                actor="bot2",
+                phase="human_review_json_repair",
+                round_no=round_no,
+                model=bot2_model,
+                output=bot2_repair,
+                raw_response=bot2_repair_raw,
+                latency_ms=bot2_repair_latency_ms,
+                max_tokens=token_budgets["bot2_repair"],
+                semantic_budget=semantic_budgets["bot2_repair"],
+                token_policy=token_policy,
+                verdict_status=str(repaired_verdict.get("status") or ""),
+                repair_status=(
+                    "repaired" if repaired_verdict.get("status") != INVALID_BOT2_STATUS else "failed_closed"
+                ),
+            ),
+        )
         repaired_verdict["repair_attempted"] = True
         if repaired_verdict.get("status") != INVALID_BOT2_STATUS:
             repaired_verdict["repair_status"] = "repaired"
@@ -1815,6 +2040,12 @@ def continue_process(args: argparse.Namespace) -> dict[str, Any]:
         bot1_model=getattr(args, "bot1_model", "auto"),
         bot2_model=getattr(args, "bot2_model", "auto"),
     )
+    bot_activity_recorder = make_bot_activity_recorder(
+        process_id_value=args.process_id,
+        supervisor_task_id=supervisor_task_id,
+        process_store=args.process_store,
+        supervisor_store=args.supervisor_store,
+    )
 
     add_process_event(
         args.process_id,
@@ -1846,6 +2077,7 @@ def continue_process(args: argparse.Namespace) -> dict[str, Any]:
                 timeout=args.timeout,
                 skill_context=skill_context,
                 route=route,
+                bot_activity_recorder=bot_activity_recorder,
             )
         else:
             bot1_result = dry_bot1_revision_result(task, acceptance, previous_answer, prior_verdict, route)
@@ -2096,6 +2328,12 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
     add_process_event(pid, "routed", route, store_path=args.process_store)
     add_process_event(pid, "skill_context_selected", skill_context, store_path=args.process_store)
     add_process_event(pid, "parallel_orchestration_policy", parallel_orchestration, store_path=args.process_store)
+    bot_activity_recorder = make_bot_activity_recorder(
+        process_id_value=pid,
+        supervisor_task_id=supervisor_task_id,
+        process_store=args.process_store,
+        supervisor_store=args.supervisor_store,
+    )
     add_assignment(
         pid,
         "parallel_scheduler",
@@ -2228,6 +2466,7 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
                 timeout=args.timeout,
                 skill_context=skill_context,
                 route=route,
+                bot_activity_recorder=bot_activity_recorder,
             )
         elif args.live_dual:
             bot1_result, bot2_session_id, report_path = live_bot1_result(
@@ -2238,6 +2477,7 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
                 timeout=args.timeout,
                 skill_context=skill_context_for_role(skill_context, "bot1"),
                 route=route,
+                bot_activity_recorder=bot_activity_recorder,
             )
         else:
             bot1_result = args.bot1_result or dry_bot1_result(task, acceptance, route)
