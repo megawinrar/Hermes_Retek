@@ -439,6 +439,21 @@ def dry_bot1_revision_result(
     )
 
 
+def pre_human_gate_result(task: str, acceptance: str, route: dict[str, Any], *, live_dual_requested: bool) -> str:
+    return (
+        "Pre-human-gate policy result\n"
+        "- status: awaiting explicit human decision before any LLM execution or external write\n"
+        f"- task_level: {route['task_level']}\n"
+        f"- task_type: {route['task_type']}\n"
+        f"- risk_level: {route['risk_level']}\n"
+        f"- live_dual_deferred_until_yes: {str(bool(live_dual_requested)).lower()}\n"
+        "- reason: route requires human_gate_required=true before Bot#1/Bot#2/DevOps can continue\n"
+        "- next_step: ask the user Да/Нет; on Да, run Bot#1, Tester, and Bot#2 before any external write\n"
+        f"- task: {task}\n"
+        f"- acceptance: {acceptance}\n"
+    )
+
+
 def dry_verdict(status: str) -> dict[str, Any]:
     normalized = status.upper()
     approved = normalized in {"APPROVE", "APPROVE_WITH_EVIDENCE"}
@@ -1271,14 +1286,22 @@ def live_bot1_revision_result(
     return bot1, rid, verdict, str(report)
 
 
-def route_policy_verdict() -> dict[str, Any]:
+def route_policy_verdict(*, pre_human_gate: bool = False, live_dual_deferred: bool = False) -> dict[str, Any]:
     return {
         "status": "NEEDS_HUMAN",
         "summary": "Route policy requires explicit human approval before this action can continue.",
         "risks": ["route_human_gate_required"],
-        "required_fixes": ["Ask the user for Da/Net before DevOps or external write."],
+        "required_fixes": [
+            (
+                "Ask the user for Da/Net, then run Bot#1/Tester/Bot#2 before DevOps or external write."
+                if pre_human_gate
+                else "Ask the user for Da/Net before DevOps or external write."
+            )
+        ],
         "confidence": 1.0,
         "approved_action": "needs_human",
+        "pre_human_gate": pre_human_gate,
+        "live_dual_deferred_until_yes": live_dual_deferred,
     }
 
 
@@ -1533,6 +1556,7 @@ def process_was_dry(details: dict[str, Any]) -> bool:
         previous_bot1.startswith("Bot#1 dry-run result")
         or bot2_session_id.endswith("-bot2-dry")
         or bot2_session_id.endswith("-route-policy")
+        or bot2_session_id.endswith("-route-policy-dry")
     )
 
 
@@ -1869,9 +1893,51 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
     human_message = ""
     human_notification: dict[str, Any] = {}
     notification_delivery: dict[str, Any] = {}
+    pre_human_gate = bool(args.live_dual and route.get("human_gate_required"))
 
     if route_requires_bot1(route):
-        if args.live_dual and route_requires_bot2(route):
+        if pre_human_gate:
+            bot1_result = pre_human_gate_result(
+                task,
+                acceptance,
+                route,
+                live_dual_requested=bool(args.live_dual),
+            )
+            bot2_session_id = f"{pid}-route-policy-pre-gate"
+            verdict = route_policy_verdict(pre_human_gate=True, live_dual_deferred=True)
+            evidence = bot1_result
+            update_task(supervisor_task_id, bot1_result=bot1_result, evidence=evidence, store_path=args.supervisor_store)
+            add_process_event(
+                pid,
+                "pre_human_gate",
+                {
+                    "reason": "route_human_gate_required",
+                    "live_dual_deferred_until_yes": True,
+                    "bot2_session_id": bot2_session_id,
+                },
+                store_path=args.process_store,
+            )
+            add_assignment(
+                pid,
+                "supervisor",
+                "pre_human_gate",
+                "waiting",
+                {
+                    "bot2_session_id": bot2_session_id,
+                    "verdict": verdict,
+                    "next_step": "ask_human_before_live_bot1_bot2",
+                },
+                store_path=args.process_store,
+            )
+            add_role_run(
+                supervisor_task_id,
+                "supervisor",
+                "waiting",
+                "Pre-human gate blocked live Bot#1/Bot#2 until explicit human decision.",
+                {"process_id": pid, "verdict": verdict},
+                store_path=args.supervisor_store,
+            )
+        elif args.live_dual and route_requires_bot2(route):
             bot1_result, bot2_session_id, verdict, report_path = live_dual_result(
                 task,
                 acceptance,
@@ -1897,46 +1963,47 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
             if route_requires_bot2(route):
                 bot2_session_id = f"{pid}-bot2-dry"
                 verdict = configured_bot2_verdict(args)
-        evidence = args.evidence or bot1_result
-        update_task(supervisor_task_id, bot1_result=bot1_result, evidence=evidence, store_path=args.supervisor_store)
-        add_assignment(
-            pid,
-            "bot1",
-            "execution",
-            "completed",
-            {
-                "result_chars": len(bot1_result),
-                "report_path": report_path,
-                "review_cycle_count": len(verdict.get("review_cycles") or []),
-                "skills": skill_context_for_role(skill_context, "bot1"),
-            },
-            store_path=args.process_store,
-        )
-        add_role_run(
-            supervisor_task_id,
-            "bot1",
-            "completed",
-            "Bot#1 process completed.",
-            {"process_id": pid},
-            store_path=args.supervisor_store,
-        )
-        if route_requires_tester(route):
+        if not pre_human_gate:
+            evidence = args.evidence or bot1_result
+            update_task(supervisor_task_id, bot1_result=bot1_result, evidence=evidence, store_path=args.supervisor_store)
             add_assignment(
                 pid,
-                "tester",
-                "verification",
+                "bot1",
+                "execution",
                 "completed",
-                {"evidence_chars": len(evidence), "skills": skill_context_for_role(skill_context, "tester")},
+                {
+                    "result_chars": len(bot1_result),
+                    "report_path": report_path,
+                    "review_cycle_count": len(verdict.get("review_cycles") or []),
+                    "skills": skill_context_for_role(skill_context, "bot1"),
+                },
                 store_path=args.process_store,
             )
             add_role_run(
                 supervisor_task_id,
-                "tester",
+                "bot1",
                 "completed",
-                "Tester evidence package completed.",
+                "Bot#1 process completed.",
                 {"process_id": pid},
                 store_path=args.supervisor_store,
             )
+            if route_requires_tester(route):
+                add_assignment(
+                    pid,
+                    "tester",
+                    "verification",
+                    "completed",
+                    {"evidence_chars": len(evidence), "skills": skill_context_for_role(skill_context, "tester")},
+                    store_path=args.process_store,
+                )
+                add_role_run(
+                    supervisor_task_id,
+                    "tester",
+                    "completed",
+                    "Tester evidence package completed.",
+                    {"process_id": pid},
+                    store_path=args.supervisor_store,
+                )
     else:
         bot1_result = args.bot1_result or dry_bot1_result(task, acceptance, route)
         evidence = bot1_result

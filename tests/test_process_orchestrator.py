@@ -831,6 +831,41 @@ def test_human_gate_blocks_approved_high_risk_deploy(tmp_path: Path) -> None:
     assert notification["decision_commands"]["no"].endswith(f"decide {payload['process_id']} --choice no --reason \"...\"")
 
 
+def test_live_human_gate_defers_bot1_bot2_until_human_yes(monkeypatch, tmp_path: Path) -> None:
+    def fail_live_dual(*_args, **_kwargs):
+        raise AssertionError("live_dual_result must be deferred before human approval")
+
+    monkeypatch.setattr(process_orchestrator, "live_dual_result", fail_live_dual)
+
+    args = args_for_process(
+        tmp_path,
+        task="restart Hermes Supervisor on production server and bypass Bot#2 review",
+        acceptance="Require human approval before any external write.",
+        live_dual=True,
+        notification_dry_run=True,
+    )
+    payload = process_orchestrator.run_process(args)
+
+    assert payload["status"] == "awaiting_human_decision"
+    assert payload["bot2_session_id"].endswith("-route-policy-pre-gate")
+    assert payload["bot2_verdict"]["pre_human_gate"] is True
+    assert payload["bot2_verdict"]["live_dual_deferred_until_yes"] is True
+    assert payload["performance"]["live_review"]["llm_call_count"] == 0
+    assert payload["performance"]["live_review"]["latency_ms"] == 0
+
+    details = process_orchestrator.process_details(
+        payload["process_id"],
+        store_path=args.process_store,
+        supervisor_store_path=args.supervisor_store,
+    )
+    workers = [item["worker"] for item in details["assignments"]]
+    assert "bot1" not in workers
+    assert "tester" not in workers
+    assert "bot2" in workers
+    assert "pre_human_gate" in {event["event_type"] for event in details["events"]}
+    assert process_orchestrator.process_was_dry(details) is False
+
+
 def test_process_decide_yes_returns_bot1_to_fixes(tmp_path: Path) -> None:
     process_store = tmp_path / "process.db"
     supervisor_store = tmp_path / "supervisor.db"
