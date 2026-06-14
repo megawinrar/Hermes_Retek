@@ -16,6 +16,11 @@ def test_process_worker_config_exists() -> None:
     assert "bot1_bot2_direct_chat_forbidden: true" in text
     assert "deepseek-v4-flash" in text
     assert "gpt-5.3-codex" in text
+    assert "bounded_parallel_orchestration:" in text
+    assert "max_parallel_agents_by_level:" in text
+    assert "sqlite_single_writer: true" in text
+    assert "agent_state_writes_allowed: false" in text
+    assert "bothub_rate_limits:" in text
 
 
 def test_scripts_compile() -> None:

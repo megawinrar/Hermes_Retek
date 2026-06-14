@@ -171,10 +171,44 @@ EXTENDED_L3_REVIEW_SIGNALS = {
     "implementation",
     "refactor",
 }
+PARALLEL_AGENT_LEVEL_LIMITS: dict[str, dict[str, int]] = {
+    "L0": {"max_parallel_agents": 0, "verification_parallel_agents": 0, "agent_timeout_seconds": 0, "agent_max_tokens": 0},
+    "L1": {"max_parallel_agents": 0, "verification_parallel_agents": 0, "agent_timeout_seconds": 0, "agent_max_tokens": 0},
+    "L2": {"max_parallel_agents": 0, "verification_parallel_agents": 1, "agent_timeout_seconds": 60, "agent_max_tokens": 700},
+    "L3": {"max_parallel_agents": 3, "verification_parallel_agents": 3, "agent_timeout_seconds": 120, "agent_max_tokens": 900},
+    "L4": {"max_parallel_agents": 5, "verification_parallel_agents": 3, "agent_timeout_seconds": 150, "agent_max_tokens": 1200},
+}
+BOTHUB_RATE_LIMIT_DEFAULTS = {
+    "max_parallel_calls": 2,
+    "requests_per_minute": 12,
+    "cooldown_ms": 250,
+}
+AGENT_WORKSPACE_ROOT = os.environ.get("HERMES_AGENT_WORKSPACE_ROOT", "/opt/data/agent_workspaces")
 
 
 def adaptive_token_budget_enabled() -> bool:
     return os.environ.get("HERMES_ADAPTIVE_TOKEN_BUDGET", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
+def arg_int(args: argparse.Namespace, name: str, default: int, *, minimum: int = 0) -> int:
+    value = getattr(args, name, None)
+    if value is None:
+        return env_int(f"HERMES_{name.upper()}", default, minimum=minimum)
+    try:
+        return max(minimum, int(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def reasoning_model_headroom_enabled() -> bool:
@@ -266,6 +300,107 @@ def token_policy_snapshot(
         "human_gate_required": bool(route.get("human_gate_required")),
         "requested_max_tokens": max(1, int(requested)),
         "budgets": dict(budgets),
+    }
+
+
+def bounded_parallel_orchestration_policy(
+    route: dict[str, Any],
+    *,
+    process_id_value: str,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    level = token_policy_level(route)
+    profile = PARALLEL_AGENT_LEVEL_LIMITS.get(level, PARALLEL_AGENT_LEVEL_LIMITS["L3"])
+    route_max_agents = int(route.get("max_agents") or 0)
+    if not bool(route.get("needs_agents")):
+        route_max_agents = 0
+    configured_max = arg_int(args, "max_parallel_agents", profile["max_parallel_agents"])
+    max_parallel_agents = max(0, min(profile["max_parallel_agents"], route_max_agents, configured_max))
+
+    process_timeout = max(0, int(getattr(args, "timeout", 0) or 0))
+    configured_timeout = arg_int(args, "agent_timeout_seconds", profile["agent_timeout_seconds"])
+    if process_timeout > 0 and configured_timeout > 0:
+        per_agent_timeout = min(configured_timeout, process_timeout)
+    else:
+        per_agent_timeout = configured_timeout
+
+    configured_tokens = arg_int(args, "agent_max_tokens", profile["agent_max_tokens"], minimum=0)
+    profile_tokens = int(profile["agent_max_tokens"] or 0)
+    policy_token_cap = token_budget_for_role(
+        max(1, int(getattr(args, "max_tokens", configured_tokens or 1) or configured_tokens or 1)),
+        role="bot1",
+        route=route,
+        model=(route.get("model_policy") or {}).get("bot1_model", ""),
+    )
+    per_agent_budget = (
+        0
+        if max_parallel_agents == 0
+        else max(1, min(configured_tokens or profile_tokens, profile_tokens or policy_token_cap, policy_token_cap))
+    )
+
+    verification_configured = arg_int(args, "verification_parallel_agents", profile["verification_parallel_agents"])
+    verification_parallel_agents = max(0, min(profile["verification_parallel_agents"], verification_configured, max(max_parallel_agents, 1)))
+    if max_parallel_agents == 0 and level not in {"L2"}:
+        verification_parallel_agents = 0
+
+    bothub_configured_parallel = arg_int(
+        args,
+        "bothub_max_parallel_calls",
+        env_int("HERMES_BOTHUB_MAX_PARALLEL_CALLS", BOTHUB_RATE_LIMIT_DEFAULTS["max_parallel_calls"]),
+        minimum=1,
+    )
+    bothub_max_parallel = min(max(max_parallel_agents, 1), bothub_configured_parallel)
+    if max_parallel_agents == 0:
+        bothub_max_parallel = 1
+    bothub_rpm = arg_int(
+        args,
+        "bothub_requests_per_minute",
+        env_int("HERMES_BOTHUB_REQUESTS_PER_MINUTE", BOTHUB_RATE_LIMIT_DEFAULTS["requests_per_minute"]),
+        minimum=1,
+    )
+    bothub_cooldown_ms = env_int("HERMES_BOTHUB_COOLDOWN_MS", BOTHUB_RATE_LIMIT_DEFAULTS["cooldown_ms"])
+
+    workspace_root = str(os.environ.get("HERMES_AGENT_WORKSPACE_ROOT", AGENT_WORKSPACE_ROOT)).rstrip("/")
+    workspace_template = f"{workspace_root}/{process_id_value}/{{agent_id}}"
+    enabled_phases = ["discovery", "verification"] if max_parallel_agents > 0 else []
+    if max_parallel_agents == 0 and verification_parallel_agents > 0:
+        enabled_phases = ["verification"]
+
+    return {
+        "version": 1,
+        "enabled": bool(max_parallel_agents > 0 or verification_parallel_agents > 0),
+        "level": level,
+        "max_parallel_agents": max_parallel_agents,
+        "verification_parallel_agents": verification_parallel_agents,
+        "per_agent_timeout_seconds": per_agent_timeout,
+        "per_agent_token_budget": per_agent_budget,
+        "enabled_phases": enabled_phases,
+        "disabled_phases": ["execution", "approval", "state_transition"],
+        "workspace": {
+            "mode": "isolated_copy_on_write",
+            "root": workspace_root,
+            "template": workspace_template,
+            "merge_owner": "supervisor",
+            "agent_writes_to_shared_workspace": False,
+        },
+        "state": {
+            "single_writer": "supervisor",
+            "sqlite_single_writer": True,
+            "agent_state_writes_allowed": False,
+            "write_queue": "supervisor_tool_gateway",
+            "lock_scope": ["process_id", "target_resource"],
+        },
+        "bothub_rate_limits": {
+            "max_parallel_calls": bothub_max_parallel,
+            "requests_per_minute": bothub_rpm,
+            "cooldown_ms": bothub_cooldown_ms,
+            "per_process_llm_call_budget": max(1, max_parallel_agents + verification_parallel_agents + 2),
+        },
+        "tool_gateway": {
+            "required_before_tool_call": True,
+            "blocks_parallel_writes": True,
+            "deduplicates_evidence_calls": True,
+        },
     }
 
 
@@ -469,9 +604,10 @@ def create_process_run(
     acceptance: str,
     route: dict[str, Any],
     supervisor_task_id: str,
+    process_id_value: str | None = None,
     store_path: Path | str | None = None,
 ) -> str:
-    pid = process_id()
+    pid = process_id_value or process_id()
     now = utc_now()
     with connect(store_path) as con:
         con.execute(
@@ -2058,15 +2194,28 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
     route["skill_context"] = skill_context
     supervisor_created = create_task(task, store_path=args.supervisor_store)
     supervisor_task_id = supervisor_created["task_id"]
+    pid = process_id()
+    parallel_orchestration = bounded_parallel_orchestration_policy(route, process_id_value=pid, args=args)
+    route["parallel_orchestration"] = parallel_orchestration
     pid = create_process_run(
         task=task,
         acceptance=acceptance,
         route=route,
         supervisor_task_id=supervisor_task_id,
+        process_id_value=pid,
         store_path=args.process_store,
     )
     add_process_event(pid, "routed", route, store_path=args.process_store)
     add_process_event(pid, "skill_context_selected", skill_context, store_path=args.process_store)
+    add_process_event(pid, "parallel_orchestration_policy", parallel_orchestration, store_path=args.process_store)
+    add_assignment(
+        pid,
+        "parallel_scheduler",
+        "planning",
+        "bounded" if parallel_orchestration["enabled"] else "disabled",
+        parallel_orchestration,
+        store_path=args.process_store,
+    )
     if deterministic_tool_results:
         tool_status = "completed" if any(item.get("status") == "ok" for item in deterministic_tool_results) else "skipped"
         add_process_event(
@@ -2450,6 +2599,12 @@ def process_summary(
     human_event = latest_event(events, "human_notification")
     performance_event = latest_event(events, "process_performance")
     next_action_event = latest_event(events, "process_next_action")
+    orchestration_event = latest_event(events, "parallel_orchestration_policy")
+    parallel_orchestration = (
+        (orchestration_event.get("payload") or {})
+        or route.get("parallel_orchestration")
+        or (latest_assignment(assignments, "parallel_scheduler").get("output") or {})
+    )
     bot2_verdict = (
         (bot2_event.get("payload") or {}).get("verdict")
         or (bot2_assignment.get("output") or {}).get("verdict")
@@ -2514,6 +2669,7 @@ def process_summary(
             "human_gate_required": bool(route.get("human_gate_required")),
             "classification_audit": route.get("classification_audit", {}),
         },
+        "parallel_orchestration": parallel_orchestration,
         "skills": {
             "status": skill_context.get("status", ""),
             "selection_policy": skill_context.get("selection_policy", ""),
@@ -2818,6 +2974,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--bot2-model", default="auto")
     run.add_argument("--timeout", type=int, default=180)
     run.add_argument("--max-tokens", type=int, default=1400)
+    run.add_argument("--max-parallel-agents", type=int, default=None, help="Cap bounded discovery agent fan-out for this process")
+    run.add_argument("--verification-parallel-agents", type=int, default=None, help="Cap bounded verification fan-out for this process")
+    run.add_argument("--agent-timeout-seconds", type=int, default=None, help="Per-agent timeout cap for bounded fan-out")
+    run.add_argument("--agent-max-tokens", type=int, default=None, help="Per-agent token budget cap for bounded fan-out")
+    run.add_argument("--bothub-max-parallel-calls", type=int, default=None, help="Per-process BotHub concurrent call cap")
+    run.add_argument("--bothub-requests-per-minute", type=int, default=None, help="Per-process BotHub request rate cap")
     run.add_argument("--notify-telegram", action="store_true", help="Send human-gate notification to Telegram via DevLog settings")
     run.add_argument("--notification-dry-run", action="store_true", help="Build and record the notification payload without network delivery")
     run.set_defaults(func=cmd_run)

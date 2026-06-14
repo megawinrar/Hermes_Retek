@@ -36,6 +36,12 @@ def args_for_process(tmp_path: Path, **overrides: object) -> object:
         "bot2_model": "bot2-model",
         "timeout": 10,
         "max_tokens": 100,
+        "max_parallel_agents": None,
+        "verification_parallel_agents": None,
+        "agent_timeout_seconds": None,
+        "agent_max_tokens": None,
+        "bothub_max_parallel_calls": None,
+        "bothub_requests_per_minute": None,
         "notify_telegram": False,
         "notification_dry_run": True,
     }
@@ -76,7 +82,13 @@ def test_process_l1_approve_path_without_bot2(tmp_path: Path) -> None:
     )
     assert shown.returncode == 0, shown.stderr
     details = json.loads(shown.stdout)
-    assert {item["worker"] for item in details["assignments"]} == {"router", "skill_index", "supervisor", "bot1"}
+    assert {item["worker"] for item in details["assignments"]} == {
+        "router",
+        "skill_index",
+        "parallel_scheduler",
+        "supervisor",
+        "bot1",
+    }
     assert details["summary"]["status"] == "approved"
     assert details["summary"]["task_level"] == "L1"
     assert details["summary"]["skills"]["selected"] == ["hermes-developer"]
@@ -211,6 +223,68 @@ def test_adaptive_review_cycle_policy_scales_by_task_level(monkeypatch) -> None:
     assert l2["effective_max_cycles"] == 2
     assert l3_migration["effective_max_cycles"] == 3
     assert l3_migration["extended_l3"] is True
+
+
+def test_bounded_parallel_orchestration_caps_agents_timeout_budget_and_bothub(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HERMES_AGENT_WORKSPACE_ROOT", str(tmp_path / "agent-workspaces"))
+    route = {
+        "task_level": "L4",
+        "risk_level": "high",
+        "needs_agents": True,
+        "max_agents": 5,
+        "model_policy": {"bot1_model": "deepseek-v4-flash"},
+    }
+    args = args_for_process(
+        tmp_path,
+        timeout=90,
+        max_tokens=2000,
+        max_parallel_agents=9,
+        verification_parallel_agents=9,
+        agent_timeout_seconds=240,
+        agent_max_tokens=1800,
+        bothub_max_parallel_calls=4,
+        bothub_requests_per_minute=18,
+    )
+
+    policy = process_orchestrator.bounded_parallel_orchestration_policy(
+        route,
+        process_id_value="proc-test",
+        args=args,
+    )
+
+    assert policy["enabled"] is True
+    assert policy["max_parallel_agents"] == 5
+    assert policy["verification_parallel_agents"] == 3
+    assert policy["per_agent_timeout_seconds"] == 90
+    assert policy["per_agent_token_budget"] == 1200
+    assert policy["workspace"]["template"].endswith("/proc-test/{agent_id}")
+    assert policy["workspace"]["agent_writes_to_shared_workspace"] is False
+    assert policy["state"]["single_writer"] == "supervisor"
+    assert policy["state"]["sqlite_single_writer"] is True
+    assert policy["state"]["agent_state_writes_allowed"] is False
+    assert policy["bothub_rate_limits"]["max_parallel_calls"] == 4
+    assert policy["bothub_rate_limits"]["requests_per_minute"] == 18
+    assert "execution" in policy["disabled_phases"]
+
+
+def test_bounded_parallel_orchestration_disabled_when_route_has_no_agents(tmp_path: Path) -> None:
+    route = {
+        "task_level": "L1",
+        "risk_level": "low",
+        "needs_agents": False,
+        "max_agents": 0,
+    }
+    policy = process_orchestrator.bounded_parallel_orchestration_policy(
+        route,
+        process_id_value="proc-l1",
+        args=args_for_process(tmp_path),
+    )
+
+    assert policy["enabled"] is False
+    assert policy["max_parallel_agents"] == 0
+    assert policy["verification_parallel_agents"] == 0
+    assert policy["per_agent_token_budget"] == 0
+    assert policy["bothub_rate_limits"]["max_parallel_calls"] == 1
 
 
 def test_token_budget_env_override_beats_adaptive_policy(monkeypatch) -> None:
@@ -382,6 +456,39 @@ def test_run_process_saves_session_tags(tmp_path: Path) -> None:
 
     results = session_tags.search_by_tags(levels=["L3"], store_path=args.supervisor_store)
     assert any(item["session_id"] == payload["process_id"] for item in results)
+
+
+def test_run_process_records_bounded_parallel_orchestration_policy(tmp_path: Path) -> None:
+    args = args_for_process(
+        tmp_path,
+        task="Спроектируй bounded parallel agent orchestration для Hermes Supervisor process",
+        acceptance="Need bounded agent policy.",
+        timeout=75,
+        max_tokens=1000,
+        max_parallel_agents=2,
+        bothub_max_parallel_calls=3,
+    )
+    payload = process_orchestrator.run_process(args)
+
+    policy = payload["route"]["parallel_orchestration"]
+    assert payload["route"]["task_level"] == "L3"
+    assert policy["enabled"] is True
+    assert policy["max_parallel_agents"] == 2
+    assert policy["per_agent_timeout_seconds"] == 75
+    assert policy["bothub_rate_limits"]["max_parallel_calls"] == 2
+    assert policy["state"]["single_writer"] == "supervisor"
+
+    details = process_orchestrator.process_details(
+        payload["process_id"],
+        store_path=args.process_store,
+        supervisor_store_path=args.supervisor_store,
+    )
+    event_types = {event["event_type"] for event in details["events"]}
+    scheduler = [item for item in details["assignments"] if item["worker"] == "parallel_scheduler"][-1]
+    assert "parallel_orchestration_policy" in event_types
+    assert scheduler["status"] == "bounded"
+    assert scheduler["output"]["workspace"]["merge_owner"] == "supervisor"
+    assert details["summary"]["parallel_orchestration"]["max_parallel_agents"] == 2
 
 
 def test_supplier_route_records_deterministic_calculator_context_when_explicitly_enabled(
@@ -949,7 +1056,12 @@ def test_l0_process_does_not_start_bot1_or_bot2(tmp_path: Path) -> None:
         payload["process_id"],
     )
     details = json.loads(shown.stdout)
-    assert {item["worker"] for item in details["assignments"]} == {"router", "skill_index", "supervisor"}
+    assert {item["worker"] for item in details["assignments"]} == {
+        "router",
+        "skill_index",
+        "parallel_scheduler",
+        "supervisor",
+    }
     assert details["summary"]["skills"]["selected"] == []
 
 

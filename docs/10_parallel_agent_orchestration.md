@@ -183,15 +183,40 @@ Bot#2 проверяет gates:
 
 ## Parallelism limits
 
-Рекомендуемые лимиты:
+Исполняемый контракт хранится в `configs/process_workers.yaml` и
+дублируется в `scripts/process_orchestrator.py` как
+`parallel_orchestration_policy` process event.
+
+Лимиты:
 
 - L1: no agents;
 - L2: no parallel agents by default, only light helper if needed;
 - L3: up to 3 agents;
 - L4: up to 5 agents;
 - verification: up to 3 agents by default;
-- external browser/ssh calls: rate-limited;
+- per-agent timeout: L2 60s, L3 120s, L4 150s, never above process timeout;
+- per-agent token budget: L2 700, L3 900, L4 1200, also capped by token policy;
+- BotHub: max 2 parallel calls by default, 12 requests/minute, 250ms cooldown;
+- external browser/ssh calls: rate-limited through Tool Gateway;
 - write actions: max 1 active writer per resource.
+
+Workspace rule:
+
+```text
+/opt/data/agent_workspaces/{process_id}/{agent_id}
+```
+
+Agents work in isolated copy-on-write workspaces. Only Supervisor can merge
+results into the shared workspace.
+
+SQLite/state rule:
+
+```text
+single_writer: supervisor
+sqlite_single_writer: true
+agent_state_writes_allowed: false
+write_queue: supervisor_tool_gateway
+```
 
 ## Conflict prevention
 

@@ -9,6 +9,45 @@ principles:
   deployment_requires_approval: true
   skills_selected_by_manifest_before_worker_run: true
 
+bounded_parallel_orchestration:
+  enabled: true
+  max_parallel_agents_by_level:
+    L0: 0
+    L1: 0
+    L2: 0
+    L3: 3
+    L4: 5
+  verification_parallel_agents_default: 3
+  per_agent_timeout_seconds_by_level:
+    L2: 60
+    L3: 120
+    L4: 150
+  per_agent_token_budget_by_level:
+    L2: 700
+    L3: 900
+    L4: 1200
+  isolated_workspace:
+    root: /opt/data/agent_workspaces
+    mode: isolated_copy_on_write
+    merge_owner: supervisor
+    agent_writes_to_shared_workspace: false
+  state_and_sqlite:
+    single_writer: supervisor
+    sqlite_single_writer: true
+    agent_state_writes_allowed: false
+    write_queue: supervisor_tool_gateway
+    lock_scope:
+      - process_id
+      - target_resource
+  bothub_rate_limits:
+    max_parallel_calls: 2
+    requests_per_minute: 12
+    cooldown_ms: 250
+  forbidden_parallel_phases:
+    - execution
+    - approval
+    - state_transition
+
 workers:
   router:
     process: task_router
