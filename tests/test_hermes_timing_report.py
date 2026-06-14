@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from scripts.hermes_timing_report import AgentStats, build_json, build_report, parse_agent, parse_gateway, read_recent_lines  # noqa: E402
+from scripts.hermes_timing_report import AgentStats, agent_sessions, build_json, build_report, parse_agent, parse_gateway, read_recent_lines, telegram_chunks  # noqa: E402
 
 
 def utc(value: str) -> datetime:
@@ -88,7 +88,9 @@ def test_build_report_diagnoses_high_api_and_network():
             [
                 "2026-06-14 03:00:00,000 INFO run_agent: OpenAI client created (chat_completion_stream_request, shared=False) thread=Thread-1 (_call):abc provider=custom base_url=https://openai.bothub.chat/v1 model=deepseek-v4-flash",
                 "2026-06-14 03:00:35,000 INFO run_agent: OpenAI client closed (stream_request_complete, shared=False, tcp_force_closed=0) thread=Thread-1 (_call):abc provider=custom base_url=https://openai.bothub.chat/v1 model=deepseek-v4-flash",
+                "2026-06-14 03:00:36,000 INFO [s] agent.turn_context: conversation turn: session=s model=deepseek-v4-flash provider=custom platform=telegram history=12 msg='долгая задача'",
                 "2026-06-14 03:01:00,000 WARNING [s] agent.tool_executor: Tool execute_code returned error (30.27s): boom",
+                "2026-06-14 03:01:10,000 INFO [s] agent.tool_executor: tool delegate_task completed (45.00s, 1000 chars)",
                 "2026-06-14 03:01:40,000 INFO [s] agent.conversation_loop: Turn ended: reason=text_response(finish_reason=stop) model=deepseek-v4-flash api_calls=9/16 budget=9/16 tool_turns=44 last_msg_role=assistant response_len=1033 session=s",
             ]
         ),
@@ -106,6 +108,9 @@ def test_build_report_diagnoses_high_api_and_network():
     assert "LLM stream calls >= 30s" in report
     assert "tool errors" in report
     assert "tool_turns per finished turn: avg 44.0 / median 44.0" in report
+    assert "agent sessions seen: 1" in report
+    assert "delegate_task calls: 1" in report
+    assert "Есть delegate_task" in report
 
 
 def test_build_json_handles_no_completed_turns():
@@ -121,6 +126,8 @@ def test_build_json_handles_no_completed_turns():
     assert payload["completed_count"] == 0
     assert payload["pending_count"] == 1
     assert payload["avg_seconds"] == 0
+    assert payload["agent_session_count"] == 0
+    assert payload["delegate_task_count"] == 0
 
 
 def test_parse_agent_llm_tool_and_turn_timing():
@@ -128,8 +135,10 @@ def test_parse_agent_llm_tool_and_turn_timing():
         [
             "2026-06-14 18:14:12,799 INFO run_agent: OpenAI client created (chat_completion_stream_request, shared=False) thread=Thread-287 (_call):139 provider=custom base_url=https://openai.bothub.chat/v1 model=deepseek-v4-flash",
             "2026-06-14 18:14:50,073 INFO run_agent: OpenAI client closed (stream_request_complete, shared=False, tcp_force_closed=0) thread=Thread-287 (_call):139 provider=custom base_url=https://openai.bothub.chat/v1 model=deepseek-v4-flash",
+            "2026-06-14 18:14:50,100 INFO [s] agent.turn_context: conversation turn: session=s model=deepseek-v4-flash provider=custom platform=telegram history=202 msg='Review the conversation above and update the skill library.'",
             "2026-06-14 18:14:50,105 INFO [s] agent.tool_executor: tool skill_view completed (0.03s, 311 chars)",
             "2026-06-14 18:15:14,414 INFO [s] agent.tool_executor: tool skill_manage completed (0.00s, 265 chars)",
+            "2026-06-14 18:15:14,450 INFO [s] agent.tool_executor: tool delegate_task completed (393.61s, 5976 chars)",
             "2026-06-14 18:15:14,500 WARNING [s] agent.tool_executor: Tool execute_code returned error (3.21s): bad",
             "2026-06-14 18:15:53,575 INFO [s] agent.conversation_loop: Turn ended: reason=text_response(finish_reason=stop) model=deepseek-v4-flash api_calls=5/16 budget=5/16 tool_turns=93 last_msg_role=assistant response_len=1033 session=s",
         ]
@@ -138,10 +147,14 @@ def test_parse_agent_llm_tool_and_turn_timing():
     assert len(stats.llm_calls) == 1
     assert stats.llm_calls[0].seconds == 37.274
     assert stats.llm_calls[0].base_url == "https://openai.bothub.chat/v1"
-    assert len(stats.tool_calls) == 3
-    assert [call.ok for call in stats.tool_calls] == [True, True, False]
+    assert len(stats.conversation_turns) == 1
+    assert stats.conversation_turns[0].platform == "telegram"
+    assert len(stats.tool_calls) == 4
+    assert [call.ok for call in stats.tool_calls] == [True, True, True, False]
+    assert [call.session for call in stats.tool_calls] == ["s", "s", "s", "s"]
     assert stats.turn_ended[0].api_used == 5
     assert stats.turn_ended[0].tool_turns == 93
+    assert agent_sessions(stats) == {"s"}
 
 
 def test_read_recent_lines_filters_by_timestamp(tmp_path):
@@ -160,3 +173,14 @@ def test_read_recent_lines_filters_by_timestamp(tmp_path):
     lines = read_recent_lines(log_path, since=utc("2026-06-14T03:00:00"))
 
     assert lines == ["2026-06-14 03:00:00,000 INFO fresh"]
+
+
+def test_telegram_chunks_keep_messages_under_limit():
+    text = "\n".join([f"line {idx} " + ("x" * 40) for idx in range(20)])
+
+    chunks = telegram_chunks(text, limit=120)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 120 for chunk in chunks)
+    assert "line 0" in chunks[0]
+    assert "line 19" in chunks[-1]

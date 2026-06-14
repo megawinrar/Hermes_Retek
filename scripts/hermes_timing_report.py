@@ -49,6 +49,11 @@ LLM_DONE_RE = re.compile(
 )
 TOOL_DONE_RE = re.compile(r"agent\.tool_executor: tool (?P<tool>\S+) completed \((?P<seconds>[0-9.]+)s, (?P<chars>\d+) chars\)")
 TOOL_ERROR_RE = re.compile(r"agent\.tool_executor: Tool (?P<tool>\S+) returned error \((?P<seconds>[0-9.]+)s\):")
+SESSION_PREFIX_RE = re.compile(r"\[(?P<session>[A-Za-z0-9_:-]+)\]")
+TURN_CONTEXT_RE = re.compile(
+    r"agent\.turn_context: conversation turn: session=(?P<session>\S+) model=(?P<model>\S+) "
+    r"provider=(?P<provider>\S+) platform=(?P<platform>\S+) history=(?P<history>\d+) msg='(?P<msg>.*)'"
+)
 TURN_ENDED_RE = re.compile(
     r"Turn ended: .*?model=(?P<model>\S+) api_calls=(?P<api_used>\d+)/(?P<api_budget>\d+) "
     r"budget=(?P<budget_used>\d+)/(?P<budget_total>\d+) tool_turns=(?P<tool_turns>\d+).*?session=(?P<session>\S+)"
@@ -110,6 +115,18 @@ class ToolCall:
     seconds: float
     chars: int = 0
     ok: bool = True
+    session: str = ""
+
+
+@dataclass
+class ConversationTurn:
+    at: datetime
+    session: str
+    model: str
+    provider: str
+    platform: str
+    history: int
+    msg: str
 
 
 @dataclass
@@ -126,6 +143,7 @@ class TurnEnded:
 class AgentStats:
     llm_calls: list[LlmCall] = field(default_factory=list)
     tool_calls: list[ToolCall] = field(default_factory=list)
+    conversation_turns: list[ConversationTurn] = field(default_factory=list)
     turn_ended: list[TurnEnded] = field(default_factory=list)
 
 
@@ -217,6 +235,8 @@ def parse_agent(lines: list[str]) -> AgentStats:
         ts = parse_ts(line)
         if ts is None:
             continue
+        session_prefix = SESSION_PREFIX_RE.search(line)
+        session = session_prefix.group("session") if session_prefix else ""
 
         llm_start = LLM_START_RE.search(line)
         if llm_start:
@@ -256,6 +276,7 @@ def parse_agent(lines: list[str]) -> AgentStats:
                     seconds=float(tool_done.group("seconds")),
                     chars=int(tool_done.group("chars")),
                     ok=True,
+                    session=session,
                 )
             )
             continue
@@ -268,6 +289,22 @@ def parse_agent(lines: list[str]) -> AgentStats:
                     tool=tool_error.group("tool"),
                     seconds=float(tool_error.group("seconds")),
                     ok=False,
+                    session=session,
+                )
+            )
+            continue
+
+        turn_context = TURN_CONTEXT_RE.search(line)
+        if turn_context:
+            stats.conversation_turns.append(
+                ConversationTurn(
+                    at=ts,
+                    session=turn_context.group("session"),
+                    model=turn_context.group("model"),
+                    provider=turn_context.group("provider"),
+                    platform=turn_context.group("platform"),
+                    history=int(turn_context.group("history")),
+                    msg=turn_context.group("msg"),
                 )
             )
             continue
@@ -327,6 +364,33 @@ def short(text: str, limit: int = 90) -> str:
     return clean[: limit - 1].rstrip() + "..."
 
 
+def telegram_chunks(text: str, limit: int = 3800) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in text.splitlines():
+        extra = len(line) + (1 if current else 0)
+        if current and current_len + extra > limit:
+            chunks.append("\n".join(current))
+            current = []
+            current_len = 0
+        if len(line) > limit:
+            if current:
+                chunks.append("\n".join(current))
+                current = []
+                current_len = 0
+            for start in range(0, len(line), limit):
+                chunks.append(line[start : start + limit])
+            continue
+        current.append(line)
+        current_len += extra
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
 def table_counts(db_path: Path, table: str, since: datetime) -> dict[str, int]:
     if not db_path.exists():
         return {}
@@ -378,6 +442,42 @@ def top_counts(values: list[str], limit: int = 3) -> str:
     return ", ".join(f"{name}={count}" for name, count in Counter(values).most_common(limit))
 
 
+def agent_sessions(agent_stats: AgentStats) -> set[str]:
+    sessions = {turn.session for turn in agent_stats.conversation_turns if turn.session}
+    sessions.update(turn.session for turn in agent_stats.turn_ended if turn.session)
+    sessions.update(call.session for call in agent_stats.tool_calls if call.session)
+    return sessions
+
+
+def busiest_sessions(agent_stats: AgentStats, limit: int = 5) -> list[str]:
+    rows: dict[str, dict[str, float]] = {}
+    for session in agent_sessions(agent_stats):
+        rows[session] = {"turns": 0, "tools": 0, "errors": 0, "delegate_seconds": 0.0}
+
+    for turn in agent_stats.turn_ended:
+        if turn.session:
+            rows.setdefault(turn.session, {"turns": 0, "tools": 0, "errors": 0, "delegate_seconds": 0.0})["turns"] += 1
+    for call in agent_stats.tool_calls:
+        if not call.session:
+            continue
+        row = rows.setdefault(call.session, {"turns": 0, "tools": 0, "errors": 0, "delegate_seconds": 0.0})
+        row["tools"] += 1
+        if not call.ok:
+            row["errors"] += 1
+        if call.tool == "delegate_task":
+            row["delegate_seconds"] += call.seconds
+
+    def score(item: tuple[str, dict[str, float]]) -> tuple[float, float, float, str]:
+        session, values = item
+        return (values["delegate_seconds"], values["errors"], values["tools"] + values["turns"], session)
+
+    result: list[str] = []
+    for session, values in sorted(rows.items(), key=score, reverse=True)[:limit]:
+        delegate = f", delegate={values['delegate_seconds']:.1f}s" if values["delegate_seconds"] else ""
+        result.append(f"{short(session, 34)}: turns={int(values['turns'])}, tools={int(values['tools'])}, errors={int(values['errors'])}{delegate}")
+    return result
+
+
 def diagnose(stats: GatewayStats, agent_stats: AgentStats) -> list[str]:
     completed = [turn for turn in stats.turns if not turn.pending]
     slow = [turn for turn in completed if turn.response_seconds >= 120]
@@ -388,6 +488,7 @@ def diagnose(stats: GatewayStats, agent_stats: AgentStats) -> list[str]:
     tool_errors = [call for call in agent_stats.tool_calls if not call.ok]
     slow_tools = [call for call in agent_stats.tool_calls if call.seconds >= 20]
     tool_heavy_turns = [turn for turn in agent_stats.turn_ended if turn.tool_turns >= 40]
+    delegated = [call for call in agent_stats.tool_calls if call.tool == "delegate_task"]
     result: list[str] = []
 
     if slow:
@@ -404,6 +505,8 @@ def diagnose(stats: GatewayStats, agent_stats: AgentStats) -> list[str]:
         result.append("Есть tool errors: повторные неудачные инструменты раздувают loop и число api_calls.")
     if tool_heavy_turns:
         result.append("Есть turns с tool_turns >= 40: агент долго ходит по инструментам до финального ответа.")
+    if delegated:
+        result.append("Есть delegate_task: Hermes уже поднимает дочерних агентов; их fan-out нужно лимитировать и логировать отдельно.")
     if stats.network_errors:
         result.append("Были Telegram network reconnects; если они попадают внутрь turn, они добавляют видимую задержку.")
     if stats.compression_starts:
@@ -439,6 +542,15 @@ def build_report(
     tool_durations = [call.seconds for call in tool_calls]
     slow_tools = sorted(agent_stats.tool_calls, key=lambda call: call.seconds, reverse=True)[:5]
     turn_tool_counts = [turn.tool_turns for turn in agent_stats.turn_ended]
+    sessions = agent_sessions(agent_stats)
+    delegated = [call for call in agent_stats.tool_calls if call.tool == "delegate_task"]
+    background_reviews = [
+        turn
+        for turn in agent_stats.conversation_turns
+        if turn.msg.startswith("Review the conversation above") or "update the skill library" in turn.msg
+    ]
+    session_histories = [float(turn.history) for turn in agent_stats.conversation_turns]
+    turn_api_used = [float(turn.api_used) for turn in agent_stats.turn_ended]
 
     lines = [
         "Отчёт Hermes по таймингам",
@@ -456,6 +568,15 @@ def build_report(
         f"- stream latency: {timing_summary(llm_durations)}",
         f"- модели: {top_counts([call.model for call in agent_stats.llm_calls])}",
         f"- base_url: {top_counts([call.base_url for call in agent_stats.llm_calls], limit=2)}",
+        "",
+        "Agents",
+        f"- agent sessions seen: {len(sessions)}",
+        f"- conversation turns by platform: {top_counts([turn.platform for turn in agent_stats.conversation_turns])}",
+        f"- finished agent turns: {len(agent_stats.turn_ended)}",
+        f"- agent api_used per finished turn: {numeric_summary(turn_api_used)}",
+        f"- agent history size: {numeric_summary(session_histories)}",
+        f"- delegate_task calls: {len(delegated)}, latency: {timing_summary([call.seconds for call in delegated])}",
+        f"- background review turns: {len(background_reviews)}",
         "",
         "Tools",
         f"- completed/error calls: {len(tool_calls)}/{len(tool_errors)}",
@@ -488,6 +609,13 @@ def build_report(
     else:
         lines.append("- нет завершённых turns")
 
+    lines.extend(["", "Самые шумные agent sessions"])
+    noisy_sessions = busiest_sessions(agent_stats)
+    if noisy_sessions:
+        lines.extend(f"{idx}. {item}" for idx, item in enumerate(noisy_sessions, 1))
+    else:
+        lines.append("- нет agent sessions")
+
     lines.extend(["", "Самые долгие tools"])
     if slow_tools:
         for idx, call in enumerate(slow_tools, 1):
@@ -506,6 +634,7 @@ def build_json(stats: GatewayStats, agent_stats: AgentStats, *, hours: int, now:
     durations = [turn.response_seconds for turn in completed]
     llm_durations = [call.seconds for call in agent_stats.llm_calls]
     tool_errors = [call for call in agent_stats.tool_calls if not call.ok]
+    delegated = [call for call in agent_stats.tool_calls if call.tool == "delegate_task"]
     return {
         "hours": hours,
         "generated_at": now.isoformat(timespec="seconds"),
@@ -523,6 +652,25 @@ def build_json(stats: GatewayStats, agent_stats: AgentStats, *, hours: int, now:
         "llm_p95_seconds": percentile(llm_durations, 0.95),
         "tool_call_count": len(agent_stats.tool_calls),
         "tool_error_count": len(tool_errors),
+        "agent_session_count": len(agent_sessions(agent_stats)),
+        "agent_turn_count": len(agent_stats.turn_ended),
+        "delegate_task_count": len(delegated),
+        "delegate_task_max_seconds": max((call.seconds for call in delegated), default=0),
+    }
+
+
+def send_report_to_telegram(report: str) -> dict[str, Any]:
+    from devlog import send_telegram_message
+
+    chunks = telegram_chunks(report)
+    deliveries = []
+    for index, chunk in enumerate(chunks, 1):
+        prefix = f"Часть {index}/{len(chunks)}\n\n" if len(chunks) > 1 else ""
+        deliveries.append(send_telegram_message(prefix + chunk))
+    return {
+        "delivered": all(item.get("delivered") for item in deliveries),
+        "chunks": len(chunks),
+        "deliveries": deliveries,
     }
 
 
@@ -563,11 +711,9 @@ def main() -> int:
     print(report)
 
     if args.send_telegram:
-        from devlog import send_telegram_message
-
-        delivered = send_telegram_message(report)
+        delivered = send_report_to_telegram(report)
         print(json.dumps({"telegram_delivery": delivered}, ensure_ascii=False, sort_keys=True))
-        return 0 if delivered.get("delivered") else 1
+        return 0 if delivered["delivered"] else 1
     return 0
 
 
