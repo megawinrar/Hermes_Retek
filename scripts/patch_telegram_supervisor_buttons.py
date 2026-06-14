@@ -20,7 +20,7 @@ HELPER_CONTINUE_MARKER = 'elif action == "continue":'
 HELPER_FAST_PATH_MARKER = "_run_hermes_process_tool_callback"
 CALLBACK_CONTINUE_MARKER = 'result["continue_result"] = await self._run_hermes_process_callback("continue", process_id)'
 HELPER_RU_MARKER = "Автопродолжение после Да"
-CALLBACK_RU_MARKER = "Да: вернуть Bot#1 на доработку"
+CALLBACK_RU_MARKER = "Выбран Bot#2: вернуть Bot#1 на доработку"
 CALLBACK_FAIL_SAFE_MARKER = "Ошибка Supervisor: решение не записано"
 
 
@@ -254,7 +254,7 @@ CALLBACK_BLOCK = r'''
                     choice=choice,
                     reason=f"Telegram button by {user_display}",
                 )
-                label = "Да: вернуть Bot#1 на доработку" if choice == "yes" else "Нет: принять Bot#1"
+                label = "Выбран Bot#2: вернуть Bot#1 на доработку" if choice == "yes" else "Выбран Bot#1: принять вариант Bot#1"
                 if not result.get("ok", True):
                     await query.answer(text="Ошибка Supervisor: решение не записано")
                     await self._send_hermes_process_callback_followup(

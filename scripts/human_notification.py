@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from html import escape
 from typing import Any
 
 from secret_patterns import SECRET_PATTERNS, redact_payload, redact_text
@@ -45,6 +46,34 @@ def _numbered_block(items: list[str], *, empty: str, limit: int = 5) -> list[str
     return [f"{idx}. {_clip_text(item, 260)}" for idx, item in enumerate(items[:limit], start=1)]
 
 
+def _bot2_arguments(verdict: dict[str, Any]) -> list[str]:
+    result: list[str] = []
+    summary = str(verdict.get("summary") or "").strip()
+    if summary:
+        result.append(summary)
+    for item in _list_items(verdict.get("evidence_checked"))[:3]:
+        result.append(f"Проверено: {item}")
+    for item in _list_items(verdict.get("risks"))[:3]:
+        result.append(f"Риск: {item}")
+    for item in _list_items(verdict.get("required_fixes"))[:3]:
+        result.append(f"Не хватает: {item}")
+    return result
+
+
+def _html(value: Any) -> str:
+    return escape(str(value or ""), quote=False)
+
+
+def _html_quote(value: Any, limit: int = 900) -> str:
+    text = _clip_text(value, limit=limit) or "Нет текста."
+    return "<blockquote>" + _html(text) + "</blockquote>"
+
+
+def _html_bullets(items: list[str], *, empty: str, limit: int = 5) -> list[str]:
+    source = items[:limit] if items else [empty]
+    return [f"• {_html(_clip_text(item, 260))}" for item in source]
+
+
 def build_human_notification_payload(
     *,
     process_id: str,
@@ -70,6 +99,7 @@ def build_human_notification_payload(
         "risk": _join_items(verdict.get("risks"), "No explicit risk listed."),
         "missing_items": _list_items(verdict.get("required_fixes")),
         "recommendation": _join_items(verdict.get("required_fixes"), "Ask user before continuing."),
+        "bot2_arguments": _bot2_arguments(verdict),
         "decision_semantics": {
             "yes": YES_MEANING,
             "no": NO_MEANING,
@@ -88,37 +118,40 @@ def format_human_notification(payload: dict[str, Any]) -> str:
     bot2_version = payload.get("bot2_version", "")
     risk_items = _list_items(payload.get("risk_items"), str(payload.get("risk") or ""))
     missing_items = _list_items(payload.get("missing_items"), str(payload.get("recommendation") or ""))
+    bot2_arguments = _list_items(payload.get("bot2_arguments"), str(bot2_version or ""))
     lines = [
-        "Hermes Supervisor",
-        "Нужно решение человека",
+        "<b>Hermes Supervisor</b>",
+        "<b>Выберите сторону конфликта</b>",
         "",
-        f"Процесс: {payload.get('process_id', '')}",
-        f"Supervisor: {payload.get('supervisor_task_id', '')}",
-        f"Уровень: {payload.get('task_level', '')} / риск: {payload.get('risk_level', '')}",
-        f"Тип: {payload.get('task_type', '')}",
+        f"<b>Процесс:</b> <code>{_html(payload.get('process_id', ''))}</code>",
+        f"<b>Supervisor:</b> <code>{_html(payload.get('supervisor_task_id', ''))}</code>",
+        f"<b>Уровень:</b> {_html(payload.get('task_level', ''))} / <b>риск:</b> {_html(payload.get('risk_level', ''))}",
+        f"<b>Тип:</b> {_html(payload.get('task_type', ''))}",
         "",
-        "ЗАДАЧА",
-        _clip_text(payload.get("task", ""), 600),
+        "<b>Задача</b>",
+        _html_quote(payload.get("task", ""), 600),
         "",
-        "КОНФЛИКТ",
-        "Bot#1 предлагает продолжить действие. Bot#2 останавливает процесс и просит решение человека.",
-        f"Коротко от Bot#2: {_clip_text(bot2_version, 360)}",
+        "<b>Конфликт</b>",
+        "Bot#1 предлагает действие. Bot#2 видит риск и просит выбрать сторону.",
         "",
-        "ЦИТАТА BOT#1",
-        *_quote_block(bot1_version),
+        "<b>Позиция Bot#1</b>",
+        _html_quote(bot1_version),
         "",
-        "ЦИТАТА BOT#2",
-        *_quote_block(bot2_version),
+        "<b>Позиция Bot#2</b>",
+        _html_quote(bot2_version),
         "",
-        "ЧЕГО НЕ ХВАТАЕТ ПО BOT#2",
-        *_numbered_block(missing_items, empty="Bot#2 не указал отдельные исправления, но требует ручное решение."),
+        "<b>Аргументы Bot#2</b>",
+        *_html_bullets(bot2_arguments, empty="Bot#2 не указал отдельные аргументы, но требует ручное решение.", limit=7),
         "",
-        "РИСКИ",
-        *_numbered_block(risk_items, empty="Bot#2 не указал отдельные риски."),
+        "<b>Что нужно закрыть по Bot#2</b>",
+        *_html_bullets(missing_items, empty="Bot#2 не указал отдельные исправления.", limit=5),
         "",
-        "КНОПКИ",
-        f"Да: {semantics.get('yes', '')}",
-        f"Нет: {semantics.get('no', '')}",
+        "<b>Риски</b>",
+        *_html_bullets(risk_items, empty="Bot#2 не указал отдельные риски.", limit=5),
+        "",
+        "<b>Кнопки</b>",
+        f"Выбрать Bot#2 — {_html(semantics.get('yes', ''))}",
+        f"Выбрать Bot#1 — {_html(semantics.get('no', ''))}",
     ]
     return redact_text("\n".join(lines))
 
@@ -130,8 +163,8 @@ def build_human_notification_buttons(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "inline_keyboard": [
             [
-                {"text": "Да: вернуть Bot#1", "callback_data": f"hp:y:{process_id}"},
-                {"text": "Нет: принять Bot#1", "callback_data": f"hp:n:{process_id}"},
+                {"text": "Выбрать Bot#2", "callback_data": f"hp:y:{process_id}"},
+                {"text": "Выбрать Bot#1", "callback_data": f"hp:n:{process_id}"},
             ],
             [
                 {"text": "Показать процесс", "callback_data": f"hp:s:{process_id}"},
@@ -157,7 +190,7 @@ def dispatch_human_notification(
         from devlog import send_telegram_message
 
         buttons = build_human_notification_buttons(safe_payload)
-        delivery = send_telegram_message(text, reply_markup=buttons or None)
+        delivery = send_telegram_message(text, reply_markup=buttons or None, parse_mode="HTML")
         return {
             "mode": "telegram_buttons" if buttons else "telegram",
             "telegram_requested": True,

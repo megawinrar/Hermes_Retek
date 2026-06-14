@@ -20,8 +20,8 @@ def test_build_human_notification_buttons_use_compact_process_callbacks() -> Non
     assert rows[0][1]["callback_data"] == "hp:n:proc-20260614-052210-c45356"
     assert rows[1][0]["callback_data"] == "hp:s:proc-20260614-052210-c45356"
     assert rows[1][1]["callback_data"] == "hp:t:proc-20260614-052210-c45356"
-    assert rows[0][0]["text"] == "Да: вернуть Bot#1"
-    assert rows[0][1]["text"] == "Нет: принять Bot#1"
+    assert rows[0][0]["text"] == "Выбрать Bot#2"
+    assert rows[0][1]["text"] == "Выбрать Bot#1"
     assert rows[1][0]["text"] == "Показать процесс"
     assert rows[1][1]["text"] == "Лог диалога"
     assert all(len(button["callback_data"].encode()) <= 64 for row in rows for button in row)
@@ -57,6 +57,7 @@ def test_dispatch_human_notification_sends_buttons(monkeypatch) -> None:
             "risk": "high",
             "bot1_version": "result",
             "bot2_version": "needs human",
+            "bot2_arguments": ["needs human", "Риск: high", "Не хватает: ask user"],
             "missing_items": ["ask user"],
             "recommendation": "ask user",
             "decision_semantics": {"yes": "return", "no": "accept"},
@@ -69,12 +70,14 @@ def test_dispatch_human_notification_sends_buttons(monkeypatch) -> None:
     assert delivery["telegram_delivered"] is True
     assert delivery["buttons"] is True
     assert delivery["message_id"] == 77
-    assert "Hermes Supervisor" in calls[0]["text"]
-    assert "Процесс: proc-1" in calls[0]["text"]
-    assert "ЦИТАТА BOT#1\n> result" in calls[0]["text"]
-    assert "ЦИТАТА BOT#2\n> needs human" in calls[0]["text"]
-    assert "ЧЕГО НЕ ХВАТАЕТ ПО BOT#2\n1. ask user" in calls[0]["text"]
-    assert "Да: return" in calls[0]["text"]
+    assert calls[0]["parse_mode"] == "HTML"
+    assert "<b>Hermes Supervisor</b>" in calls[0]["text"]
+    assert "<b>Процесс:</b> <code>proc-1</code>" in calls[0]["text"]
+    assert "<b>Позиция Bot#1</b>\n<blockquote>result</blockquote>" in calls[0]["text"]
+    assert "<b>Позиция Bot#2</b>\n<blockquote>needs human</blockquote>" in calls[0]["text"]
+    assert "<b>Аргументы Bot#2</b>\n• needs human\n• Риск: high\n• Не хватает: ask user" in calls[0]["text"]
+    assert "<b>Что нужно закрыть по Bot#2</b>\n• ask user" in calls[0]["text"]
+    assert "Выбрать Bot#2 — return" in calls[0]["text"]
     assert "Decision commands" not in calls[0]["text"]
     assert calls[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "hp:y:proc-1"
 
@@ -89,6 +92,7 @@ def test_format_human_notification_reads_conflict_as_card() -> None:
             "task": "Deploy without tests",
             "bot1_version": "I will push to main now.",
             "bot2_version": "Do not push: tests are missing.",
+            "bot2_arguments": ["Do not push: tests are missing.", "Риск: Production outage"],
             "missing_items": ["Run smoke tests", "Get explicit approval"],
             "risk_items": ["Production outage", "Unreviewed main push"],
             "decision_semantics": {"yes": "вернуть Bot#1", "no": "принять Bot#1"},
@@ -96,9 +100,10 @@ def test_format_human_notification_reads_conflict_as_card() -> None:
         }
     )
 
-    assert "КОНФЛИКТ" in text
-    assert "ЦИТАТА BOT#1\n> I will push to main now." in text
-    assert "ЦИТАТА BOT#2\n> Do not push: tests are missing." in text
-    assert "ЧЕГО НЕ ХВАТАЕТ ПО BOT#2\n1. Run smoke tests\n2. Get explicit approval" in text
-    assert "РИСКИ\n1. Production outage\n2. Unreviewed main push" in text
+    assert "<b>Конфликт</b>" in text
+    assert "<b>Позиция Bot#1</b>\n<blockquote>I will push to main now.</blockquote>" in text
+    assert "<b>Позиция Bot#2</b>\n<blockquote>Do not push: tests are missing.</blockquote>" in text
+    assert "<b>Аргументы Bot#2</b>\n• Do not push: tests are missing.\n• Риск: Production outage" in text
+    assert "<b>Что нужно закрыть по Bot#2</b>\n• Run smoke tests\n• Get explicit approval" in text
+    assert "<b>Риски</b>\n• Production outage\n• Unreviewed main push" in text
     assert "Decision commands" not in text
