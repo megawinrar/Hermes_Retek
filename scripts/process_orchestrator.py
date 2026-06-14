@@ -129,6 +129,24 @@ def llm_http_timing(response: dict[str, Any]) -> dict[str, Any]:
     return dict(timing) if isinstance(timing, dict) else {}
 
 
+def llm_completion_budget(response: dict[str, Any], *, max_tokens: int) -> dict[str, Any]:
+    usage = response.get("usage") if isinstance(response, dict) else {}
+    usage = usage if isinstance(usage, dict) else {}
+    meta = response.get("_hermes_response_meta") if isinstance(response, dict) else {}
+    meta = meta if isinstance(meta, dict) else {}
+    completion_tokens = usage.get("completion_tokens")
+    if not isinstance(completion_tokens, int):
+        completion_tokens = 0
+    finish_reason = str(meta.get("finish_reason") or "")
+    return {
+        "max_tokens": max_tokens,
+        "completion_tokens": completion_tokens,
+        "finish_reason": finish_reason,
+        "content_chars": int(meta.get("content_chars") or 0),
+        "hit_cap": finish_reason == "length" or (max_tokens > 0 and completion_tokens >= max_tokens - 8),
+    }
+
+
 def process_id() -> str:
     return f"proc-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
@@ -860,6 +878,18 @@ def live_dual_result(
                 "bot2": llm_http_timing(bot2_raw),
                 "bot2_repair": bot2_repair_http_timing,
             },
+            "completion_budget": {
+                "bot1": llm_completion_budget(bot1_raw, max_tokens=bot1_max_tokens),
+                "bot1_self_check": (
+                    llm_completion_budget(self_check_raw, max_tokens=bot1_max_tokens) if self_check else {}
+                ),
+                "bot2": llm_completion_budget(bot2_raw, max_tokens=bot2_verdict_max_tokens),
+                "bot2_repair": (
+                    llm_completion_budget(bot2_repair_raw, max_tokens=bot2_repair_max_tokens)
+                    if bot2_repair_latency_ms
+                    else {}
+                ),
+            },
             "loop_status": verdict.get("loop_status", ""),
             "repair_loop_exhausted": loop_exhausted,
             "fix_closure_checklist": fix_closure_checklist,
@@ -1073,6 +1103,16 @@ def live_bot1_revision_result(
             "bot2": llm_http_timing(bot2_raw),
             "bot2_repair": bot2_repair_http_timing,
         },
+        "completion_budget": {
+            "bot1": llm_completion_budget(bot1_raw, max_tokens=bot1_max_tokens),
+            "bot1_self_check": llm_completion_budget(self_check_raw, max_tokens=bot1_max_tokens),
+            "bot2": llm_completion_budget(bot2_raw, max_tokens=bot2_verdict_max_tokens),
+            "bot2_repair": (
+                llm_completion_budget(bot2_repair_raw, max_tokens=bot2_repair_max_tokens)
+                if bot2_repair_latency_ms
+                else {}
+            ),
+        },
         "fix_closure_checklist": fix_closure_checklist,
         "bot2_repair_attempted": bool(verdict.get("repair_attempted")),
         "bot2_repair_status": verdict.get("repair_status", ""),
@@ -1119,6 +1159,10 @@ def build_process_performance(
         "time_to_headers": 0,
         "read_body": 0,
     }
+    live_review_completion_budget = {
+        "cap_hit_count": 0,
+        "cap_hit_roles": [],
+    }
     for cycle in review_cycles:
         latencies = cycle.get("latency_ms") or {}
         for value in latencies.values():
@@ -1134,6 +1178,13 @@ def build_process_performance(
                     value = timing.get(key)
                     if isinstance(value, int):
                         live_review_http_timing[key] += value
+        budgets = cycle.get("completion_budget") or {}
+        if isinstance(budgets, dict):
+            for role, budget in budgets.items():
+                if not isinstance(budget, dict) or not budget.get("hit_cap"):
+                    continue
+                live_review_completion_budget["cap_hit_count"] += 1
+                live_review_completion_budget["cap_hit_roles"].append(str(role))
         live_review_calls += 2
         if cycle.get("bot1_self_check"):
             live_review_calls += 1
@@ -1155,6 +1206,7 @@ def build_process_performance(
             "llm_call_count": live_review_calls,
             "latency_ms": live_review_latency_ms,
             "http_timing_ms": live_review_http_timing,
+            "completion_budget": live_review_completion_budget,
         },
     }
 

@@ -315,6 +315,11 @@ def test_process_performance_aggregates_llm_http_timing() -> None:
                         "bot2": {"total": 1900, "time_to_headers": 1880, "read_body": 20},
                         "bot2_repair": {},
                     },
+                    "completion_budget": {
+                        "bot1": {"hit_cap": True},
+                        "bot2": {"hit_cap": False},
+                        "bot2_repair": {},
+                    },
                 }
             ]
         },
@@ -327,6 +332,10 @@ def test_process_performance_aggregates_llm_http_timing() -> None:
         "total": 2800,
         "time_to_headers": 2760,
         "read_body": 40,
+    }
+    assert performance["live_review"]["completion_budget"] == {
+        "cap_hit_count": 1,
+        "cap_hit_roles": ["bot1"],
     }
 
 

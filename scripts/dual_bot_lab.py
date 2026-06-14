@@ -275,6 +275,7 @@ def call_chat_payload(*, base_url: str, api_key: str, payload: dict[str, Any], t
             continue
         content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
         if content:
+            choice = (data.get("choices") or [{}])[0]
             data["_hermes_http_timing_ms"] = {
                 "method": "POST",
                 "attempt_index": attempt_index,
@@ -287,6 +288,10 @@ def call_chat_payload(*, base_url: str, api_key: str, payload: dict[str, Any], t
                 "response_bytes": len(raw.encode("utf-8")),
                 "payload_shape": "max_completion_tokens" if "max_completion_tokens" in body else "max_tokens",
                 "temperature_sent": "temperature" in body,
+            }
+            data["_hermes_response_meta"] = {
+                "finish_reason": choice.get("finish_reason", ""),
+                "content_chars": len(content),
             }
             return content, data
         errors.append(f"empty_content: {json.dumps(data, ensure_ascii=False)[:500]}")
