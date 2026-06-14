@@ -25,7 +25,7 @@ https://github.com/megawinrar/Hermes_Retek/tree/ops-safe-restart-speed-g3-rlm-20
 Code baseline before this handoff update:
 
 ```text
-1e8b0b4 test: expand context and rlm coverage
+2b93515 docs: record coverage refactor status
 ```
 
 Key commits in this session:
@@ -42,6 +42,7 @@ Key commits in this session:
 - `55b9b9e feat: add supervisor-gated agent workspace lifecycle`
 - `9cf4894 feat: add durable startup context packs`
 - `1e8b0b4 test: expand context and rlm coverage`
+- `2b93515 docs: record coverage refactor status`
 
 ## What Was Implemented
 
@@ -132,6 +133,35 @@ Focused coverage added:
 - live prompt redaction for task/acceptance/Bot1 output/revision/repair inputs;
 - RLM store get/kind/artifact fallback/metadata/CLI add+pack edge coverage;
 - shared secret tuple payload and cookie/session assignment redaction coverage.
+
+## Current Test Baseline
+
+Latest local verification in this workspace:
+
+```text
+pytest: 270 passed
+coverage over scripts/: 70%
+context_budget.py coverage: 96%
+supervisor_common.py coverage: 91%
+supervisor_run.py coverage: 73%
+supervisor_status.py coverage: 53%
+supervisor_task.py coverage: 55%
+tool_gateway.py coverage: 76%
+```
+
+Additional narrow coverage added after the previous baseline:
+
+- direct in-process `tool_gateway` tests for command classification, protected
+  write detection, resource mapping, `check`, `run`, denial paths, and released
+  resource locks;
+- fail-closed `tool_gateway` handling for dangerous commands linked to a
+  missing Supervisor task;
+- in-process Supervisor CLI tests for create/list/show/run, Bot2 approval,
+  Bot2 request-changes escalation, human decision notification, and plain list
+  output;
+- `context_budget` in-process CLI tests for text/file inputs, conflicting input
+  rejection, missing input rejection, invalid token counts, and raw prompt
+  non-disclosure.
 
 ## Server Deploy
 

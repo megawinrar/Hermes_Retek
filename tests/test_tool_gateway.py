@@ -4,12 +4,16 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import tool_gateway  # noqa: E402
 from supervisor_common import (  # noqa: E402
     acquire_resource_locks,
     active_resource_lock,
@@ -47,6 +51,76 @@ def create_approved_task(store: Path, *, approved_action: str = "execute") -> st
     update_task(task_id, status="running", store_path=store)
     update_task(task_id, status="approved" if approved_action == "execute" else "approved_refusal", store_path=store)
     return task_id
+
+
+def test_gateway_unit_classifies_wrapped_write_commands_and_resources() -> None:
+    classified = tool_gateway.classify_command(
+        [
+            "--",
+            "sudo",
+            "env",
+            "PATH=/usr/bin",
+            "bash",
+            "-lc",
+            "sed -i 's/x/y/' config/production/app.yaml",
+        ]
+    )
+
+    assert classified["dangerous"] is True
+    assert classified["risks"] == ["protected_config_or_domain_write"]
+    assert tool_gateway.command_name(["sudo", "env", "A=B", "docker", "restart", "hermes"]) == "docker"
+    assert tool_gateway.resources_for_risks(["git_push", "sqlite_write", "docker_restart"]) == [
+        "database-write",
+        "git-write",
+        "runtime-deploy",
+    ]
+
+
+def test_gateway_unit_blocks_missing_task_and_missing_bot2_approval(tmp_path: Path) -> None:
+    store = tmp_path / "supervisor.db"
+    dangerous = tool_gateway.classify_command(["git", "push"])
+    task_id = create_task("Deploy without Bot2 link", store_path=store)["task_id"]
+    update_task(task_id, status="running", store_path=store)
+    update_task(task_id, status="approved", store_path=store)
+
+    assert tool_gateway.approval_decision(task_id="", classification=dangerous, store_path=store)["reason"] == (
+        "missing_supervisor_task_id"
+    )
+    assert tool_gateway.approval_decision(task_id=task_id, classification=dangerous, store_path=store)["reason"] == (
+        "missing_linked_bot2_approval"
+    )
+    assert tool_gateway.gateway_decision(task_id="missing-task", argv=["git", "push"], store_path=store)["reason"] == (
+        "supervisor_task_not_found"
+    )
+
+
+def test_gateway_unit_cmd_check_and_run_cover_allowed_paths(tmp_path: Path, capsys) -> None:
+    store = tmp_path / "supervisor.db"
+    safe = SimpleNamespace(command=["--", "git", "status"], task_id="", store=store)
+    assert tool_gateway.cmd_check(safe) == 0
+    safe_payload = json.loads(capsys.readouterr().out)
+    assert safe_payload["reason"] == "command_not_dangerous"
+
+    task_id = create_approved_task(store)
+    run = SimpleNamespace(command=["--", "docker", "restart", "deploy"], task_id=task_id, store=store)
+    run.command = ["--", "sh", "-c", "echo unit-run", "deploy"]
+    assert tool_gateway.cmd_run(run) == 0
+    run_payload = json.loads(capsys.readouterr().out)
+    assert run_payload["allowed"] is True
+    assert run_payload["stdout_preview"] == "unit-run\n"
+    assert active_resource_lock("runtime-deploy", store_path=store) is None
+
+
+def test_gateway_unit_cmd_run_rejects_empty_or_denied_command(tmp_path: Path, capsys) -> None:
+    with pytest.raises(SystemExit, match="run requires a command"):
+        tool_gateway.cmd_run(SimpleNamespace(command=[], task_id="", store=tmp_path / "supervisor.db"))
+
+    result = tool_gateway.cmd_run(
+        SimpleNamespace(command=["--", "git", "push", "origin", "main"], task_id="", store=tmp_path / "supervisor.db")
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 2
+    assert payload["reason"] == "missing_supervisor_task_id"
 
 
 def test_gateway_blocks_git_push_without_supervisor_task(tmp_path: Path) -> None:

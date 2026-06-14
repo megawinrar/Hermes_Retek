@@ -11,6 +11,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import scripts.context_budget as context_budget  # noqa: E402
 from scripts.context_budget import build_context_budget_event, context_usage, estimate_tokens  # noqa: E402
 
 
@@ -66,6 +67,19 @@ def test_invalid_max_tokens_rejected():
         context_usage(1, 0)
     with pytest.raises(ValueError):
         build_context_budget_event("proc-1", used_tokens=1, max_tokens=-1)
+
+
+def test_invalid_context_budget_inputs_are_rejected():
+    with pytest.raises(TypeError, match="used_tokens must be an integer"):
+        context_usage(True, 100)
+    with pytest.raises(ValueError, match="used_tokens must be greater than or equal to 0"):
+        context_usage(-1, 100)
+    with pytest.raises(ValueError, match="process_id is required"):
+        build_context_budget_event("", used_tokens=1, max_tokens=100)
+    with pytest.raises(ValueError, match="max_tokens is required"):
+        build_context_budget_event("proc-1", used_tokens=1)
+    with pytest.raises(ValueError, match="used_tokens or text is required"):
+        build_context_budget_event("proc-1", max_tokens=100)
 
 
 def test_cli_estimate_prints_json_without_raw_text():
@@ -137,3 +151,83 @@ def test_cli_invalid_max_tokens_exits_nonzero():
 
     assert result.returncode != 0
     assert "max_tokens must be greater than 0" in result.stderr
+
+
+def test_cli_main_estimate_text_in_process(monkeypatch, capsys):
+    raw_text = "raw prompt should not be printed"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "context_budget.py",
+            "estimate",
+            "--max-tokens",
+            "100",
+            "--text",
+            raw_text,
+            "--process-id",
+            "proc-main",
+            "--source",
+            "provider",
+        ],
+    )
+
+    assert context_budget.main() == 0
+    stdout = capsys.readouterr().out
+    payload = json.loads(stdout)
+    assert payload["process_id"] == "proc-main"
+    assert payload["source"] == "provider"
+    assert payload["used_tokens"] == estimate_tokens(raw_text)
+    assert raw_text not in stdout
+
+
+def test_cli_main_estimate_file_in_process(tmp_path, monkeypatch, capsys):
+    raw_text = "file prompt should not be printed"
+    text_file = tmp_path / "context.txt"
+    text_file.write_text(raw_text, encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "context_budget.py",
+            "estimate",
+            "--max-tokens",
+            "100",
+            "--text-file",
+            str(text_file),
+        ],
+    )
+
+    assert context_budget.main() == 0
+    stdout = capsys.readouterr().out
+    assert json.loads(stdout)["used_tokens"] == estimate_tokens(raw_text)
+    assert raw_text not in stdout
+
+
+def test_cli_main_rejects_conflicting_or_missing_text(tmp_path, monkeypatch, capsys):
+    text_file = tmp_path / "context.txt"
+    text_file.write_text("context", encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "context_budget.py",
+            "estimate",
+            "--max-tokens",
+            "100",
+            "--text",
+            "inline",
+            "--text-file",
+            str(text_file),
+        ],
+    )
+    with pytest.raises(SystemExit) as conflict:
+        context_budget.main()
+    assert conflict.value.code == 2
+    assert "use only one of --text or --text-file" in capsys.readouterr().err
+
+    monkeypatch.setattr(sys, "argv", ["context_budget.py", "estimate", "--max-tokens", "100"])
+    with pytest.raises(SystemExit) as missing:
+        context_budget.main()
+    assert missing.value.code == 2
+    assert "--text or --text-file is required" in capsys.readouterr().err

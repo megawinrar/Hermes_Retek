@@ -259,7 +259,13 @@ def gateway_decision(
     store_path: Path | str | None = None,
 ) -> dict[str, Any]:
     classification = classify_command(argv)
-    decision = approval_decision(task_id=task_id, classification=classification, store_path=store_path)
+    try:
+        decision = approval_decision(task_id=task_id, classification=classification, store_path=store_path)
+    except SystemExit:
+        if classification.get("dangerous"):
+            decision = {"allowed": False, "reason": "supervisor_task_not_found"}
+        else:
+            raise
     resources = resources_for_risks(list(classification.get("risks") or []))
     if decision.get("allowed"):
         conflicts = lock_conflicts(resources, task_id=task_id, store_path=store_path)
