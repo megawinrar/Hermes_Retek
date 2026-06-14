@@ -103,6 +103,28 @@ def test_summary_marks_human_decision_required_from_run_payload() -> None:
     }
 
 
+def test_summary_does_not_treat_live_bot1_run_id_as_bot2_session() -> None:
+    tool = load_tool()
+    payload = {
+        "process_id": "proc-4",
+        "status": "approved",
+        "route": {
+            "task_level": "L2",
+            "task_type": "simple_text_task",
+            "risk_level": "low",
+            "review_required": False,
+            "human_gate_required": False,
+        },
+        "bot2_session_id": "dual-live-bot1-run-id",
+        "bot2_verdict": {},
+    }
+
+    summary = tool.summarize_payload("run", payload)
+
+    assert summary["bot2"]["required"] is False
+    assert summary["bot2"]["session_id"] == ""
+
+
 def test_execute_returns_compact_json_from_orchestrator(monkeypatch) -> None:
     tool = load_tool()
 
