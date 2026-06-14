@@ -162,8 +162,14 @@ kind=subcall
 metadata={parent_process_id, child_agent_id, depth, timeout, token_budget}
 ```
 
-5. Add Supervisor-only accept/discard semantics for agent workspace outputs.
-6. Add optional FTS5/vector index only after the durable SQLite RLM records are
+3. Add Bot1/Bot2 durable context-pack startup from process SQLite + RLM:
+
+```text
+bot1_context={task, acceptance, route, skills, workspace, required_fixes, relevant_rlm_records}
+bot2_context={task, acceptance, bot1_result, evidence, tests, risk_notes, previous_verdicts}
+```
+
+4. Add optional FTS5/vector index only after the durable SQLite RLM records are
    stable.
 
 ## Tests Required

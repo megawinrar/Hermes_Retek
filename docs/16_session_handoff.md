@@ -1,190 +1,248 @@
 # Hermes Retek Session Handoff
 
-Date: 2026-06-14
+Date: 2026-06-15
 
-## Current Continuation Point
+## Current State
 
-The current active branch is `ops-safe-restart-speed`.
-
-Latest pushed commits at handoff:
-
-- `bbfea2e feat: add hermes timing report`
-- `daf1bff feat: log hermes agent fanout timings`
-
-The live server has the timing report script physically deployed to
-`/opt/hermes-assistant/scripts/hermes_timing_report.py`. The production tree on
-the server is still on its own `custom` branch, so do not blindly switch it or
-run destructive sync commands.
-
-One-time timing report is scheduled through `yc-user` crontab for
-2026-06-15 06:05 UTC, which is 2026-06-15 10:05 Europe/Samara. It sends a
-Telegram report and writes runtime output to:
+Working branch in this workspace:
 
 ```text
-/opt/data/reports/hermes_timing_report_20260615.log
+ops-safe-restart-speed
 ```
 
-The timing report now reads real runtime logs:
-
-- `/opt/data/logs/gateway.log`
-- `/opt/data/logs/agent.log`
-
-It reports:
-
-- Telegram turn timing: inbound, first streaming flush, final response;
-- LLM/BotHub stream latency;
-- tool latency and tool errors;
-- agent fanout: sessions, `delegate_task`, background review turns, noisy
-  sessions, agent `api_used`, history size;
-- gateway SIGTERM/start events, Telegram reconnects, session compression;
-- Process/Supervisor SQLite status counts.
-
-The latest real dry-run showed Hermes already uses agent fanout:
-
-- `agent sessions seen: 31`;
-- `delegate_task calls: 11`;
-- `background review turns: 32`;
-- slowest `delegate_task`: about `393.6s`.
-
-That means parallelization is realistic, but it must be bounded with max
-parallel agents, per-agent timeout/budget, isolated workspaces, single-writer DB
-rules, and BotHub rate/budget guards.
-
-## Start Command For Next Window
-
-Paste this into a fresh Codex window:
+GitHub branch created for this work:
 
 ```text
-Продолжи Hermes Retek с места остановки. Рабочая ветка: ops-safe-restart-speed. Сначала прочитай docs/16_session_handoff.md, затем проверь завтрашний Telegram timing report и /opt/data/reports/hermes_timing_report_20260615.log. После этого спроектируй bounded parallel agent orchestration: max parallel agents, per-agent timeout/budget, isolated workspace, single-writer SQLite/state, BotHub rate limits, и добавь тесты. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения.
+ops-safe-restart-speed-g3-rlm-20260615
 ```
 
-Useful manual server check:
-
-```bash
-docker exec hermes-agent sh -lc 'cd /opt/hermes-assistant && python3 scripts/hermes_timing_report.py --hours 24'
-```
-
-Useful focused test:
-
-```bash
-docker exec -e UV_CACHE_DIR=/opt/data/.cache/uv -e PYTHONDONTWRITEBYTECODE=1 hermes-agent sh -lc 'cd /opt/hermes-assistant && uv run --with pytest==9.0.2 --with pytest-timeout==2.4.0 python -m pytest tests/test_hermes_timing_report.py -q -p no:cacheprovider'
-```
-
-Latest verification before this handoff:
-
-- focused timing report tests: `8 passed`;
-- full server suite: `137 passed`;
-- current-file secret audit for changed files: `0 findings`.
-
-## Current Runtime Correction
-
-The live Hermes runtime has been re-checked on 2026-06-13.
-
-Use `docs/17_hermes_runtime_integration.md` as the current integration map.
-Important correction: the live application tree is `/opt/hermes-assistant`, and
-the Telegram agent runs in the `hermes-agent` Docker container. The Retek
-`scripts/` in this repository are host-side Supervisor/Bot#2/process tooling;
-they are not imported by `/opt/hermes` inside the running container.
-
-Avoid blind `git pull` or full sync on `/opt/hermes-assistant`; the server tree
-contains local changes, untracked files, Docker mounts, and mixed ownership.
-
-## How To Continue In A New Codex Session
-
-Open a new Codex session and provide this file. Suggested first message:
+GitHub URL:
 
 ```text
-Continue Hermes Retek from docs/16_session_handoff.md. Server paths are /opt/Hermes_Retek and /opt/hermes-assistant. First read docs/14_stage2_done_report.md and docs/15_remaining_work_plan.md, then continue with P1 Human Notification / Telegram DevLog.
+https://github.com/megawinrar/Hermes_Retek/tree/ops-safe-restart-speed-g3-rlm-20260615
 ```
 
-## Project Context
+Code baseline before this handoff update:
 
-Repository: `megawinrar/Hermes_Retek`.
-
-Server paths:
-
-- repo checkout: `/opt/Hermes_Retek`
-- live app copy: `/opt/hermes-assistant`
-- reports: `/opt/hermes-assistant/reports`
-- default supervisor store: `/var/lib/docker/volumes/hermes-data/_data/supervisor_store.db`
-- default process store: `/var/lib/docker/volumes/hermes-data/_data/process_orchestrator_store.db`
-
-SSH context:
-
-- user: `yc-user`
-- host: `89.169.142.160`
-- working Windows key copy used in this session: `C:\Temp\yandex_key_clean`
-- Windows OpenSSH is old; use `-E <logfile>` or commands may hang.
-
-Reliable SSH shape:
-
-```powershell
-$key = 'C:\Temp\yandex_key_clean'
-$kh = '<workspace>\work\known_hosts'
-$log = '<workspace>\work\ssh_run.log'
-& 'C:\Windows\System32\OpenSSH\ssh.exe' -E $log -T -i $key -o LogLevel=ERROR -o IdentitiesOnly=yes -o BatchMode=yes -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$kh yc-user@89.169.142.160 "cd /opt/Hermes_Retek && git status --short"
+```text
+55b9b9e feat: add supervisor-gated agent workspace lifecycle
 ```
 
-## Current Git State
+Key commits in this session:
 
-Latest pushed Stage 2 commits:
+- `9af196c feat: add bounded parallel orchestration policy`
+- `9278225 refactor: isolate parallel orchestration policy`
+- `55d991f feat: audit live bot activity in sqlite`
+- `6007481 feat: store redacted bot outputs in audit`
+- `64bdcb3 docs: add architecture rollout plan`
+- `c8a04a8 feat: add rlm memory and agent orchestration primitives`
+- `2b08961 feat: add authenticated browser session skill`
+- `697cb7b feat: write process summaries to rlm store`
+- `ed77da3 refactor: isolate process rlm memory writer`
+- `55b9b9e feat: add supervisor-gated agent workspace lifecycle`
 
-- `020a3be Add Stage 2 safety gates and secret scan`
-- `2ffcbc0 Restore CLI script executable bits`
+## What Was Implemented
 
-This handoff update should be a docs-only commit after those.
+RLM-lite memory:
 
-## Already Done
+- `scripts/rlm_store.py`
+- `scripts/process_rlm_memory.py`
+- process summaries, Bot1 output, Bot2 reviews, human-gate records, and browser-skill usage records;
+- non-blocking RLM write outcome: failures become `rlm_write_failed` process events.
 
-Read full detail in `docs/14_stage2_done_report.md`.
+Bounded orchestration:
 
-Short version:
+- `scripts/parallel_orchestration.py`
+- max parallel agents by task level;
+- per-agent timeout/token budget;
+- BotHub max parallel calls, requests/minute, cooldown;
+- isolated workspace policy and single-writer SQLite/state rules.
 
-- hardcoded API secrets removed from current tracked shell scripts;
-- secret scan test added;
-- Router separates GitHub read-only lookup from GitHub write/deploy actions;
-- L0/L1 no longer start Bot#2 by default;
-- high-risk push/merge/deploy goes to human gate;
-- Bot#2 canonical verdict enum added;
-- invalid Bot#2 JSON fails closed;
-- live copy `/opt/hermes-assistant` synced;
-- tests passed: `26 passed`.
+g3-inspired workspace lifecycle:
 
-## Remaining Work
+- `scripts/agent_workspace.py`
+- safe workspace paths under `/opt/data/agent_workspaces/{process_id}/{agent_id}`;
+- create/list/status/cleanup;
+- `set-status`, `accept`, `discard`;
+- `accept` is Supervisor-gated and never auto-merges.
 
-Read full detail in `docs/15_remaining_work_plan.md`.
+Skills and browser work:
 
-Priority order:
+- `skills/hermes-browser/SKILL.md`
+- `scripts/hermes_browser_session.py`
+- persistent profile/session directory;
+- artifacts, screenshots, HTML source, cookies file;
+- cookie values are not printed by default;
+- runner errors are redacted before stderr.
 
-1. P0 rotate exposed Bothub/API key in the external service.
-2. P1 Human Notification / Telegram DevLog.
-3. P1 Bot#2 retry/repair for invalid JSON.
-4. P1 DevOps/tool gateway.
-5. P1 process state machine hardening.
-6. P2 skills index/lazy loading.
-7. P2 observability dashboard.
-8. Stage 2 battle suite with real tasks.
+Secret/runtime safety:
 
-## Recommended Next Task
+- `scripts/secret_patterns.py`
+- `scripts/secret_vault.py`
+- generic prefixed token redaction;
+- Bot1/Bot2 activity logs are redacted.
 
-Start with `P1 Human Notification / Telegram DevLog`.
+## Tests Before GitHub Push
 
-Goal: when a process enters `awaiting_human_decision`, the user receives a real-time message containing:
+Local verification before server deploy:
 
-- task;
-- Bot#1 version;
-- Bot#2 version;
-- risk;
-- recommendation;
-- clear Yes/No semantics.
+```text
+pytest: 242 passed
+secret_audit on current tracked target paths: 0 findings
+```
 
-Acceptance:
+Focused coverage added:
 
-- dry-run payload can be tested without Telegram;
-- integration test proves notification payload shape;
-- live process records notification event;
-- no secrets appear in notification/logs.
+- RLM store add/search/context pack;
+- process-to-RLM sidecar success, disabled mode, failure events, redaction;
+- process `continue` writes RLM records after human yes;
+- browser cookies stdout safety;
+- browser runner stderr redaction;
+- browser SKILL.md CLI examples parse;
+- on-demand browser skill cache isolation;
+- workspace lifecycle accept/discard gates;
+- secret vault permissions/redaction;
+- bounded parallel orchestration policy.
 
-## Important Risk
+## Server Deploy
 
-The old API key was removed from current files, but it existed in git history. Treat it as compromised. Rotate it outside the repo.
+Production path:
+
+```text
+/opt/hermes-assistant
+```
+
+Important constraint:
+
+```text
+Do not switch /opt/hermes-assistant away from branch custom without explicit user approval.
+```
+
+Server remained on:
+
+```text
+branch=custom
+head=908cd72
+```
+
+Because `/opt/hermes-assistant` had many local modified/untracked files, the
+deploy was done as a file overlay, not as `git pull`, merge, reset, or branch
+switch.
+
+Files deployed:
+
+- 31 files from `ops-safe-restart-speed-g3-rlm-20260615`;
+- deployed through staging:
+
+```text
+/home/yc-user/hermes-deploy-staging-20260614T220542Z
+```
+
+Backup before sudo overlay:
+
+```text
+/home/yc-user/hermes-file-deploy-backups/sudo-20260614T220614Z
+```
+
+Server checks after deploy:
+
+```text
+syntax_ok=12
+secret_audit on deployed files: 0 findings
+agent_workspace accept smoke: accepted
+process_orchestrator RLM smoke: approved
+```
+
+Full `pytest` was not run on the server because `pytest` is not installed there.
+Local full suite did pass before deploy.
+
+Known server risk:
+
+- A broad secret audit over all server `custom/` still reports old findings in:
+  - `custom/config/.env.example`
+  - `custom/config/config.yaml`
+- These findings are from existing server files, not from the newly deployed
+  files. They should be cleaned/rotated separately.
+
+## Bot1/Bot2 Session Continuity Decision
+
+Do not make Bot1 and Bot2 start from a truly empty context every time.
+
+Also do not keep one giant infinite chat session forever. That is exactly how
+context compaction loses details and how old assumptions leak into new work.
+
+Use this model:
+
+```text
+new execution session + durable context pack
+```
+
+Meaning:
+
+- Bot1 starts a fresh bounded execution session for a task or revision;
+- Bot2 starts a fresh bounded review session for each quality gate;
+- both receive a compact context pack from SQLite/RLM/process events;
+- raw long chat history stays in durable logs/artifacts, not in the live prompt;
+- secrets are passed as vault refs, not raw values;
+- Supervisor remains the single writer for shared state.
+
+The context pack for Bot1 should include:
+
+- task and acceptance contract;
+- route and risk level;
+- selected skills;
+- workspace path/status;
+- relevant previous attempts;
+- required fixes from Bot2;
+- current test/evidence requirements;
+- relevant RLM records.
+
+The context pack for Bot2 should include:
+
+- task and acceptance contract;
+- Bot1 result/diff/evidence;
+- test output;
+- risk notes;
+- previous Bot2 verdicts if this is a retry;
+- human decision state if present;
+- exact approval/rejection criteria.
+
+This is close to the useful part of `g3`: g3 has a coach/player loop and
+session/workspace metadata, plus context thinning/compaction instead of simply
+throwing everything away. Hermes should keep that shape, but with stronger
+Supervisor/Bot2 gates.
+
+## Next Session First Prompt
+
+Use this in the next Codex chat:
+
+```text
+Продолжи Hermes Retek с docs/16_session_handoff.md. Рабочая ветка ops-safe-restart-speed. GitHub ветка с текущей работой: ops-safe-restart-speed-g3-rlm-20260615. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения. Сначала проверь git status, затем продолжай с Bot1/Bot2 durable context pack: старт новых коротких сессий из RLM/process SQLite, без бесконечного чата и без потери контекста.
+```
+
+## Recommended Next Work
+
+1. Add compact context-pack builder for Bot1/Bot2 session startup:
+   - process state;
+   - RLM records;
+   - last Bot1/Bot2/human events;
+   - selected skills;
+   - workspace metadata.
+2. Add compaction records:
+
+```text
+kind=compaction
+tags=context,compaction,{process_id}
+metadata={source_event_ids, trigger_percent, token_budget}
+```
+
+3. Add subcall records for parallel agents:
+
+```text
+kind=subcall
+metadata={parent_process_id, child_agent_id, depth, timeout, token_budget}
+```
+
+4. Clean old server-side secret placeholders/findings in `custom/config`.
+5. Decide whether to install a lightweight test runner on the server or keep
+   server verification to syntax/smoke checks.
