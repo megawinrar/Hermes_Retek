@@ -43,6 +43,10 @@ def build_human_notification_payload(
             "yes": YES_MEANING,
             "no": NO_MEANING,
         },
+        "decision_commands": {
+            "yes": f"/opt/hermes-assistant/scripts/process_orchestrator.py decide {process_id} --choice yes --reason \"...\"",
+            "no": f"/opt/hermes-assistant/scripts/process_orchestrator.py decide {process_id} --choice no --reason \"...\"",
+        },
     }
     return redact_payload(payload)
 
@@ -66,6 +70,16 @@ def format_human_notification(payload: dict[str, Any]) -> str:
         f"YES = {semantics.get('yes', '')}",
         f"NO = {semantics.get('no', '')}",
     ]
+    commands = payload.get("decision_commands") or {}
+    if commands:
+        lines.extend(
+            [
+                "",
+                "Decision commands:",
+                f"YES: {commands.get('yes', '')}",
+                f"NO: {commands.get('no', '')}",
+            ]
+        )
     return redact_text("\n".join(lines))
 
 

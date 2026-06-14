@@ -35,6 +35,7 @@ from supervisor_common import (
     get_task,
     link_bot2,
     parse_bot2_verdict,
+    record_human_decision,
     supervisor_status_for_verdict,
     task_details,
     update_task,
@@ -672,6 +673,122 @@ def build_process_performance(
     }
 
 
+def latest_bot2_verdict_from_process(data: dict[str, Any]) -> dict[str, Any]:
+    assignments = list(data.get("assignments") or [])
+    events = list(data.get("events") or [])
+    bot2_event = latest_event(events, "bot2_verdict")
+    bot2_assignment = latest_assignment(assignments, "bot2")
+    verdict = (
+        (bot2_event.get("payload") or {}).get("verdict")
+        or (bot2_assignment.get("output") or {}).get("verdict")
+        or {}
+    )
+    return verdict if isinstance(verdict, dict) else {}
+
+
+def human_decision_next_action(
+    *,
+    choice: str,
+    process_id_value: str,
+    supervisor_task_id: str,
+    verdict: dict[str, Any],
+    route: dict[str, Any],
+) -> dict[str, Any]:
+    normalized = choice.lower().strip()
+    if normalized == "yes":
+        return {
+            "action": "return_to_bot1_with_bot2_fixes",
+            "status": "return_to_bot1",
+            "target_worker": "bot1",
+            "target_phase": "revision",
+            "process_id": process_id_value,
+            "supervisor_task_id": supervisor_task_id,
+            "bot2_status": verdict.get("status", ""),
+            "bot2_summary": verdict.get("summary", ""),
+            "required_fixes": verdict.get("required_fixes", []),
+            "risks": verdict.get("risks", []),
+            "resume_hint": (
+                "Resume Bot#1 with the Bot#2 required_fixes package, then run Tester/Bot#2 again "
+                "before DevOps or external writes."
+            ),
+        }
+    return {
+        "action": "accept_bot1_user_override",
+        "status": "accepted_by_user_override",
+        "target_worker": "supervisor",
+        "target_phase": "final_decision",
+        "process_id": process_id_value,
+        "supervisor_task_id": supervisor_task_id,
+        "bot2_status": verdict.get("status", ""),
+        "bot2_summary": verdict.get("summary", ""),
+        "devops_allowed_after_override": "devops_if_approved" in route.get("process_plan", []),
+        "resume_hint": "Keep Bot#1 result as final by explicit user override and continue only with route/tool gates.",
+    }
+
+
+def decide_process(args: argparse.Namespace) -> dict[str, Any]:
+    details = process_details(
+        args.process_id,
+        store_path=args.process_store,
+        supervisor_store_path=args.supervisor_store,
+    )
+    status = str(details.get("status") or "")
+    if status != "awaiting_human_decision":
+        raise SystemExit(f"process is not awaiting a human decision: {args.process_id} status={status}")
+
+    supervisor_task_id = str(details.get("supervisor_task_id") or "")
+    decision = record_human_decision(
+        supervisor_task_id,
+        args.choice,
+        args.reason or "",
+        store_path=args.supervisor_store,
+    )
+    route = details.get("router") or {}
+    verdict = latest_bot2_verdict_from_process(details)
+    next_action = human_decision_next_action(
+        choice=str(decision.get("choice") or args.choice),
+        process_id_value=args.process_id,
+        supervisor_task_id=supervisor_task_id,
+        verdict=verdict,
+        route=route,
+    )
+    next_status = str(decision.get("status") or next_action["status"])
+    next_phase = "bot1_revision" if next_status == "return_to_bot1" else "final_decision"
+
+    event_payload = {"decision": decision, "next_action": next_action}
+    add_process_event(args.process_id, "human_decision", event_payload, store_path=args.process_store)
+    add_process_event(args.process_id, "process_next_action", next_action, store_path=args.process_store)
+    add_assignment(
+        args.process_id,
+        "supervisor",
+        "human_decision",
+        "completed",
+        event_payload,
+        store_path=args.process_store,
+    )
+    if next_status == "return_to_bot1":
+        add_assignment(
+            args.process_id,
+            "bot1",
+            "revision",
+            "pending",
+            {
+                "source": "human_agreed_with_bot2",
+                "required_fixes": next_action.get("required_fixes", []),
+                "risks": next_action.get("risks", []),
+            },
+            store_path=args.process_store,
+        )
+    update_process(args.process_id, status=next_status, current_phase=next_phase, store_path=args.process_store)
+    return {
+        "process_id": args.process_id,
+        "supervisor_task_id": supervisor_task_id,
+        "decision": decision,
+        "status": next_status,
+        "next_action": next_action,
+    }
+
+
 def run_process(args: argparse.Namespace) -> dict[str, Any]:
     process_started_at = time.perf_counter()
     task = args.task.strip()
@@ -997,6 +1114,7 @@ def process_summary(
     bot2_event = latest_event(events, "bot2_verdict")
     human_event = latest_event(events, "human_notification")
     performance_event = latest_event(events, "process_performance")
+    next_action_event = latest_event(events, "process_next_action")
     bot2_verdict = (
         (bot2_event.get("payload") or {}).get("verdict")
         or (bot2_assignment.get("output") or {}).get("verdict")
@@ -1084,6 +1202,7 @@ def process_summary(
             "mode": notification_delivery.get("mode", ""),
             "provider": "telegram" if notification_delivery.get("telegram_requested") else "",
         },
+        "next_action": next_action_event.get("payload") or {},
         "reports": {
             "dual_bot_report": next(
                 (
@@ -1275,6 +1394,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(json.dumps(run_process(args), ensure_ascii=False, indent=2))
 
 
+def cmd_decide(args: argparse.Namespace) -> None:
+    print(json.dumps(decide_process(args), ensure_ascii=False, indent=2))
+
+
 def cmd_show(args: argparse.Namespace) -> None:
     print(
         json.dumps(
@@ -1342,6 +1465,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--notify-telegram", action="store_true", help="Send human-gate notification to Telegram via DevLog settings")
     run.add_argument("--notification-dry-run", action="store_true", help="Build and record the notification payload without network delivery")
     run.set_defaults(func=cmd_run)
+
+    decide = sub.add_parser("decide", help="Record human Да/Нет decision and emit the next process action")
+    decide.add_argument("process_id")
+    decide.add_argument("--choice", required=True, choices=["yes", "no"], help="yes=Да, agree with Bot#2; no=Нет, accept Bot#1")
+    decide.add_argument("--reason", default="")
+    decide.set_defaults(func=cmd_decide)
 
     show = sub.add_parser("show")
     show.add_argument("process_id")
