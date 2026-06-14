@@ -132,6 +132,28 @@ def test_adaptive_token_budget_scales_by_task_level(monkeypatch) -> None:
     ) == 1000
 
 
+def test_adaptive_review_cycle_policy_scales_by_task_level(monkeypatch) -> None:
+    monkeypatch.delenv("HERMES_ADAPTIVE_REVIEW_CYCLES", raising=False)
+
+    l1 = process_orchestrator.review_cycle_policy_for_route(
+        "Write a short status",
+        {"task_level": "L1", "task_type": "simple_text_task"},
+    )
+    l2 = process_orchestrator.review_cycle_policy_for_route(
+        "Score suppliers",
+        {"task_level": "L2", "task_type": "supplier_price_deadline_analysis"},
+    )
+    l3_migration = process_orchestrator.review_cycle_policy_for_route(
+        "Plan SQLite to Postgres migration",
+        {"task_level": "L3", "task_type": "database_migration_plan"},
+    )
+
+    assert l1["effective_max_cycles"] == 1
+    assert l2["effective_max_cycles"] == 2
+    assert l3_migration["effective_max_cycles"] == 3
+    assert l3_migration["extended_l3"] is True
+
+
 def test_token_budget_env_override_beats_adaptive_policy(monkeypatch) -> None:
     monkeypatch.setenv("HERMES_BOT1_MAX_TOKENS", "1200")
 

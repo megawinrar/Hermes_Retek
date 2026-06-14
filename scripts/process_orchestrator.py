@@ -138,6 +138,24 @@ ROLE_ENV_TOKEN_CAPS = {
     "bot2_verdict": "HERMES_BOT2_VERDICT_MAX_TOKENS",
     "bot2_repair": "HERMES_BOT2_REPAIR_MAX_TOKENS",
 }
+REVIEW_CYCLE_POLICY_PROFILES = {
+    "L0": 1,
+    "L1": 1,
+    "L2": 2,
+    "L3": 2,
+    "L4": 2,
+}
+EXTENDED_L3_REVIEW_SIGNALS = {
+    "migration",
+    "database",
+    "postgres",
+    "sqlite",
+    "deploy",
+    "rollback",
+    "code",
+    "implementation",
+    "refactor",
+}
 
 
 def adaptive_token_budget_enabled() -> bool:
@@ -186,6 +204,42 @@ def token_policy_snapshot(
         "human_gate_required": bool(route.get("human_gate_required")),
         "requested_max_tokens": max(1, int(requested)),
         "budgets": dict(budgets),
+    }
+
+
+def adaptive_review_cycles_enabled() -> bool:
+    return os.environ.get("HERMES_ADAPTIVE_REVIEW_CYCLES", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def review_cycle_policy_for_route(task: str = "", route: dict[str, Any] | None = None) -> dict[str, Any]:
+    route = route or {}
+    level = token_policy_level(route)
+    if not adaptive_review_cycles_enabled():
+        return {
+            "enabled": False,
+            "level": level,
+            "source": "global_max",
+            "global_max_cycles": MAX_BOT_REVIEW_CYCLES,
+            "effective_max_cycles": max(1, MAX_BOT_REVIEW_CYCLES),
+            "extended_l3": False,
+        }
+
+    policy_max = REVIEW_CYCLE_POLICY_PROFILES.get(level, REVIEW_CYCLE_POLICY_PROFILES["L3"])
+    task_type = str(route.get("task_type") or "")
+    process_plan = " ".join(str(item) for item in (route.get("process_plan") or []))
+    signal_text = f"{task} {task_type} {process_plan}".lower()
+    extended_l3 = level == "L3" and any(signal in signal_text for signal in EXTENDED_L3_REVIEW_SIGNALS)
+    if extended_l3:
+        policy_max = 3
+    effective_max = max(1, min(MAX_BOT_REVIEW_CYCLES, policy_max))
+    return {
+        "enabled": True,
+        "level": level,
+        "source": "adaptive",
+        "global_max_cycles": MAX_BOT_REVIEW_CYCLES,
+        "policy_max_cycles": policy_max,
+        "effective_max_cycles": effective_max,
+        "extended_l3": extended_l3,
     }
 
 
@@ -797,6 +851,8 @@ def live_dual_result(
         "bot2": lab.semantic_budget_for_route(route, "bot2"),
         "bot2_repair": lab.semantic_budget_for_route(route, "bot2"),
     }
+    review_policy = review_cycle_policy_for_route(task, route)
+    max_review_cycles = int(review_policy["effective_max_cycles"])
     rid = lab.run_id()
     lab.add_run(rid, task, acceptance, bot1_model, bot2_model)
     review_cycles: list[dict[str, Any]] = []
@@ -804,7 +860,7 @@ def live_dual_result(
     bot2 = ""
     verdict: dict[str, Any] = {}
 
-    for round_no in range(1, MAX_BOT_REVIEW_CYCLES + 1):
+    for round_no in range(1, max_review_cycles + 1):
         if round_no == 1:
             bot1_max_tokens = token_budgets["bot1"]
             bot1_messages = lab.bot1_messages(
@@ -966,7 +1022,7 @@ def live_dual_result(
                 verdict["repair_attempted"] = True
                 verdict["repair_status"] = "failed_closed"
 
-        loop_exhausted = verdict.get("status") == "REQUEST_CHANGES" and round_no == MAX_BOT_REVIEW_CYCLES
+        loop_exhausted = verdict.get("status") == "REQUEST_CHANGES" and round_no == max_review_cycles
         if loop_exhausted:
             verdict["loop_status"] = "max_review_cycles_reached"
             risks = list(verdict.get("risks") or [])
@@ -1020,6 +1076,7 @@ def live_dual_result(
                 ),
             },
             "token_policy": token_policy,
+            "review_policy": review_policy,
             "semantic_budget": semantic_budgets,
             "loop_status": verdict.get("loop_status", ""),
             "repair_loop_exhausted": loop_exhausted,
@@ -1037,6 +1094,7 @@ def live_dual_result(
 
     verdict["review_cycles"] = review_cycles
     verdict["token_policy"] = token_policy
+    verdict["review_policy"] = review_policy
     verdict["semantic_budget"] = semantic_budgets
     final_fix_closure = next((cycle.get("fix_closure_checklist") for cycle in reversed(review_cycles) if cycle.get("fix_closure_checklist")), [])
     verdict["fix_closure_checklist"] = final_fix_closure
@@ -1392,6 +1450,7 @@ def build_process_performance(
             "latency_ms": live_review_latency_ms,
             "http_timing_ms": live_review_http_timing,
             "completion_budget": live_review_completion_budget,
+            "review_policy": verdict.get("review_policy", {}),
         },
     }
 
@@ -2113,7 +2172,13 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
                 add_process_event(
                     pid,
                     "repair_loop_exhausted",
-                    {"max_review_cycles": MAX_BOT_REVIEW_CYCLES, "verdict": verdict},
+                    {
+                        "max_review_cycles": int(
+                            (verdict.get("review_policy") or {}).get("effective_max_cycles") or MAX_BOT_REVIEW_CYCLES
+                        ),
+                        "review_policy": verdict.get("review_policy", {}),
+                        "verdict": verdict,
+                    },
                     store_path=args.process_store,
                 )
 

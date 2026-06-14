@@ -315,6 +315,73 @@ def test_live_dual_result_records_max_cycle_exhaustion(monkeypatch, tmp_path: Pa
     ]
 
 
+def test_live_dual_result_exhausts_l2_after_two_review_cycles(monkeypatch, tmp_path: Path) -> None:
+    calls: list[list[dict[str, str]]] = []
+    speakers: list[str] = []
+
+    def request_changes(summary: str) -> str:
+        return (
+            '{"status":"REQUEST_CHANGES","approved_action":"needs_revision",'
+            f'"summary":"{summary}","evidence_checked":["bot1"],'
+            '"risks":["math still inconsistent"],'
+            '"required_fixes":["Fix weighted scoring arithmetic"],"confidence":0.6}'
+        )
+
+    responses = [
+        "initial supplier scoring with inconsistent math",
+        request_changes("round 1"),
+        "revision still inconsistent",
+        "selfcheck still inconsistent",
+        request_changes("round 2"),
+    ]
+
+    def fake_call_chat(
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        timeout: int,
+    ) -> tuple[str, dict[str, object]]:
+        calls.append(messages)
+        return responses[len(calls) - 1], {"usage": {"total_tokens": 10 + len(calls)}}
+
+    def fake_add_message(run_id: str, speaker: str, model: str, content: str, metadata: dict[str, object]) -> None:
+        speakers.append(speaker)
+
+    monkeypatch.setattr(dual_bot_lab, "bothub_config", lambda: {"base_url": "https://example.test/v1", "api_key": "test"})
+    monkeypatch.setattr(dual_bot_lab, "run_id", lambda: "dual-l2-max-cycle")
+    monkeypatch.setattr(dual_bot_lab, "add_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(dual_bot_lab, "call_chat", fake_call_chat)
+    monkeypatch.setattr(dual_bot_lab, "add_message", fake_add_message)
+    monkeypatch.setattr(dual_bot_lab, "update_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(dual_bot_lab, "write_report", lambda **kwargs: tmp_path / "report.md")
+
+    _bot1, _run_id, verdict, _report_path = live_dual_result(
+        "Score CRM Retek supplier options",
+        "Need ranked suppliers with normalized weighted score.",
+        bot1_model="bot1-model",
+        bot2_model="bot2-model",
+        max_tokens=100,
+        timeout=10,
+        route={"task_level": "L2", "task_type": "supplier_price_deadline_analysis", "risk_level": "high"},
+    )
+
+    assert verdict["status"] == "REQUEST_CHANGES"
+    assert verdict["loop_status"] == "max_review_cycles_reached"
+    assert verdict["review_policy"]["effective_max_cycles"] == 2
+    assert len(verdict["review_cycles"]) == 2
+    assert len(calls) == 5
+    assert speakers == [
+        "Bot#1",
+        "Bot#2-1",
+        "Bot#1-revision-2",
+        "Bot#1-self-check-2",
+        "Bot#2-2",
+    ]
+
+
 def test_dual_bot_lab_storage_and_report_are_redacted(monkeypatch, tmp_path: Path) -> None:
     store = tmp_path / "dual_bot_lab.db"
     reports = tmp_path / "reports"
