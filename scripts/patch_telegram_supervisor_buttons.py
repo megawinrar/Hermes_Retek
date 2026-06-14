@@ -16,6 +16,8 @@ from pathlib import Path
 DEFAULT_TARGET = Path("/opt/hermes-assistant/hermes-core/gateway/platforms/telegram.py")
 HELPER_MARKER = "_run_hermes_process_callback"
 CALLBACK_MARKER = "# --- Hermes process supervisor callbacks (hp:action:process_id) ---"
+HELPER_CONTINUE_MARKER = 'elif action == "continue":'
+CALLBACK_CONTINUE_MARKER = 'result["continue_result"] = await self._run_hermes_process_callback("continue", process_id)'
 
 
 HELPER_BLOCK = r'''
@@ -38,13 +40,22 @@ HELPER_BLOCK = r'''
         cmd = self._hermes_process_cli_base()
         if action == "decide":
             cmd += ["decide", process_id, "--choice", choice, "--reason", reason]
+        elif action == "continue":
+            cmd += ["continue", process_id, "--mode", "auto", "--notify-telegram"]
         elif action in {"show", "transcript"}:
             cmd += [action, process_id]
         else:
             return {"ok": False, "error": f"unsupported hermes_process action: {action}"}
 
+        def _timeout_seconds() -> int:
+            raw = os.environ.get("HERMES_PROCESS_CALLBACK_TIMEOUT", "300" if action == "continue" else "45")
+            try:
+                return max(30, min(900, int(raw)))
+            except Exception:
+                return 300 if action == "continue" else 45
+
         def _run() -> dict:
-            completed = _subprocess.run(cmd, text=True, capture_output=True, check=False, timeout=45)
+            completed = _subprocess.run(cmd, text=True, capture_output=True, check=False, timeout=_timeout_seconds())
             if completed.returncode != 0:
                 return {
                     "ok": False,
@@ -74,9 +85,31 @@ HELPER_BLOCK = r'''
                 f"Status: {payload.get('status', '')}",
                 f"Next action: {next_action.get('action', '')}",
             ]
+            continue_result = payload.get("continue_result") or {}
+            if continue_result:
+                continue_next = continue_result.get("next_action") or {}
+                continue_bot2 = continue_result.get("bot2_verdict") or {}
+                lines.extend(
+                    [
+                        "",
+                        "Auto-continue after YES",
+                        f"Mode: {continue_result.get('mode', '')}",
+                        f"Status: {continue_result.get('status', '')}",
+                        f"Bot2: {continue_bot2.get('status', '')}",
+                        f"Next action: {continue_next.get('action', '')}",
+                    ]
+                )
+                if continue_result.get("report_path"):
+                    lines.append("Report: " + str(continue_result.get("report_path"))[:900])
+                if continue_result.get("notification_delivery"):
+                    delivery = continue_result.get("notification_delivery") or {}
+                    lines.append(
+                        "Repeated human gate: "
+                        + ("sent" if delivery.get("telegram_delivered") else str(delivery.get("mode", "recorded")))
+                    )
             if next_action.get("required_fixes"):
                 lines.append("Required fixes: " + "; ".join(str(item) for item in next_action.get("required_fixes", [])[:4]))
-            if next_action.get("resume_hint"):
+            if next_action.get("resume_hint") and not continue_result:
                 lines.append("Resume: " + str(next_action.get("resume_hint"))[:900])
             return "\n".join(lines)
 
@@ -186,6 +219,8 @@ CALLBACK_BLOCK = r'''
                     )
                 except Exception:
                     pass
+                if choice == "yes" and result.get("ok", True):
+                    result["continue_result"] = await self._run_hermes_process_callback("continue", process_id)
                 await self._send_hermes_process_callback_followup(
                     query,
                     self._format_hermes_process_callback_result("decide", result),
@@ -205,18 +240,33 @@ CALLBACK_BLOCK = r'''
 
 def patch_text(text: str) -> tuple[str, list[str]]:
     changes: list[str] = []
+    callback_anchor = "    async def _handle_callback_query(\n"
+    update_anchor = "        # --- Update prompt callbacks ---\n"
     if HELPER_MARKER not in text:
-        anchor = "    async def _handle_callback_query(\n"
-        if anchor not in text:
+        if callback_anchor not in text:
             raise RuntimeError("callback handler anchor not found")
-        text = text.replace(anchor, HELPER_BLOCK + anchor, 1)
+        text = text.replace(callback_anchor, HELPER_BLOCK + callback_anchor, 1)
         changes.append("helper_methods")
+    elif HELPER_CONTINUE_MARKER not in text:
+        helper_start = text.find("    def _hermes_process_cli_base(self) -> list[str]:\n")
+        helper_end = text.find(callback_anchor)
+        if helper_start < 0 or helper_end < 0 or helper_start >= helper_end:
+            raise RuntimeError("existing helper block anchors not found")
+        text = text[:helper_start] + HELPER_BLOCK + text[helper_end:]
+        changes.append("helper_methods_upgrade")
     if CALLBACK_MARKER not in text:
-        anchor = "        # --- Update prompt callbacks ---\n"
-        if anchor not in text:
+        if update_anchor not in text:
             raise RuntimeError("update prompt anchor not found")
-        text = text.replace(anchor, CALLBACK_BLOCK + anchor, 1)
+        text = text.replace(update_anchor, CALLBACK_BLOCK + update_anchor, 1)
         changes.append("callback_branch")
+    elif CALLBACK_CONTINUE_MARKER not in text:
+        marker_start = text.find(CALLBACK_MARKER)
+        callback_start = text.rfind("\n", 0, marker_start) + 1
+        callback_end = text.find(update_anchor)
+        if marker_start < 0 or callback_start < 0 or callback_end < 0 or callback_start >= callback_end:
+            raise RuntimeError("existing callback block anchors not found")
+        text = text[:callback_start] + CALLBACK_BLOCK + text[callback_end:]
+        changes.append("callback_branch_upgrade")
     return text, changes
 
 
