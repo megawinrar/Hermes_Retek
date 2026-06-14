@@ -27,6 +27,8 @@ def args_for_process(tmp_path: Path, **overrides: object) -> object:
         "evidence": "",
         "bot2_status": "APPROVE",
         "bot2_verdict_json": "",
+        "bot2_route_audit_json": "",
+        "live_route_audit": False,
         "live_dual": False,
         "bot1_model": "bot1-model",
         "bot2_model": "bot2-model",
@@ -104,6 +106,56 @@ def test_process_reject_creates_human_escalation(tmp_path: Path) -> None:
     assert payload["status"] == "awaiting_human_decision"
     assert "Bot#1" in payload["human_message"]
     assert payload["route"]["task_level"] == "L4"
+
+
+def test_bot2_route_audit_raises_l1_to_human_gate(tmp_path: Path) -> None:
+    process_store = tmp_path / "process.db"
+    supervisor_store = tmp_path / "supervisor.db"
+    audit = {
+        "status": "REQUIRE_HUMAN_GATE",
+        "recommended_level": "L4",
+        "risk_level": "high",
+        "review_required": True,
+        "human_gate_required": True,
+        "summary": "Bot#2 saw deploy/write risk hidden in the user context.",
+    }
+    result = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "run",
+        "--task",
+        "rewrite short hello",
+        "--acceptance",
+        "short answer",
+        "--bot2-route-audit-json",
+        json.dumps(audit),
+        "--bot2-status",
+        "APPROVE",
+        "--notification-dry-run",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+
+    assert payload["route"]["task_level"] == "L4"
+    assert payload["route"]["risk_level"] == "high"
+    assert payload["route"]["human_gate_required"] is True
+    assert payload["status"] == "awaiting_human_decision"
+    assert payload["bot2_verdict"]["status"] == "NEEDS_HUMAN"
+
+    details = process_orchestrator.process_details(
+        payload["process_id"],
+        store_path=process_store,
+        supervisor_store_path=supervisor_store,
+    )
+    event_types = {event["event_type"] for event in details["events"]}
+    workers = {assignment["worker"] for assignment in details["assignments"]}
+    assert "classification_audit" in event_types
+    assert "bot2_route_audit" in workers
+    assert details["summary"]["route"]["classification_audit"]["applied"]
 
 
 def test_process_transcript_shows_bot1_bot2_and_human_gate(tmp_path: Path) -> None:

@@ -26,13 +26,16 @@ User task
 - `architect`: creates acceptance contract for L3/L4.
 - `bot1`: DeepSeek/Bothub implementer.
 - `tester`: runs checks and writes evidence.
-- `bot2`: Codex/Bothub quality gate.
+- `bot2`: Codex/Bothub quality gate and conservative classification auditor.
 - `devops`: deploys only after `approved` or `accepted_by_user_override`.
 
 ## Invariants
 
 - Bot#1 and Bot#2 do not chat directly.
 - Supervisor is the only process that changes approval state.
+- Router is the first source of `L0`-`L4` classification.
+- Bot#2 classification audit may only raise task level, raise risk, require
+  review, or require a human gate. It cannot lower or relax Router policy.
 - External writes are single-writer.
 - Bot#2 is mandatory for code gates, multi-agent workflows, deploy, auth, data,
   DB, CI/CD, prompt/policy changes, and user-requested strict review.
@@ -51,10 +54,27 @@ Adversarial prompts are not a new level. They are marked by
 `stress_profile=adversarial`, risk is raised to `high`, and human gates become
 more likely.
 
+## Classification Audit
+
+The default path is policy-first:
+
+```text
+Router deterministic classification
+  -> optional Bot#2 classification audit
+  -> Supervisor applies the higher-risk route
+```
+
+Bot#2 classification audit exists to catch under-classification. It can return
+`recommended_level`, `risk_level`, `review_required`, and
+`human_gate_required`, but Supervisor applies only stricter changes. Attempts to
+lower `L4` to `L1`, change `high` risk to `low`, or remove a human gate are
+recorded as ignored demotions.
+
 ## Acceptance Criteria
 
 - Router returns deterministic JSON with `task_level`, `risk_level`,
   `process_plan`, and `review_required`.
+- Bot#2 classification audit can raise route strictness and is auditable.
 - L0 never starts Bot#1/Bot#2.
 - Code/deploy/auth/data tasks route to L4/high-risk gates.
 - Supervisor creates a process run and a linked Supervisor task.

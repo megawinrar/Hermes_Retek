@@ -37,7 +37,7 @@ from supervisor_common import (
     task_details,
     update_task,
 )
-from task_router import classify_task
+from task_router import apply_classification_audit, classify_task, parse_classification_audit
 
 
 PROCESS_STORE_PATH = Path(
@@ -220,6 +220,30 @@ def configured_bot2_verdict(args: argparse.Namespace) -> dict[str, Any]:
     if verdict.get("status") == INVALID_BOT2_STATUS:
         raise SystemExit("--bot2-verdict-json must be a valid Bot#2 verdict JSON object")
     return verdict
+
+
+def route_audit_from_args(args: argparse.Namespace, task: str, route: dict[str, Any]) -> dict[str, Any]:
+    if getattr(args, "bot2_route_audit_json", ""):
+        return parse_classification_audit(args.bot2_route_audit_json)
+    if not getattr(args, "live_route_audit", False):
+        return {}
+
+    import dual_bot_lab as lab
+
+    cfg = lab.bothub_config()
+    audit_raw, audit_response = lab.call_chat(
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        model=args.bot2_model,
+        messages=lab.bot2_route_audit_messages(task, route),
+        max_tokens=min(args.max_tokens, 700),
+        timeout=args.timeout,
+    )
+    audit = parse_classification_audit(audit_raw)
+    audit["source"] = "bot2_live_route_audit"
+    audit["raw_chars"] = len(audit_raw)
+    audit["usage"] = audit_response.get("usage", {})
+    return audit
 
 
 def live_bot1_result(task: str, acceptance: str, *, bot1_model: str, max_tokens: int, timeout: int) -> tuple[str, str, str]:
@@ -415,7 +439,9 @@ def route_policy_verdict() -> dict[str, Any]:
 def run_process(args: argparse.Namespace) -> dict[str, Any]:
     task = args.task.strip()
     acceptance = args.acceptance.strip()
-    route = classify_task(task)
+    initial_route = classify_task(task)
+    route_audit = route_audit_from_args(args, task, initial_route)
+    route = apply_classification_audit(initial_route, route_audit) if route_audit else initial_route
     supervisor_created = create_task(task, store_path=args.supervisor_store)
     supervisor_task_id = supervisor_created["task_id"]
     pid = create_process_run(
@@ -436,6 +462,29 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
     )
     update_process(pid, status="running", current_phase="bot1", store_path=args.process_store)
     update_task(supervisor_task_id, status="running", store_path=args.supervisor_store)
+    if route_audit:
+        add_process_event(
+            pid,
+            "classification_audit",
+            {"initial_route": initial_route, "route": route, "audit": route.get("classification_audit", {})},
+            store_path=args.process_store,
+        )
+        add_assignment(
+            pid,
+            "bot2_route_audit",
+            "classification",
+            "completed",
+            route.get("classification_audit", {}),
+            store_path=args.process_store,
+        )
+        add_role_run(
+            supervisor_task_id,
+            "bot2_route_audit",
+            "completed",
+            "Bot#2 classification audit completed.",
+            {"process_id": pid, "audit": route.get("classification_audit", {})},
+            store_path=args.supervisor_store,
+        )
 
     bot2_session_id = ""
     verdict: dict[str, Any] = {}
@@ -752,6 +801,7 @@ def process_summary(
             "risk_level": route.get("risk_level", ""),
             "review_required": bool(route.get("review_required")),
             "human_gate_required": bool(route.get("human_gate_required")),
+            "classification_audit": route.get("classification_audit", {}),
         },
         "bot2": {
             "required": bot2_required,
@@ -1016,6 +1066,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--evidence", default="")
     run.add_argument("--bot2-status", default="APPROVE", choices=sorted(BOT2_VERDICT_STATUSES))
     run.add_argument("--bot2-verdict-json", default="", help="Use an explicit Bot#2 verdict JSON object in dry-run mode")
+    run.add_argument("--bot2-route-audit-json", default="", help="Use an explicit Bot#2 classification audit JSON object before execution")
+    run.add_argument("--live-route-audit", action="store_true", help="Ask Bot#2 to audit Router classification before execution")
     run.add_argument("--live-dual", action="store_true")
     run.add_argument("--bot1-model", default="deepseek-v4-flash")
     run.add_argument("--bot2-model", default="gpt-5.3-codex")
