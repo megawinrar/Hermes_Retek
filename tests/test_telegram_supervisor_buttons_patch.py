@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from patch_telegram_supervisor_buttons import CALLBACK_MARKER, HELPER_MARKER, patch_text  # noqa: E402
+from patch_telegram_supervisor_buttons import CALLBACK_MARKER, HELPER_FAST_PATH_MARKER, HELPER_MARKER, patch_text  # noqa: E402
 
 
 def test_patch_text_installs_supervisor_button_handler_once() -> None:
@@ -27,6 +27,8 @@ class TelegramAdapter:
     patched, changes = patch_text(source)
     assert changes == ["helper_methods", "callback_branch"]
     assert HELPER_MARKER in patched
+    assert HELPER_FAST_PATH_MARKER in patched
+    assert "tools.hermes_process_tool" in patched
     assert CALLBACK_MARKER in patched
 
     second, second_changes = patch_text(patched)
@@ -65,6 +67,7 @@ class TelegramAdapter:
     assert '"continue"' in patched
     assert "continue_result" in patched
     assert "Auto-continue after YES" in patched
+    assert HELPER_FAST_PATH_MARKER in patched
 
     second, second_changes = patch_text(patched)
     assert second_changes == []

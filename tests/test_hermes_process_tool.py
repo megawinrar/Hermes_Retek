@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -141,6 +142,7 @@ def test_summary_does_not_treat_live_bot1_run_id_as_bot2_session() -> None:
 
 def test_execute_returns_compact_json_from_orchestrator(monkeypatch) -> None:
     tool = load_tool()
+    monkeypatch.setenv("HERMES_PROCESS_EXECUTION_MODE", "subprocess")
 
     def fake_run(cmd, *, timeout):
         assert "--live-dual" not in cmd
@@ -161,11 +163,51 @@ def test_execute_returns_compact_json_from_orchestrator(monkeypatch) -> None:
     assert result["ok"] is True
     assert result["process_id"] == "proc-2"
     assert result["status"] == "approved"
+    assert result["adapter"]["execution_mode"] == "subprocess"
     assert "raw" not in result
+
+
+def test_execute_runs_orchestrator_in_process() -> None:
+    tool = load_tool()
+
+    with tempfile.TemporaryDirectory(prefix="hermes-process-tool-") as tmp:
+        tool.DEFAULT_PROJECT_DIR = ROOT
+        tool.DEFAULT_ORCHESTRATOR = ROOT / "scripts" / "process_orchestrator.py"
+        tool.DEFAULT_PROCESS_STORE = str(Path(tmp) / "process.db")
+        tool.DEFAULT_SUPERVISOR_STORE = str(Path(tmp) / "supervisor.db")
+        tool._ORCHESTRATOR_CACHE = None
+
+        run_result = json.loads(
+            tool.execute(
+                action="run",
+                task="status",
+                acceptance="ok",
+                live_dual=False,
+                live_route_audit=False,
+                notify_telegram=False,
+                notification_dry_run=True,
+                timeout=30,
+            )
+        )
+        show_result = json.loads(
+            tool.execute(
+                action="show",
+                process_id=run_result["process_id"],
+                timeout=30,
+            )
+        )
+
+    assert run_result["ok"] is True
+    assert run_result["adapter"]["execution_mode"] == "in_process"
+    assert run_result["status"] == "approved"
+    assert show_result["ok"] is True
+    assert show_result["adapter"]["execution_mode"] == "in_process"
+    assert show_result["process_id"] == run_result["process_id"]
 
 
 def test_execute_reports_nonzero_exit(monkeypatch) -> None:
     tool = load_tool()
+    monkeypatch.setenv("HERMES_PROCESS_EXECUTION_MODE", "subprocess")
 
     def fake_run(cmd, *, timeout):
         return subprocess.CompletedProcess(cmd, 2, stdout="", stderr="bad route")
@@ -174,7 +216,11 @@ def test_execute_reports_nonzero_exit(monkeypatch) -> None:
 
     result = json.loads(tool.execute(action="route", task="x"))
 
-    assert result == {"action": "route", "error": "bad route", "exit_code": 2, "ok": False}
+    assert result["ok"] is False
+    assert result["action"] == "route"
+    assert result["error"] == "bad route"
+    assert result["exit_code"] == 2
+    assert result["adapter"]["execution_mode"] == "subprocess"
 
 
 def test_subprocess_env_moves_runtime_state_to_opt_data(monkeypatch) -> None:
