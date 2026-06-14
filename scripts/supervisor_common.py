@@ -456,6 +456,19 @@ def parse_bot2_verdict(raw: str) -> dict[str, Any]:
     return data
 
 
+def extract_bot2_verdict(raw: str) -> dict[str, Any]:
+    direct = parse_bot2_verdict(raw)
+    if direct.get("status") != INVALID_BOT2_STATUS:
+        return direct
+    fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", raw, flags=re.S)
+    brace_candidates = re.findall(r"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})", raw, flags=re.S)
+    for candidate in fenced + brace_candidates:
+        parsed = parse_bot2_verdict(candidate)
+        if parsed.get("status") != INVALID_BOT2_STATUS:
+            return parsed
+    return direct
+
+
 def escalation_text(task: dict[str, Any], verdict: dict[str, Any]) -> str:
     bot1_version = (task.get("bot1_result") or "").strip() or "Bot#1 result is empty."
     summary = str(verdict.get("summary") or "Bot#2 did not provide a summary.")

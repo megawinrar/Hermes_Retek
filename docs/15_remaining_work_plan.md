@@ -336,3 +336,30 @@ Acceptance:
 - high-risk writes/deploys do not pass without approval;
 - human-gate message is understandable;
 - secrets do not appear in files, logs, reports, or notifications.
+
+## Bot#1/Bot#2 Repair Loop Hardening
+
+Status: live repair-loop runner added and production `process_orchestrator.py`
+integration implemented for Bot#1 self-check and Bot#2 JSON repair.
+
+Current behavior:
+
+- Bot#2 `REQUEST_CHANGES` can return Bot#1 to a bounded revision loop.
+- Bot#1 self-check runs before the next Bot#2 review and records a
+  fix-closure checklist.
+- Bot#2 invalid JSON is repaired once with a strict JSON-only prompt.
+- Exhausted review cycles remain fail-safe by escalating to human decision.
+- Process transcript exposes review cycles and fix-closure checklist.
+
+Remaining follow-up fixes:
+
+1. Promote the repair-loop branch through PR review and merge to `main`.
+2. Run a server live smoke after merge using Level 3 migration and one L4
+   deploy-pressure case.
+3. Add a scheduled/manual live smoke command after provider key rotation.
+4. Track provider/model failures with request id, model, phase, and repair
+   status without logging secrets.
+5. Add an operator runbook section for interpreting `APPROVE_WITH_EVIDENCE`,
+   `REQUEST_CHANGES`, `INVALID_BOT2_OUTPUT`, and exhausted loop escalations.
+6. Keep provider-side key rotation as the final external manual action before
+   production hardening is considered complete.

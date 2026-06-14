@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import dual_bot_lab  # noqa: E402
 from process_orchestrator import live_dual_result  # noqa: E402
+from supervisor_common import MAX_BOT_REVIEW_CYCLES  # noqa: E402
 
 
 def test_bot2_repair_prompt_requires_json_only() -> None:
@@ -78,9 +79,11 @@ def test_live_dual_result_repairs_invalid_bot2_json_once(monkeypatch, tmp_path: 
     assert verdict["summary"] == "repair ok"
     assert verdict["repair_attempted"] is True
     assert verdict["repair_status"] == "repaired"
+    assert verdict["review_cycles"][0]["bot2_repair_attempted"] is True
+    assert verdict["review_cycles"][0]["bot2_repair_status"] == "repaired"
     assert len(calls) == 3
     assert "Return ONLY valid JSON matching this schema" in calls[2][1]["content"]
-    assert [speaker for speaker, _content in messages] == ["Bot#1", "Bot#2", "Bot#2-repair"]
+    assert [speaker for speaker, _content in messages] == ["Bot#1", "Bot#2-1", "Bot#2-repair-1"]
 
 
 def test_live_dual_result_stays_fail_closed_when_repair_is_invalid(monkeypatch, tmp_path: Path) -> None:
@@ -122,7 +125,90 @@ def test_live_dual_result_stays_fail_closed_when_repair_is_invalid(monkeypatch, 
     assert verdict["status"] == "INVALID_BOT2_OUTPUT"
     assert verdict["repair_attempted"] is True
     assert verdict["repair_status"] == "failed_closed"
+    assert verdict["review_cycles"][0]["bot2_repair_attempted"] is True
+    assert verdict["review_cycles"][0]["bot2_repair_status"] == "failed_closed"
     assert len(calls) == 3
+
+
+def test_live_dual_result_records_max_cycle_exhaustion(monkeypatch, tmp_path: Path) -> None:
+    calls: list[list[dict[str, str]]] = []
+    speakers: list[str] = []
+
+    def request_changes(summary: str, fix: str) -> str:
+        return (
+            '{"status":"REQUEST_CHANGES","approved_action":"needs_revision",'
+            f'"summary":"{summary}","evidence_checked":["bot1"],'
+            f'"risks":["{fix}"],"required_fixes":["{fix}"],"confidence":0.6}}'
+        )
+
+    responses = [
+        "initial answer allows data loss",
+        request_changes("round 1", "set RPO=0"),
+        "revision says RPO=0 but leaves stale text",
+        "selfcheck closes RPO=0",
+        request_changes("round 2", "remove Retik misspelling"),
+        "revision fixes Retek spelling",
+        "selfcheck still incomplete",
+        request_changes("round 3", "add restore drill evidence"),
+    ]
+
+    def fake_call_chat(
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        timeout: int,
+    ) -> tuple[str, dict[str, object]]:
+        calls.append(messages)
+        return responses[len(calls) - 1], {"usage": {"total_tokens": 10 + len(calls)}}
+
+    def fake_add_message(run_id: str, speaker: str, model: str, content: str, metadata: dict[str, object]) -> None:
+        speakers.append(speaker)
+
+    monkeypatch.setattr(dual_bot_lab, "bothub_config", lambda: {"base_url": "https://example.test/v1", "api_key": "test"})
+    monkeypatch.setattr(dual_bot_lab, "run_id", lambda: "dual-max-cycle")
+    monkeypatch.setattr(dual_bot_lab, "add_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(dual_bot_lab, "call_chat", fake_call_chat)
+    monkeypatch.setattr(dual_bot_lab, "add_message", fake_add_message)
+    monkeypatch.setattr(dual_bot_lab, "update_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(dual_bot_lab, "write_report", lambda **kwargs: tmp_path / "report.md")
+
+    bot1, run_id, verdict, report_path = live_dual_result(
+        "Plan SQLite to Postgres migration",
+        "Need RPO=0, rollback, and restore drill",
+        bot1_model="bot1-model",
+        bot2_model="bot2-model",
+        max_tokens=100,
+        timeout=10,
+    )
+
+    assert bot1 == "selfcheck still incomplete"
+    assert run_id == "dual-max-cycle"
+    assert report_path.endswith("report.md")
+    assert verdict["status"] == "REQUEST_CHANGES"
+    assert verdict["loop_status"] == "max_review_cycles_reached"
+    assert "max_review_cycles_reached" in verdict["risks"]
+    assert "Escalate to a human decision after repeated Bot#1/Bot#2 correction cycles." in verdict["required_fixes"]
+    assert len(verdict["review_cycles"]) == MAX_BOT_REVIEW_CYCLES
+    assert [cycle["bot1_self_check"] for cycle in verdict["review_cycles"]] == [False, True, True]
+    assert verdict["review_cycles"][-1]["repair_loop_exhausted"] is True
+    assert verdict["review_cycles"][-1]["loop_status"] == "max_review_cycles_reached"
+    assert "max_review_cycles_reached" in verdict["review_cycles"][-1]["risks"]
+    assert "Escalate to a human decision after repeated Bot#1/Bot#2 correction cycles." in verdict["review_cycles"][-1]["required_fixes"]
+    assert "selfcheck closes RPO=0" in calls[4][1]["content"]
+    assert "revision says RPO=0 but leaves stale text" not in calls[4][1]["content"]
+    assert speakers == [
+        "Bot#1",
+        "Bot#2-1",
+        "Bot#1-revision-2",
+        "Bot#1-self-check-2",
+        "Bot#2-2",
+        "Bot#1-revision-3",
+        "Bot#1-self-check-3",
+        "Bot#2-3",
+    ]
 
 
 def test_dual_bot_lab_storage_and_report_are_redacted(monkeypatch, tmp_path: Path) -> None:

@@ -20,6 +20,7 @@ from human_notification import (
 from supervisor_common import (
     BOT2_VERDICT_STATUSES,
     INVALID_BOT2_STATUS,
+    MAX_BOT_REVIEW_CYCLES,
     NO_MEANING,
     YES_MEANING,
     add_event as add_supervisor_event,
@@ -28,6 +29,7 @@ from supervisor_common import (
     create_task,
     dumps,
     escalation_text,
+    extract_bot2_verdict,
     get_task,
     link_bot2,
     parse_bot2_verdict,
@@ -168,7 +170,7 @@ def create_process_run(
 
 
 def parse_verdict(text: str) -> dict[str, Any]:
-    return parse_bot2_verdict(text)
+    return extract_bot2_verdict(text)
 
 
 def route_requires_bot1(route: dict[str, Any]) -> bool:
@@ -262,44 +264,130 @@ def live_dual_result(
     cfg = lab.bothub_config()
     rid = lab.run_id()
     lab.add_run(rid, task, acceptance, bot1_model, bot2_model)
-    bot1, bot1_raw = lab.call_chat(
-        base_url=cfg["base_url"],
-        api_key=cfg["api_key"],
-        model=bot1_model,
-        messages=lab.bot1_messages(task, acceptance),
-        max_tokens=max_tokens,
-        timeout=timeout,
-    )
-    lab.add_message(rid, "Bot#1", bot1_model, bot1, {"usage": bot1_raw.get("usage", {})})
-    bot2, bot2_raw = lab.call_chat(
-        base_url=cfg["base_url"],
-        api_key=cfg["api_key"],
-        model=bot2_model,
-        messages=lab.bot2_messages(task, acceptance, bot1),
-        max_tokens=max_tokens,
-        timeout=timeout,
-    )
-    lab.add_message(rid, "Bot#2", bot2_model, bot2, {"usage": bot2_raw.get("usage", {})})
-    verdict = parse_verdict(bot2)
-    if verdict.get("status") == INVALID_BOT2_STATUS:
-        bot2_repair, bot2_repair_raw = lab.call_chat(
+    review_cycles: list[dict[str, Any]] = []
+    bot1 = ""
+    bot2 = ""
+    verdict: dict[str, Any] = {}
+
+    for round_no in range(1, MAX_BOT_REVIEW_CYCLES + 1):
+        if round_no == 1:
+            bot1_messages = lab.bot1_messages(task, acceptance)
+            bot1_speaker = "Bot#1"
+        else:
+            bot1_messages = lab.bot1_revision_messages(task, acceptance, bot1, verdict, round_no - 1)
+            bot1_speaker = f"Bot#1-revision-{round_no}"
+        bot1, bot1_raw = lab.call_chat(
             base_url=cfg["base_url"],
             api_key=cfg["api_key"],
-            model=bot2_model,
-            messages=lab.bot2_repair_messages(task, acceptance, bot1, bot2),
+            model=bot1_model,
+            messages=bot1_messages,
             max_tokens=max_tokens,
             timeout=timeout,
         )
-        lab.add_message(rid, "Bot#2-repair", bot2_model, bot2_repair, {"usage": bot2_repair_raw.get("usage", {})})
-        repaired_verdict = parse_verdict(bot2_repair)
-        repaired_verdict["repair_attempted"] = True
-        if repaired_verdict.get("status") != INVALID_BOT2_STATUS:
-            repaired_verdict["repair_status"] = "repaired"
-            verdict = repaired_verdict
-            bot2 = f"{bot2}\n\n## Bot#2 JSON Repair\n\n{bot2_repair}"
-        else:
-            verdict["repair_attempted"] = True
-            verdict["repair_status"] = "failed_closed"
+        lab.add_message(rid, bot1_speaker, bot1_model, bot1, {"usage": bot1_raw.get("usage", {})})
+
+        self_check = ""
+        fix_closure_checklist: list[dict[str, str]] = []
+        if round_no > 1:
+            self_check, self_check_raw = lab.call_chat(
+                base_url=cfg["base_url"],
+                api_key=cfg["api_key"],
+                model=bot1_model,
+                messages=lab.bot1_self_check_messages(task, acceptance, bot1, verdict, round_no),
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+            lab.add_message(
+                rid,
+                f"Bot#1-self-check-{round_no}",
+                bot1_model,
+                self_check,
+                {"usage": self_check_raw.get("usage", {})},
+            )
+            bot1 = self_check
+            fix_closure_checklist = [
+                {
+                    "required_fix": str(fix),
+                    "status": "claimed_closed_by_bot1_self_check",
+                    "evidence": f"Bot#1 self-check round {round_no}",
+                }
+                for fix in (verdict.get("required_fixes") or [])
+            ]
+
+        bot2, bot2_raw = lab.call_chat(
+            base_url=cfg["base_url"],
+            api_key=cfg["api_key"],
+            model=bot2_model,
+            messages=lab.bot2_messages(task, acceptance, bot1),
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+        lab.add_message(rid, f"Bot#2-{round_no}", bot2_model, bot2, {"usage": bot2_raw.get("usage", {})})
+        verdict = parse_verdict(bot2)
+        if verdict.get("status") == INVALID_BOT2_STATUS:
+            bot2_repair, bot2_repair_raw = lab.call_chat(
+                base_url=cfg["base_url"],
+                api_key=cfg["api_key"],
+                model=bot2_model,
+                messages=lab.bot2_repair_messages(task, acceptance, bot1, bot2),
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+            lab.add_message(
+                rid,
+                f"Bot#2-repair-{round_no}",
+                bot2_model,
+                bot2_repair,
+                {"usage": bot2_repair_raw.get("usage", {})},
+            )
+            repaired_verdict = parse_verdict(bot2_repair)
+            repaired_verdict["repair_attempted"] = True
+            if repaired_verdict.get("status") != INVALID_BOT2_STATUS:
+                repaired_verdict["repair_status"] = "repaired"
+                verdict = repaired_verdict
+                bot2 = f"{bot2}\n\n## Bot#2 JSON Repair\n\n{bot2_repair}"
+            else:
+                verdict["repair_attempted"] = True
+                verdict["repair_status"] = "failed_closed"
+
+        loop_exhausted = verdict.get("status") == "REQUEST_CHANGES" and round_no == MAX_BOT_REVIEW_CYCLES
+        if loop_exhausted:
+            verdict["loop_status"] = "max_review_cycles_reached"
+            risks = list(verdict.get("risks") or [])
+            if "max_review_cycles_reached" not in risks:
+                risks.append("max_review_cycles_reached")
+            verdict["risks"] = risks
+            required_fixes = list(verdict.get("required_fixes") or [])
+            escalation_fix = "Escalate to a human decision after repeated Bot#1/Bot#2 correction cycles."
+            if escalation_fix not in required_fixes:
+                required_fixes.append(escalation_fix)
+            verdict["required_fixes"] = required_fixes
+
+        cycle = {
+            "round": round_no,
+            "bot1_chars": len(bot1),
+            "bot1_self_check": bool(self_check),
+            "bot2_status": verdict.get("status", ""),
+            "bot2_summary": verdict.get("summary", ""),
+            "required_fixes": verdict.get("required_fixes", []),
+            "risks": verdict.get("risks", []),
+            "loop_status": verdict.get("loop_status", ""),
+            "repair_loop_exhausted": loop_exhausted,
+            "fix_closure_checklist": fix_closure_checklist,
+            "bot2_repair_attempted": bool(verdict.get("repair_attempted")),
+            "bot2_repair_status": verdict.get("repair_status", ""),
+        }
+        review_cycles.append(cycle)
+        if verdict.get("status") in {"APPROVE", "APPROVE_WITH_EVIDENCE"}:
+            break
+        if verdict.get("status") != "REQUEST_CHANGES":
+            break
+        if loop_exhausted:
+            break
+
+    verdict["review_cycles"] = review_cycles
+    final_fix_closure = next((cycle.get("fix_closure_checklist") for cycle in reversed(review_cycles) if cycle.get("fix_closure_checklist")), [])
+    verdict["fix_closure_checklist"] = final_fix_closure
     report = lab.write_report(
         run_id_value=rid,
         task=task,
@@ -381,7 +469,18 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
                 verdict = configured_bot2_verdict(args)
         evidence = args.evidence or bot1_result
         update_task(supervisor_task_id, bot1_result=bot1_result, evidence=evidence, store_path=args.supervisor_store)
-        add_assignment(pid, "bot1", "execution", "completed", {"result_chars": len(bot1_result)}, store_path=args.process_store)
+        add_assignment(
+            pid,
+            "bot1",
+            "execution",
+            "completed",
+            {
+                "result_chars": len(bot1_result),
+                "report_path": report_path,
+                "review_cycle_count": len(verdict.get("review_cycles") or []),
+            },
+            store_path=args.process_store,
+        )
         add_role_run(
             supervisor_task_id,
             "bot1",
@@ -431,6 +530,53 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
             {"bot2_session_id": bot2_session_id, "verdict": verdict, "supervisor_status": final_status},
             store_path=args.process_store,
         )
+        if verdict.get("review_cycles"):
+            add_process_event(
+                pid,
+                "bot_review_cycles",
+                {
+                    "bot2_session_id": bot2_session_id,
+                    "review_cycles": verdict.get("review_cycles", []),
+                    "fix_closure_checklist": verdict.get("fix_closure_checklist", []),
+                },
+                store_path=args.process_store,
+            )
+            for cycle in verdict.get("review_cycles", []):
+                if cycle.get("bot1_self_check"):
+                    add_process_event(
+                        pid,
+                        "bot1_self_check",
+                        {
+                            "round": cycle.get("round"),
+                            "fix_closure_checklist": cycle.get("fix_closure_checklist", []),
+                        },
+                        store_path=args.process_store,
+                    )
+                    add_role_run(
+                        supervisor_task_id,
+                        "bot1_self_check",
+                        "completed",
+                        f"Bot#1 self-check round {cycle.get('round')}",
+                        {"process_id": pid, "fix_closure_checklist": cycle.get("fix_closure_checklist", [])},
+                        store_path=args.supervisor_store,
+                    )
+                if cycle.get("bot2_repair_attempted"):
+                    add_process_event(
+                        pid,
+                        "bot2_json_repair",
+                        {
+                            "round": cycle.get("round"),
+                            "repair_status": cycle.get("bot2_repair_status", ""),
+                        },
+                        store_path=args.process_store,
+                    )
+            if verdict.get("loop_status") == "max_review_cycles_reached":
+                add_process_event(
+                    pid,
+                    "repair_loop_exhausted",
+                    {"max_review_cycles": MAX_BOT_REVIEW_CYCLES, "verdict": verdict},
+                    store_path=args.process_store,
+                )
 
     update_task(supervisor_task_id, status=final_status, store_path=args.supervisor_store)
     if final_status == "awaiting_human_decision":
@@ -616,6 +762,7 @@ def process_summary(
             "risks": bot2_verdict.get("risks", []),
             "repair_attempted": bool(bot2_verdict.get("repair_attempted")),
             "repair_status": bot2_verdict.get("repair_status", ""),
+            "review_cycle_count": len(bot2_verdict.get("review_cycles") or []),
         },
         "human_decision": human_decision or {
             "required": False,
@@ -726,6 +873,22 @@ def process_transcript(
     human_event = next((event for event in reversed(supervisor_events) if event.get("event_type") == "human_escalation"), {})
     human_payload = human_event.get("payload") or {}
     process_events = details.get("events") or []
+    self_check_entries = []
+    for event in process_events:
+        if event.get("event_type") != "bot1_self_check":
+            continue
+        payload = event.get("payload") or {}
+        self_check_entries.append(
+            {
+                "actor": "bot1_self_check",
+                "phase": "fix_closure",
+                "status": "completed",
+                "round": payload.get("round"),
+                "content": {
+                    "fix_closure_checklist": payload.get("fix_closure_checklist", []),
+                },
+            }
+        )
 
     transcript = {
         "process_id": details.get("id", ""),
@@ -758,7 +921,10 @@ def process_transcript(
                 "session_id": bot2_link.get("bot2_session_id", ""),
                 "content": bot2_verdict,
             },
-        ],
+        ]
+        + self_check_entries,
+        "review_cycles": bot2_verdict.get("review_cycles", []),
+        "fix_closure_checklist": bot2_verdict.get("fix_closure_checklist", []),
         "human_gate": {
             "required": bool(human_escalation),
             "status": human_escalation.get("status", ""),
