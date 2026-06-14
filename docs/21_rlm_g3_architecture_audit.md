@@ -107,16 +107,22 @@ Implemented now:
   - secret refs and protected local file storage.
 - `scripts/agent_roles.py`
   - machine-readable role contract.
+- `scripts/process_orchestrator.py`
+  - optional RLM sidecar writes via `--rlm-store`, `--rlm-enabled`, or
+    `HERMES_RLM_ENABLED=1`;
+  - process summary, Bot1 output, Bot2 review, human-gate, and browser-skill
+    records;
+  - `rlm_records_written` / `rlm_write_failed` process events.
+- `skills/hermes-browser/SKILL.md` and `scripts/hermes_browser_session.py`
+  - authenticated browser session skill with persistent profile, artifacts,
+    redacted audit log, screenshots, HTML source capture, and cookie export.
 
 This is intentionally not a full recursive execution engine yet. The first goal
 is durable memory and bounded orchestration primitives with tests.
 
 ## Next Implementation Order
 
-1. Add `agent_workspace status/list` and tests.
-2. Attach `rlm_store.add_record` to process events for Bot1/Bot2 summaries,
-   context-budget events, and human decisions.
-3. Add compaction records:
+1. Add compaction records:
 
 ```text
 kind=compaction
@@ -124,7 +130,7 @@ tags=context,compaction,{process_id}
 metadata={source_event_ids, trigger_percent, token_budget}
 ```
 
-4. Add subcall records for parallel agents:
+2. Add subcall records for parallel agents:
 
 ```text
 kind=subcall

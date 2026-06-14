@@ -20,6 +20,7 @@ from human_notification import (
     dispatch_human_notification,
     redact_payload,
 )
+import rlm_store as rlm_memory
 from skill_index import load_manifest as load_skill_manifest
 from skill_index import select_skill_context
 from parallel_orchestration import (
@@ -70,6 +71,7 @@ FAST_BOT1_MODEL = os.environ.get("HERMES_FAST_BOT1_MODEL", "deepseek-v4-flash")
 STRONG_BOT_MODEL = os.environ.get("HERMES_STRONG_BOT_MODEL", "gpt-5.3-codex")
 AUTO_MODEL_VALUES = {"", "auto", "default", "route", "policy"}
 BOT_ACTIVITY_PREVIEW_CHARS = 800
+RLM_CONTENT_MAX_CHARS = 12000
 BotActivityRecorder = Callable[[dict[str, Any]], None]
 
 
@@ -79,6 +81,10 @@ def _runtime_cache_enabled() -> bool:
 
 def _supplier_score_calculator_enabled() -> bool:
     return os.environ.get("HERMES_ENABLE_SUPPLIER_CALCULATOR", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _rlm_enabled_from_env() -> bool:
+    return os.environ.get("HERMES_RLM_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _runtime_cache_ttl_seconds() -> int:
@@ -626,6 +632,221 @@ def skill_context_for_role(skill_context: dict[str, Any], role: str) -> dict[str
         "tool_results": skill_context.get("tool_results", []),
         "runtime_contract": skill_context.get("runtime_contract", {}),
     }
+
+
+def _truncate_rlm_content(value: str, *, limit: int = RLM_CONTENT_MAX_CHARS) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 32].rstrip() + "\n...[truncated for RLM]"
+
+
+def _skill_names(skill_context: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for item in skill_context.get("selected_skills") or []:
+        name = str((item or {}).get("name") or "")
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _rlm_store_for_args(args: argparse.Namespace) -> str | None:
+    value = str(getattr(args, "rlm_store", "") or "").strip()
+    return value or None
+
+
+def rlm_write_enabled(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "rlm_enabled", False) or _rlm_store_for_args(args) or _rlm_enabled_from_env())
+
+
+def _rlm_tags(route: dict[str, Any], skill_context: dict[str, Any], final_status: str) -> list[str]:
+    tags = [
+        "process",
+        f"level/{route.get('task_level', '')}",
+        f"type/{route.get('task_type', '')}",
+        f"status/{final_status}",
+    ]
+    tags.extend(f"task/{tag}" for tag in skill_context.get("task_tags") or [])
+    tags.extend(f"skill/{name}" for name in _skill_names(skill_context))
+    return [tag for tag in tags if not tag.endswith("/")]
+
+
+def write_rlm_records_for_process(
+    *,
+    args: argparse.Namespace,
+    process_id_value: str,
+    supervisor_task_id: str,
+    task: str,
+    acceptance: str,
+    route: dict[str, Any],
+    skill_context: dict[str, Any],
+    final_status: str,
+    bot1_result: str,
+    bot2_session_id: str,
+    verdict: dict[str, Any],
+    report_path: str = "",
+    human_message: str = "",
+) -> list[dict[str, Any]]:
+    if not rlm_write_enabled(args):
+        return []
+
+    store_path = _rlm_store_for_args(args)
+    skill_names = _skill_names(skill_context)
+    base_tags = _rlm_tags(route, skill_context, final_status)
+    metadata = {
+        "source": "process_orchestrator",
+        "supervisor_task_id": supervisor_task_id,
+        "bot2_session_id": bot2_session_id,
+        "report_path": report_path,
+    }
+    records: list[dict[str, Any]] = []
+
+    summary = (
+        f"{route.get('task_type', '')} {route.get('task_level', '')} -> {final_status}; "
+        f"skills={','.join(skill_names) or 'none'}; bot2={verdict.get('status', '') or 'not_required'}"
+    ).strip()
+    process_content = _truncate_rlm_content(
+        dumps(
+            {
+                "task": task,
+                "acceptance": acceptance,
+                "route": route,
+                "skill_context": skill_context,
+                "bot1_result_preview": bot1_result[:2000],
+                "bot2_verdict": verdict,
+                "human_message": human_message,
+            }
+        )
+    )
+    records.append(
+        rlm_memory.add_record(
+            kind="process_summary",
+            title=f"{route.get('task_type', 'process')} {final_status}",
+            summary=summary,
+            content=process_content,
+            tags=base_tags,
+            process_id=process_id_value,
+            importance=0.85 if route.get("risk_level") == "high" else 0.65,
+            metadata=metadata,
+            store_path=store_path,
+        )
+    )
+
+    if bot1_result:
+        records.append(
+            rlm_memory.add_record(
+                kind="bot_output",
+                title="Bot1 result",
+                summary=bot1_result.replace("\n", " ")[:240],
+                content=_truncate_rlm_content(bot1_result),
+                tags=[*base_tags, "bot1"],
+                process_id=process_id_value,
+                importance=0.7,
+                metadata=metadata,
+                store_path=store_path,
+            )
+        )
+
+    if verdict:
+        records.append(
+            rlm_memory.add_record(
+                kind="bot_review",
+                title=f"Bot2 verdict {verdict.get('status', '')}",
+                summary=str(verdict.get("summary") or verdict.get("status") or "Bot2 verdict"),
+                content=_truncate_rlm_content(dumps(verdict)),
+                tags=[*base_tags, "bot2", f"bot2/{verdict.get('status', '')}"],
+                process_id=process_id_value,
+                importance=0.78,
+                metadata=metadata,
+                store_path=store_path,
+            )
+        )
+
+    if human_message or route.get("human_gate_required"):
+        records.append(
+            rlm_memory.add_record(
+                kind="human_gate",
+                title=f"Human gate {final_status}",
+                summary=human_message[:240] if human_message else "Human gate required by route policy.",
+                content=_truncate_rlm_content(human_message or dumps({"route": route, "verdict": verdict})),
+                tags=[*base_tags, "human_gate"],
+                process_id=process_id_value,
+                importance=0.8,
+                metadata=metadata,
+                store_path=store_path,
+            )
+        )
+
+    if "hermes-browser" in skill_names:
+        records.append(
+            rlm_memory.add_record(
+                kind="skill_usage",
+                title="Hermes browser skill selected",
+                summary="Authenticated browser skill selected for supplier research/evidence capture.",
+                content=_truncate_rlm_content(dumps(skill_context_for_role(skill_context, "bot1"))),
+                tags=[*base_tags, "browser", "skill/hermes-browser"],
+                process_id=process_id_value,
+                importance=0.72,
+                metadata={**metadata, "skill": "hermes-browser"},
+                store_path=store_path,
+            )
+        )
+
+    return records
+
+
+def maybe_write_rlm_records_for_process(
+    *,
+    args: argparse.Namespace,
+    process_id_value: str,
+    supervisor_task_id: str,
+    task: str,
+    acceptance: str,
+    route: dict[str, Any],
+    skill_context: dict[str, Any],
+    final_status: str,
+    bot1_result: str,
+    bot2_session_id: str,
+    verdict: dict[str, Any],
+    report_path: str = "",
+    human_message: str = "",
+) -> list[dict[str, Any]]:
+    if not rlm_write_enabled(args):
+        return []
+    try:
+        records = write_rlm_records_for_process(
+            args=args,
+            process_id_value=process_id_value,
+            supervisor_task_id=supervisor_task_id,
+            task=task,
+            acceptance=acceptance,
+            route=route,
+            skill_context=skill_context,
+            final_status=final_status,
+            bot1_result=bot1_result,
+            bot2_session_id=bot2_session_id,
+            verdict=verdict,
+            report_path=report_path,
+            human_message=human_message,
+        )
+        add_process_event(
+            process_id_value,
+            "rlm_records_written",
+            {
+                "record_ids": [record["id"] for record in records],
+                "record_kinds": [record["kind"] for record in records],
+                "store_path": _rlm_store_for_args(args) or str(rlm_memory.get_store_path()),
+            },
+            store_path=args.process_store,
+        )
+        return records
+    except Exception as exc:
+        add_process_event(
+            process_id_value,
+            "rlm_write_failed",
+            {"error": f"{type(exc).__name__}: {exc}"},
+            store_path=args.process_store,
+        )
+        return []
 
 
 def dry_bot1_result(task: str, acceptance: str, route: dict[str, Any]) -> str:
@@ -2206,6 +2427,22 @@ def continue_process(args: argparse.Namespace) -> dict[str, Any]:
             supervisor_store=args.supervisor_store,
         )
 
+    maybe_write_rlm_records_for_process(
+        args=args,
+        process_id_value=args.process_id,
+        supervisor_task_id=supervisor_task_id,
+        task=task,
+        acceptance=acceptance,
+        route=route,
+        skill_context=skill_context,
+        final_status=final_status,
+        bot1_result=bot1_result,
+        bot2_session_id=bot2_session_id,
+        verdict=verdict,
+        report_path=report_path,
+        human_message=str(human_gate.get("human_message") or ""),
+    )
+
     if final_status in {"approved", "approved_refusal"}:
         final_action_name = "completed_after_bot1_revision"
     elif final_status == "awaiting_human_decision":
@@ -2639,6 +2876,22 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
         human_message = str(human_gate.get("human_message") or "")
         human_notification = human_gate.get("human_notification") or {}
         notification_delivery = human_gate.get("notification_delivery") or {}
+
+    maybe_write_rlm_records_for_process(
+        args=args,
+        process_id_value=pid,
+        supervisor_task_id=supervisor_task_id,
+        task=task,
+        acceptance=acceptance,
+        route=route,
+        skill_context=skill_context,
+        final_status=final_status,
+        bot1_result=bot1_result,
+        bot2_session_id=bot2_session_id,
+        verdict=verdict,
+        report_path=report_path,
+        human_message=human_message,
+    )
 
     performance = build_process_performance(
         duration_ms=elapsed_ms(process_started_at),
@@ -3077,6 +3330,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Hermes process orchestrator MVP")
     parser.add_argument("--process-store", default=None)
     parser.add_argument("--supervisor-store", default=None)
+    parser.add_argument("--rlm-store", default=None, help="Optional RLM SQLite store path; enables RLM memory writes")
+    parser.add_argument("--rlm-enabled", action="store_true", help="Enable RLM memory writes using --rlm-store or the default path")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     route = sub.add_parser("route")

@@ -12,6 +12,7 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import process_orchestrator  # noqa: E402
+import rlm_store  # noqa: E402
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -45,6 +46,8 @@ def args_for_process(tmp_path: Path, **overrides: object) -> object:
         "bothub_requests_per_minute": None,
         "notify_telegram": False,
         "notification_dry_run": True,
+        "rlm_store": None,
+        "rlm_enabled": False,
     }
     values.update(overrides)
     return type("Args", (), values)()
@@ -1118,6 +1121,82 @@ def test_process_records_skill_context_for_l4_without_enabling_gated_devops(tmp_
     assert summary["skills"]["runtime_contract"]["approval_required_skills_are_gated"] is True
     skill_event = [event for event in details["events"] if event["event_type"] == "skill_context_selected"][-1]
     assert skill_event["payload"]["task_type"] == "git_write_or_deploy"
+
+
+def test_process_writes_rlm_records_when_enabled_for_supplier_browser_task(tmp_path: Path) -> None:
+    rlm_path = tmp_path / "rlm.db"
+    args = args_for_process(
+        tmp_path,
+        task="Проверь закупки: сравнить поставщиков по цене, срокам доставки и тендерам Р6М5",
+        acceptance="Return supplier research evidence.",
+        bot2_status="APPROVE",
+        rlm_store=rlm_path,
+    )
+
+    payload = process_orchestrator.run_process(args)
+
+    records = rlm_store.search_records(process_id=payload["process_id"], store_path=rlm_path, limit=20)
+    kinds = {record["kind"] for record in records}
+    tags = {tag for record in records for tag in record["tags"]}
+    details = process_orchestrator.process_details(
+        payload["process_id"],
+        store_path=args.process_store,
+        supervisor_store_path=args.supervisor_store,
+    )
+    rlm_events = [event for event in details["events"] if event["event_type"] == "rlm_records_written"]
+
+    assert {"process_summary", "bot_output", "bot_review", "skill_usage"}.issubset(kinds)
+    assert "skill/hermes-browser" in tags
+    assert rlm_events
+    assert set(rlm_events[-1]["payload"]["record_kinds"]) >= {"process_summary", "bot_output", "bot_review", "skill_usage"}
+
+
+def test_process_rlm_records_are_redacted(tmp_path: Path) -> None:
+    rlm_path = tmp_path / "rlm.db"
+    secret = "tok_" + "C" * 32
+    args = args_for_process(
+        tmp_path,
+        task=f"Change python code with API_KEY='{secret}'",
+        bot1_result=f"Bot#1 result used API_KEY='{secret}'",
+        bot2_status="APPROVE",
+        rlm_store=rlm_path,
+    )
+
+    payload = process_orchestrator.run_process(args)
+
+    with sqlite3.connect(rlm_path) as con:
+        raw = json.dumps(con.execute("SELECT title, summary, content, tags_json, metadata_json FROM rlm_records").fetchall())
+    assert secret not in raw
+    assert rlm_store.search_records(process_id=payload["process_id"], store_path=rlm_path)
+
+
+def test_process_cli_rlm_store_flag_writes_records(tmp_path: Path) -> None:
+    process_store = tmp_path / "process.db"
+    supervisor_store = tmp_path / "supervisor.db"
+    rlm_path = tmp_path / "rlm.db"
+
+    result = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "--rlm-store",
+        str(rlm_path),
+        "run",
+        "--task",
+        "Проверь закупки: сравнить поставщиков по цене и срокам доставки",
+        "--acceptance",
+        "Need supplier evidence.",
+        "--bot2-status",
+        "APPROVE",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    records = rlm_store.search_records(process_id=payload["process_id"], store_path=rlm_path)
+    assert {record["kind"] for record in records} >= {"process_summary", "bot_output", "bot_review", "skill_usage"}
 
 
 def test_human_gate_blocks_approved_high_risk_deploy(tmp_path: Path) -> None:
