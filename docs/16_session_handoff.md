@@ -43,6 +43,7 @@ Key commits in this session:
 - `9cf4894 feat: add durable startup context packs`
 - `1e8b0b4 test: expand context and rlm coverage`
 - `2b93515 docs: record coverage refactor status`
+- `270df9f test: cover gateway supervisor and context budget`
 
 ## What Was Implemented
 
@@ -163,6 +164,21 @@ Additional narrow coverage added after the previous baseline:
   rejection, missing input rejection, invalid token counts, and raw prompt
   non-disclosure.
 
+## GitHub Stop Marker
+
+Stop marker for this session:
+
+```text
+handoff-20260615-coverage70-server
+```
+
+This marker points to the GitHub branch state after:
+
+- coverage was raised to 70%;
+- gateway/supervisor/context-budget narrow tests were added;
+- the latest reviewed files were overlaid onto the Yandex server without
+  switching production away from `custom`.
+
 ## Server Deploy
 
 Production path:
@@ -212,8 +228,42 @@ agent_workspace accept smoke: accepted
 process_orchestrator RLM smoke: approved
 ```
 
-Full `pytest` was not run on the server because `pytest` is not installed there.
-Local full suite did pass before deploy.
+Full `pytest` was not run during the first server deploy. Local full suite did
+pass before deploy.
+
+Latest server overlay after coverage work:
+
+```text
+server: yc-user@89.169.142.160
+production path: /opt/hermes-assistant
+server branch: custom
+server head: 908cd72
+local source commit: 270df9f test: cover gateway supervisor and context budget
+staging: /home/yc-user/hermes-deploy-staging-20260614T224809Z
+backup: /home/yc-user/hermes-file-deploy-backups/sudo-20260614T224809Z
+```
+
+Files overlaid in that deploy:
+
+- `docs/16_session_handoff.md`
+- `scripts/tool_gateway.py`
+- `tests/test_context_budget.py`
+- `tests/test_supervisor_smoke.py`
+- `tests/test_tool_gateway.py`
+
+Verification after latest overlay:
+
+```text
+sha256 local/server match: yes, for all 5 overlaid files
+syntax compile without pyc writes: syntax_compile_ok 6
+server focused pytest: 30 passed
+server pytest warning: could not create .pytest_cache under /opt/hermes-assistant
+tool_gateway safe smoke: allowed=true, reason=command_not_dangerous
+tool_gateway dangerous smoke: allowed=false, reason=missing_supervisor_task_id, exit=2
+secret_audit on overlaid paths: 0 findings
+containers: hermes-agent Up, hermes-yandex-proxy Up/healthy
+restart performed: no
+```
 
 Known server risk:
 
