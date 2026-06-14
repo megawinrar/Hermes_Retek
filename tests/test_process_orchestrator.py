@@ -166,6 +166,31 @@ def test_reasoning_model_headroom_can_be_disabled(monkeypatch) -> None:
     ) == 900
 
 
+def test_auto_model_policy_uses_codex_bot1_for_l3_l4_and_deepseek_for_l2() -> None:
+    l2 = process_orchestrator.resolve_process_models(
+        {"task_level": "L2", "risk_level": "high"},
+        bot1_model="auto",
+        bot2_model="auto",
+    )
+    l3 = process_orchestrator.resolve_process_models(
+        {"task_level": "L3", "risk_level": "high"},
+        bot1_model="auto",
+        bot2_model="auto",
+    )
+    explicit = process_orchestrator.resolve_process_models(
+        {"task_level": "L3", "risk_level": "high"},
+        bot1_model="deepseek-v4-flash",
+        bot2_model="gpt-5.3-codex",
+    )
+
+    assert l2["bot1_model"] == "deepseek-v4-flash"
+    assert l2["bot2_model"] == "gpt-5.3-codex"
+    assert l3["bot1_model"] == "gpt-5.3-codex"
+    assert l3["bot2_model"] == "gpt-5.3-codex"
+    assert explicit["bot1_model"] == "deepseek-v4-flash"
+    assert explicit["bot1_source"] == "explicit"
+
+
 def test_adaptive_review_cycle_policy_scales_by_task_level(monkeypatch) -> None:
     monkeypatch.delenv("HERMES_ADAPTIVE_REVIEW_CYCLES", raising=False)
 
@@ -333,6 +358,30 @@ def test_supplier_route_skips_deterministic_calculator_by_default(monkeypatch, t
     workers = {assignment["worker"] for assignment in details["assignments"]}
     assert "deterministic_tool_results" not in event_types
     assert "deterministic_tools" not in workers
+
+
+def test_run_process_saves_session_tags(tmp_path: Path) -> None:
+    args = args_for_process(
+        tmp_path,
+        task="Составь план миграции CRM базы SQLite в Postgres с rollback и проверкой данных",
+        acceptance="Need migration plan.",
+        live_dual=False,
+        bot2_status="APPROVE",
+    )
+    payload = process_orchestrator.run_process(args)
+
+    details = process_orchestrator.process_details(
+        payload["process_id"],
+        store_path=args.process_store,
+        supervisor_store_path=args.supervisor_store,
+    )
+    event_types = {event["event_type"] for event in details["events"]}
+    assert "session_tags_saved" in event_types
+
+    import session_tags
+
+    results = session_tags.search_by_tags(levels=["L3"], store_path=args.supervisor_store)
+    assert any(item["session_id"] == payload["process_id"] for item in results)
 
 
 def test_supplier_route_records_deterministic_calculator_context_when_explicitly_enabled(

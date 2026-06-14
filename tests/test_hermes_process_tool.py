@@ -32,8 +32,8 @@ def test_build_run_command_defaults_to_live_process() -> None:
     assert "--live-route-audit" in cmd
     assert "--notify-telegram" in cmd
     assert "--notification-dry-run" not in cmd
-    assert cmd[cmd.index("--bot1-model") + 1] == "deepseek-v4-flash"
-    assert cmd[cmd.index("--bot2-model") + 1] == "gpt-5.3-codex"
+    assert cmd[cmd.index("--bot1-model") + 1] == "auto"
+    assert cmd[cmd.index("--bot2-model") + 1] == "auto"
 
 
 def test_build_decide_command_validates_choice() -> None:
@@ -57,8 +57,8 @@ def test_build_continue_command_defaults_to_auto_and_notifications() -> None:
     assert cmd[:2] == [tool.DEFAULT_PYTHON, str(tool.DEFAULT_ORCHESTRATOR)]
     assert cmd[cmd.index("continue") + 1] == "proc-123"
     assert cmd[cmd.index("--mode") + 1] == "auto"
-    assert cmd[cmd.index("--bot1-model") + 1] == "deepseek-v4-flash"
-    assert cmd[cmd.index("--bot2-model") + 1] == "gpt-5.3-codex"
+    assert cmd[cmd.index("--bot1-model") + 1] == "auto"
+    assert cmd[cmd.index("--bot2-model") + 1] == "auto"
     assert "--notify-telegram" in cmd
     assert "--notification-dry-run" not in cmd
 

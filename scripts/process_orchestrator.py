@@ -58,6 +58,9 @@ PROCESS_ROUTE_CACHE_VERSION = "process-route-v1"
 _PROCESS_ROUTE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _ROUTE_AUDIT_MEMORY_CACHE: dict[str, tuple[float, str, int, dict[str, Any]]] = {}
 _INITIALIZED_PROCESS_STORES: set[str] = set()
+FAST_BOT1_MODEL = os.environ.get("HERMES_FAST_BOT1_MODEL", "deepseek-v4-flash")
+STRONG_BOT_MODEL = os.environ.get("HERMES_STRONG_BOT_MODEL", "gpt-5.3-codex")
+AUTO_MODEL_VALUES = {"", "auto", "default", "route", "policy"}
 
 
 def _runtime_cache_enabled() -> bool:
@@ -181,6 +184,40 @@ def reasoning_model_headroom_enabled() -> bool:
 def model_needs_reasoning_token_headroom(model: str = "") -> bool:
     normalized = model.strip().lower()
     return bool(normalized) and any(marker in normalized for marker in REASONING_MODEL_MARKERS)
+
+
+def _auto_model_requested(model: str = "") -> bool:
+    return str(model or "").strip().lower() in AUTO_MODEL_VALUES
+
+
+def model_policy_for_route(route: dict[str, Any] | None = None) -> dict[str, str]:
+    level = token_policy_level(route)
+    bot1_model = STRONG_BOT_MODEL if level in {"L3", "L4"} else FAST_BOT1_MODEL
+    return {
+        "level": level,
+        "bot1_model": bot1_model,
+        "bot2_model": STRONG_BOT_MODEL,
+        "policy": "L1_L2_fast_bot1_L3_L4_codex_bot1",
+    }
+
+
+def resolve_process_models(
+    route: dict[str, Any] | None,
+    *,
+    bot1_model: str = "auto",
+    bot2_model: str = "auto",
+) -> dict[str, str]:
+    policy = model_policy_for_route(route)
+    resolved_bot1 = policy["bot1_model"] if _auto_model_requested(bot1_model) else str(bot1_model)
+    resolved_bot2 = policy["bot2_model"] if _auto_model_requested(bot2_model) else str(bot2_model)
+    return {
+        "bot1_model": resolved_bot1,
+        "bot2_model": resolved_bot2,
+        "bot1_source": "policy" if _auto_model_requested(bot1_model) else "explicit",
+        "bot2_source": "policy" if _auto_model_requested(bot2_model) else "explicit",
+        "policy_level": policy["level"],
+        "policy": policy["policy"],
+    }
 
 
 def token_policy_level(route: dict[str, Any] | None = None) -> str:
@@ -1749,6 +1786,11 @@ def continue_process(args: argparse.Namespace) -> dict[str, Any]:
     previous_answer = str(supervisor.get("bot1_result") or "")
     prior_verdict = latest_bot2_verdict_from_process(details)
     mode = continue_mode(args, details)
+    model_policy = resolve_process_models(
+        route,
+        bot1_model=getattr(args, "bot1_model", "auto"),
+        bot2_model=getattr(args, "bot2_model", "auto"),
+    )
 
     add_process_event(
         args.process_id,
@@ -1774,8 +1816,8 @@ def continue_process(args: argparse.Namespace) -> dict[str, Any]:
                 acceptance,
                 previous_answer=previous_answer,
                 prior_verdict=prior_verdict,
-                bot1_model=args.bot1_model,
-                bot2_model=args.bot2_model,
+                bot1_model=model_policy["bot1_model"],
+                bot2_model=model_policy["bot2_model"],
                 max_tokens=args.max_tokens,
                 timeout=args.timeout,
                 skill_context=skill_context,
@@ -1924,6 +1966,14 @@ def continue_process(args: argparse.Namespace) -> dict[str, Any]:
     performance = build_process_performance(duration_ms=elapsed_ms(process_started_at), route_audit={}, verdict=verdict)
     add_process_event(args.process_id, "process_performance", performance, store_path=args.process_store)
     update_process(args.process_id, status=final_status, current_phase=final_status, store_path=args.process_store)
+    save_session_tags_for_process(
+        process_id_value=args.process_id,
+        supervisor_task_id=supervisor_task_id,
+        route=route,
+        task=task,
+        process_store=args.process_store,
+        supervisor_store=args.supervisor_store,
+    )
     return {
         "process_id": args.process_id,
         "supervisor_task_id": supervisor_task_id,
@@ -1940,14 +1990,65 @@ def continue_process(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def save_session_tags_for_process(
+    *,
+    process_id_value: str,
+    supervisor_task_id: str,
+    route: dict[str, Any],
+    task: str,
+    process_store: Path | str | None = None,
+    supervisor_store: Path | str | None = None,
+) -> None:
+    try:
+        from session_tags import save_session_tags
+
+        tag_count = save_session_tags(
+            session_id=process_id_value,
+            route=route,
+            task_title=str(task)[:200],
+            store_path=supervisor_store,
+        )
+        payload = {"supervisor_task_id": supervisor_task_id, "tag_count": tag_count}
+        add_process_event(process_id_value, "session_tags_saved", payload, store_path=process_store)
+        add_supervisor_event(
+            supervisor_task_id,
+            "session_tags_saved",
+            {"process_id": process_id_value, "tag_count": tag_count},
+            store_path=supervisor_store,
+        )
+    except Exception as exc:
+        try:
+            add_process_event(
+                process_id_value,
+                "session_tags_failed",
+                {"error": f"{type(exc).__name__}: {exc}"},
+                store_path=process_store,
+            )
+        except Exception:
+            pass
+
+
 def run_process(args: argparse.Namespace) -> dict[str, Any]:
     process_started_at = time.perf_counter()
     task = args.task.strip()
     acceptance = args.acceptance.strip()
     initial_route = classify_task(task)
-    route_audit = route_audit_from_args(args, task, initial_route)
+    route_audit_args = copy.copy(args)
+    initial_models = resolve_process_models(
+        initial_route,
+        bot1_model=getattr(args, "bot1_model", "auto"),
+        bot2_model=getattr(args, "bot2_model", "auto"),
+    )
+    route_audit_args.bot2_model = initial_models["bot2_model"]
+    route_audit = route_audit_from_args(route_audit_args, task, initial_route)
     route = apply_classification_audit(initial_route, route_audit) if route_audit else initial_route
     route = dict(route)
+    model_policy = resolve_process_models(
+        route,
+        bot1_model=getattr(args, "bot1_model", "auto"),
+        bot2_model=getattr(args, "bot2_model", "auto"),
+    )
+    route["model_policy"] = model_policy
     skill_context = build_route_skill_context(route)
     deterministic_tool_results = deterministic_tool_results_for_route(task, route)
     if deterministic_tool_results:
@@ -2084,8 +2185,8 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
             bot1_result, bot2_session_id, verdict, report_path = live_dual_result(
                 task,
                 acceptance,
-                bot1_model=args.bot1_model,
-                bot2_model=args.bot2_model,
+                bot1_model=model_policy["bot1_model"],
+                bot2_model=model_policy["bot2_model"],
                 max_tokens=args.max_tokens,
                 timeout=args.timeout,
                 skill_context=skill_context,
@@ -2095,7 +2196,7 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
             bot1_result, bot2_session_id, report_path = live_bot1_result(
                 task,
                 acceptance,
-                bot1_model=args.bot1_model,
+                bot1_model=model_policy["bot1_model"],
                 max_tokens=args.max_tokens,
                 timeout=args.timeout,
                 skill_context=skill_context_for_role(skill_context, "bot1"),
@@ -2267,6 +2368,14 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
     )
     add_process_event(pid, "process_performance", performance, store_path=args.process_store)
     update_process(pid, status=final_status, current_phase=final_status, store_path=args.process_store)
+    save_session_tags_for_process(
+        process_id_value=pid,
+        supervisor_task_id=supervisor_task_id,
+        route=route,
+        task=task,
+        process_store=args.process_store,
+        supervisor_store=args.supervisor_store,
+    )
     return {
         "process_id": pid,
         "supervisor_task_id": supervisor_task_id,
@@ -2705,8 +2814,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--no-route-audit-cache", action="store_true", help="Disable cached Bot#2 route-audit reuse in auto mode")
     run.add_argument("--live-dual", action="store_true")
-    run.add_argument("--bot1-model", default="deepseek-v4-flash")
-    run.add_argument("--bot2-model", default="gpt-5.3-codex")
+    run.add_argument("--bot1-model", default="auto")
+    run.add_argument("--bot2-model", default="auto")
     run.add_argument("--timeout", type=int, default=180)
     run.add_argument("--max-tokens", type=int, default=1400)
     run.add_argument("--notify-telegram", action="store_true", help="Send human-gate notification to Telegram via DevLog settings")
@@ -2722,8 +2831,8 @@ def build_parser() -> argparse.ArgumentParser:
     continue_cmd = sub.add_parser("continue", help="Execute the next process action after a human YES decision")
     continue_cmd.add_argument("process_id")
     continue_cmd.add_argument("--mode", choices=["auto", "dry", "live"], default="auto")
-    continue_cmd.add_argument("--bot1-model", default="deepseek-v4-flash")
-    continue_cmd.add_argument("--bot2-model", default="gpt-5.3-codex")
+    continue_cmd.add_argument("--bot1-model", default="auto")
+    continue_cmd.add_argument("--bot2-model", default="auto")
     continue_cmd.add_argument("--timeout", type=int, default=180)
     continue_cmd.add_argument("--max-tokens", type=int, default=1400)
     continue_cmd.add_argument("--notify-telegram", action="store_true", help="Send a new human-gate notification if Bot#2 still requests changes")
