@@ -56,8 +56,8 @@ BOT2_EVIDENCE_ITEM_MAX_CHARS = 120
 BOT2_RISK_ITEM_MAX_CHARS = 160
 BOT2_FIX_ITEM_MAX_CHARS = 180
 
-YES_MEANING = "Agree with Bot#2 and return Bot#1 to fixes."
-NO_MEANING = "Reject Bot#2 objection and accept Bot#1 result as-is."
+YES_MEANING = "Согласен с Bot#2: вернуть Bot#1 на доработку."
+NO_MEANING = "Отклонить возражение Bot#2: принять работу Bot#1 как есть."
 
 SUPERVISOR_STATUSES = {
     "created",

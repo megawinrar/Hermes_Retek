@@ -34,8 +34,8 @@ def test_verdict_status_mapping() -> None:
 def test_human_decision_semantics_are_explicit() -> None:
     assert "Bot#2" in YES_MEANING
     assert "Bot#1" in NO_MEANING
-    assert "fixes" in YES_MEANING
-    assert "as-is" in NO_MEANING
+    assert "доработку" in YES_MEANING
+    assert "как есть" in NO_MEANING
 
 
 def test_acceptance_contract_contains_gate_rules() -> None:

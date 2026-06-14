@@ -20,6 +20,10 @@ def test_build_human_notification_buttons_use_compact_process_callbacks() -> Non
     assert rows[0][1]["callback_data"] == "hp:n:proc-20260614-052210-c45356"
     assert rows[1][0]["callback_data"] == "hp:s:proc-20260614-052210-c45356"
     assert rows[1][1]["callback_data"] == "hp:t:proc-20260614-052210-c45356"
+    assert rows[0][0]["text"] == "Да: вернуть Bot#1"
+    assert rows[0][1]["text"] == "Нет: принять Bot#1"
+    assert rows[1][0]["text"] == "Показать процесс"
+    assert rows[1][1]["text"] == "Лог диалога"
     assert all(len(button["callback_data"].encode()) <= 64 for row in rows for button in row)
 
 
@@ -61,4 +65,7 @@ def test_dispatch_human_notification_sends_buttons(monkeypatch) -> None:
     assert delivery["telegram_delivered"] is True
     assert delivery["buttons"] is True
     assert delivery["message_id"] == 77
+    assert "[Hermes Supervisor: решение человека]" in calls[0]["text"]
+    assert "Процесс: proc-1" in calls[0]["text"]
+    assert "Да = return" in calls[0]["text"]
     assert calls[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "hp:y:proc-1"

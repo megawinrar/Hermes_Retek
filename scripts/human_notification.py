@@ -54,30 +54,30 @@ def build_human_notification_payload(
 def format_human_notification(payload: dict[str, Any]) -> str:
     semantics = payload.get("decision_semantics") or {}
     lines = [
-        "[Hermes Human Gate]",
-        f"Process: {payload.get('process_id', '')}",
-        f"Supervisor task: {payload.get('supervisor_task_id', '')}",
-        f"Risk: {payload.get('risk', '')}",
+        "[Hermes Supervisor: решение человека]",
+        f"Процесс: {payload.get('process_id', '')}",
+        f"Задача Supervisor: {payload.get('supervisor_task_id', '')}",
+        f"Риск: {payload.get('risk', '')}",
         "",
-        f"Task: {payload.get('task', '')}",
+        f"Задача: {payload.get('task', '')}",
         "",
-        f"Bot#1 version:\n{payload.get('bot1_version', '')}",
+        f"Версия Bot#1:\n{payload.get('bot1_version', '')}",
         "",
-        f"Bot#2 version:\n{payload.get('bot2_version', '')}",
+        f"Версия Bot#2:\n{payload.get('bot2_version', '')}",
         "",
-        f"Recommendation: {payload.get('recommendation', '')}",
+        f"Рекомендация: {payload.get('recommendation', '')}",
         "",
-        f"YES = {semantics.get('yes', '')}",
-        f"NO = {semantics.get('no', '')}",
+        f"Да = {semantics.get('yes', '')}",
+        f"Нет = {semantics.get('no', '')}",
     ]
     commands = payload.get("decision_commands") or {}
     if commands:
         lines.extend(
             [
                 "",
-                "Decision commands:",
-                f"YES: {commands.get('yes', '')}",
-                f"NO: {commands.get('no', '')}",
+                "Команды решения:",
+                f"Да: {commands.get('yes', '')}",
+                f"Нет: {commands.get('no', '')}",
             ]
         )
     return redact_text("\n".join(lines))
@@ -90,12 +90,12 @@ def build_human_notification_buttons(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "inline_keyboard": [
             [
-                {"text": "YES: return Bot#1 to fixes", "callback_data": f"hp:y:{process_id}"},
-                {"text": "NO: accept Bot#1", "callback_data": f"hp:n:{process_id}"},
+                {"text": "Да: вернуть Bot#1", "callback_data": f"hp:y:{process_id}"},
+                {"text": "Нет: принять Bot#1", "callback_data": f"hp:n:{process_id}"},
             ],
             [
-                {"text": "Show process", "callback_data": f"hp:s:{process_id}"},
-                {"text": "Transcript", "callback_data": f"hp:t:{process_id}"},
+                {"text": "Показать процесс", "callback_data": f"hp:s:{process_id}"},
+                {"text": "Лог диалога", "callback_data": f"hp:t:{process_id}"},
             ],
         ]
     }

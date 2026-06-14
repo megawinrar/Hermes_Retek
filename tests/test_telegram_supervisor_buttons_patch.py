@@ -66,7 +66,9 @@ class TelegramAdapter:
     assert changes == ["helper_methods_upgrade", "callback_branch_upgrade"]
     assert '"continue"' in patched
     assert "continue_result" in patched
-    assert "Auto-continue after YES" in patched
+    assert "Автопродолжение после Да" in patched
+    assert "Да: вернуть Bot#1 на доработку" in patched
+    assert "Детали процесса" in patched
     assert HELPER_FAST_PATH_MARKER in patched
 
     second, second_changes = patch_text(patched)

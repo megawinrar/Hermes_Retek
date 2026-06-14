@@ -19,6 +19,8 @@ CALLBACK_MARKER = "# --- Hermes process supervisor callbacks (hp:action:process_
 HELPER_CONTINUE_MARKER = 'elif action == "continue":'
 HELPER_FAST_PATH_MARKER = "_run_hermes_process_tool_callback"
 CALLBACK_CONTINUE_MARKER = 'result["continue_result"] = await self._run_hermes_process_callback("continue", process_id)'
+HELPER_RU_MARKER = "Автопродолжение после Да"
+CALLBACK_RU_MARKER = "Да: вернуть Bot#1 на доработку"
 
 
 HELPER_BLOCK = r'''
@@ -116,15 +118,15 @@ HELPER_BLOCK = r'''
     def _format_hermes_process_callback_result(self, action: str, payload: dict) -> str:
         """Compact text for Supervisor button follow-up messages."""
         if not payload.get("ok", True):
-            return f"Hermes Supervisor\nAction: {action}\nError: {payload.get('error', 'unknown error')}"
+            return f"Hermes Supervisor\nДействие: {action}\nОшибка: {payload.get('error', 'unknown error')}"
 
         if action == "decide":
             next_action = payload.get("next_action") or {}
             lines = [
-                "Hermes Supervisor decision recorded",
-                f"Process: {payload.get('process_id', '')}",
-                f"Status: {payload.get('status', '')}",
-                f"Next action: {next_action.get('action', '')}",
+                "Hermes Supervisor: решение записано",
+                f"Процесс: {payload.get('process_id', '')}",
+                f"Статус: {payload.get('status', '')}",
+                f"Следующее действие: {next_action.get('action', '')}",
             ]
             continue_result = payload.get("continue_result") or {}
             if continue_result:
@@ -133,25 +135,25 @@ HELPER_BLOCK = r'''
                 lines.extend(
                     [
                         "",
-                        "Auto-continue after YES",
-                        f"Mode: {continue_result.get('mode', '')}",
-                        f"Status: {continue_result.get('status', '')}",
+                        "Автопродолжение после Да",
+                        f"Режим: {continue_result.get('mode', '')}",
+                        f"Статус: {continue_result.get('status', '')}",
                         f"Bot2: {continue_bot2.get('status', '')}",
-                        f"Next action: {continue_next.get('action', '')}",
+                        f"Следующее действие: {continue_next.get('action', '')}",
                     ]
                 )
                 if continue_result.get("report_path"):
-                    lines.append("Report: " + str(continue_result.get("report_path"))[:900])
+                    lines.append("Отчет: " + str(continue_result.get("report_path"))[:900])
                 if continue_result.get("notification_delivery"):
                     delivery = continue_result.get("notification_delivery") or {}
                     lines.append(
-                        "Repeated human gate: "
-                        + ("sent" if delivery.get("telegram_delivered") else str(delivery.get("mode", "recorded")))
+                        "Повторный human-gate: "
+                        + ("отправлен" if delivery.get("telegram_delivered") else str(delivery.get("mode", "recorded")))
                     )
             if next_action.get("required_fixes"):
-                lines.append("Required fixes: " + "; ".join(str(item) for item in next_action.get("required_fixes", [])[:4]))
+                lines.append("Что исправить: " + "; ".join(str(item) for item in next_action.get("required_fixes", [])[:4]))
             if next_action.get("resume_hint") and not continue_result:
-                lines.append("Resume: " + str(next_action.get("resume_hint"))[:900])
+                lines.append("Как продолжить: " + str(next_action.get("resume_hint"))[:900])
             return "\n".join(lines)
 
         summary = payload.get("summary") or {}
@@ -159,31 +161,31 @@ HELPER_BLOCK = r'''
             bot2 = summary.get("bot2") or {}
             human = summary.get("human_decision") or {}
             lines = [
-                "Hermes Supervisor process",
-                f"Process: {summary.get('process_id') or payload.get('id', '')}",
-                f"Status: {summary.get('status') or payload.get('status', '')}",
-                f"Level: {summary.get('task_level', '')} / Risk: {summary.get('risk_level', '')}",
+                "Hermes Supervisor: процесс",
+                f"Процесс: {summary.get('process_id') or payload.get('id', '')}",
+                f"Статус: {summary.get('status') or payload.get('status', '')}",
+                f"Уровень: {summary.get('task_level', '')} / риск: {summary.get('risk_level', '')}",
                 f"Bot2: required={bot2.get('required')} status={bot2.get('status', '')}",
                 f"Human: required={human.get('required')} status={human.get('status', '')}",
-                f"Last event: {summary.get('last_event_type', '')}",
+                f"Последнее событие: {summary.get('last_event_type', '')}",
             ]
             next_action = summary.get("next_action") or {}
             if next_action:
-                lines.append("Next action: " + str(next_action.get("action", "")))
+                lines.append("Следующее действие: " + str(next_action.get("action", "")))
             return "\n".join(lines)
 
         if action == "transcript":
             conversation = payload.get("conversation") or []
             lines = [
-                "Hermes Supervisor transcript",
-                f"Process: {payload.get('process_id', '')}",
-                f"Status: {payload.get('status', '')}",
+                "Hermes Supervisor: лог диалога",
+                f"Процесс: {payload.get('process_id', '')}",
+                f"Статус: {payload.get('status', '')}",
             ]
             for item in conversation[:6]:
                 lines.append(f"- {item.get('actor', '')}: {item.get('phase', '')} / {item.get('status', '')}")
             review_cycles = payload.get("review_cycles") or []
             if review_cycles:
-                lines.append(f"Review cycles: {len(review_cycles)}")
+                lines.append(f"Циклов проверки: {len(review_cycles)}")
             return "\n".join(lines)
 
         return json.dumps(payload, ensure_ascii=False)[:1800]
@@ -221,7 +223,7 @@ CALLBACK_BLOCK = r'''
         if data.startswith("hp:"):
             parts = data.split(":", 2)
             if len(parts) != 3:
-                await query.answer(text="Invalid Supervisor button data.")
+                await query.answer(text="Некорректная кнопка Supervisor.")
                 return
             action_token = parts[1]
             process_id = parts[2].strip()
@@ -233,14 +235,14 @@ CALLBACK_BLOCK = r'''
                 thread_id=str(query_thread_id) if query_thread_id is not None else None,
                 user_name=query_user_name,
             ):
-                await query.answer(text="Not authorized to control Supervisor.")
+                await query.answer(text="Нет прав управлять Supervisor.")
                 return
 
             user_display = getattr(query.from_user, "first_name", "User")
             action_map = {"y": "decide", "n": "decide", "s": "show", "t": "transcript"}
             action = action_map.get(action_token)
             if not action:
-                await query.answer(text="Unknown Supervisor action.")
+                await query.answer(text="Неизвестное действие Supervisor.")
                 return
 
             if action == "decide":
@@ -251,11 +253,11 @@ CALLBACK_BLOCK = r'''
                     choice=choice,
                     reason=f"Telegram button by {user_display}",
                 )
-                label = "YES: return Bot#1 to fixes" if choice == "yes" else "NO: accept Bot#1"
+                label = "Да: вернуть Bot#1 на доработку" if choice == "yes" else "Нет: принять Bot#1"
                 await query.answer(text=label[:60])
                 try:
                     await query.edit_message_text(
-                        text=f"Hermes Supervisor: {label}\nProcess: {process_id}\nBy: {user_display}",
+                        text=f"Hermes Supervisor: {label}\nПроцесс: {process_id}\nКто нажал: {user_display}",
                         reply_markup=None,
                     )
                 except Exception:
@@ -269,7 +271,7 @@ CALLBACK_BLOCK = r'''
                 return
 
             result = await self._run_hermes_process_callback(action, process_id)
-            await query.answer(text=("Process details" if action == "show" else "Transcript"))
+            await query.answer(text=("Детали процесса" if action == "show" else "Лог диалога"))
             await self._send_hermes_process_callback_followup(
                 query,
                 self._format_hermes_process_callback_result(action, result),
@@ -288,7 +290,7 @@ def patch_text(text: str) -> tuple[str, list[str]]:
             raise RuntimeError("callback handler anchor not found")
         text = text.replace(callback_anchor, HELPER_BLOCK + callback_anchor, 1)
         changes.append("helper_methods")
-    elif HELPER_CONTINUE_MARKER not in text or HELPER_FAST_PATH_MARKER not in text:
+    elif HELPER_CONTINUE_MARKER not in text or HELPER_FAST_PATH_MARKER not in text or HELPER_RU_MARKER not in text:
         helper_start = text.find("    def _hermes_process_cli_base(self) -> list[str]:\n")
         helper_end = text.find(callback_anchor)
         if helper_start < 0 or helper_end < 0 or helper_start >= helper_end:
@@ -300,7 +302,7 @@ def patch_text(text: str) -> tuple[str, list[str]]:
             raise RuntimeError("update prompt anchor not found")
         text = text.replace(update_anchor, CALLBACK_BLOCK + update_anchor, 1)
         changes.append("callback_branch")
-    elif CALLBACK_CONTINUE_MARKER not in text:
+    elif CALLBACK_CONTINUE_MARKER not in text or CALLBACK_RU_MARKER not in text:
         marker_start = text.find(CALLBACK_MARKER)
         callback_start = text.rfind("\n", 0, marker_start) + 1
         callback_end = text.find(update_anchor)
