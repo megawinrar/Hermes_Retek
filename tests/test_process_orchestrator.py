@@ -29,6 +29,8 @@ def args_for_process(tmp_path: Path, **overrides: object) -> object:
         "bot2_verdict_json": "",
         "bot2_route_audit_json": "",
         "live_route_audit": False,
+        "route_audit_mode": "auto",
+        "no_route_audit_cache": False,
         "live_dual": False,
         "bot1_model": "bot1-model",
         "bot2_model": "bot2-model",
@@ -156,6 +158,186 @@ def test_bot2_route_audit_raises_l1_to_human_gate(tmp_path: Path) -> None:
     assert "classification_audit" in event_types
     assert "bot2_route_audit" in workers
     assert details["summary"]["route"]["classification_audit"]["applied"]
+
+
+def test_live_route_audit_auto_skips_low_risk_l1(monkeypatch, tmp_path: Path) -> None:
+    import dual_bot_lab
+
+    monkeypatch.setattr(dual_bot_lab, "bothub_config", lambda: (_ for _ in ()).throw(AssertionError("Bot#2 audit not expected")))
+    monkeypatch.setattr(dual_bot_lab, "call_chat", lambda **_kwargs: (_ for _ in ()).throw(AssertionError("Bot#2 audit not expected")))
+
+    args = args_for_process(
+        tmp_path,
+        task="rewrite short hello",
+        acceptance="short answer",
+        live_route_audit=True,
+    )
+    payload = process_orchestrator.run_process(args)
+
+    assert payload["status"] == "approved"
+    audit = payload["route"]["classification_audit"]
+    assert audit["status"] == "SKIPPED_LOW_RISK_FAST_PATH"
+    assert audit["source"] == "supervisor_route_audit_policy"
+    assert payload["performance"]["route_audit"]["skipped"] is True
+
+    details = process_orchestrator.process_details(
+        payload["process_id"],
+        store_path=args.process_store,
+        supervisor_store_path=args.supervisor_store,
+    )
+    workers = {assignment["worker"] for assignment in details["assignments"]}
+    assert "route_audit_policy" in workers
+    assert "bot2_route_audit" not in workers
+    assert details["summary"]["performance"]["route_audit"]["skipped"] is True
+
+
+def test_live_route_audit_always_bypasses_low_risk_fast_path(monkeypatch, tmp_path: Path) -> None:
+    import dual_bot_lab
+
+    calls = 0
+
+    def fake_call_chat(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return (
+            json.dumps(
+                {
+                    "status": "CONFIRM",
+                    "recommended_level": "L1",
+                    "risk_level": "low",
+                    "review_required": False,
+                    "human_gate_required": False,
+                    "summary": "Low-risk route confirmed by forced Bot#2 audit.",
+                    "signals": ["forced_audit"],
+                }
+            ),
+            {"usage": {"total_tokens": 8}},
+        )
+
+    monkeypatch.setattr(dual_bot_lab, "bothub_config", lambda: {"base_url": "https://example.test/v1", "api_key": "test"})
+    monkeypatch.setattr(dual_bot_lab, "call_chat", fake_call_chat)
+
+    args = args_for_process(
+        tmp_path,
+        task="rewrite short hello",
+        acceptance="short answer",
+        live_route_audit=True,
+        route_audit_mode="always",
+    )
+    payload = process_orchestrator.run_process(args)
+
+    assert calls == 1
+    assert payload["status"] == "approved"
+    assert payload["route"]["classification_audit"]["source"] == "bot2_live_route_audit"
+    assert payload["performance"]["route_audit"]["skipped"] is False
+
+
+def test_live_route_audit_runs_for_high_risk_route_and_records_latency(monkeypatch, tmp_path: Path) -> None:
+    import dual_bot_lab
+
+    calls: list[list[dict[str, str]]] = []
+
+    def fake_call_chat(**kwargs):
+        calls.append(kwargs["messages"])
+        return (
+            json.dumps(
+                {
+                    "status": "CONFIRM",
+                    "recommended_level": "L4",
+                    "risk_level": "high",
+                    "review_required": True,
+                    "human_gate_required": True,
+                    "summary": "High-risk deploy route confirmed.",
+                    "signals": ["deploy", "production"],
+                }
+            ),
+            {"usage": {"total_tokens": 21}},
+        )
+
+    monkeypatch.setattr(dual_bot_lab, "bothub_config", lambda: {"base_url": "https://example.test/v1", "api_key": "test"})
+    monkeypatch.setattr(dual_bot_lab, "call_chat", fake_call_chat)
+
+    args = args_for_process(
+        tmp_path,
+        task="Change python code and deploy to production server",
+        live_route_audit=True,
+        notification_dry_run=True,
+    )
+    payload = process_orchestrator.run_process(args)
+
+    assert len(calls) == 1
+    audit = payload["route"]["classification_audit"]
+    assert audit["source"] == "bot2_live_route_audit"
+    assert audit["status"] == "CONFIRM"
+    assert audit["raw"]["usage"]["total_tokens"] == 21
+    assert "latency_ms" in audit["raw"]
+    assert payload["performance"]["route_audit"]["skipped"] is False
+    assert payload["performance"]["route_audit"]["cache_hit"] is False
+    assert payload["performance"]["route_audit"]["model"] == "bot2-model"
+
+    details = process_orchestrator.process_details(
+        payload["process_id"],
+        store_path=args.process_store,
+        supervisor_store_path=args.supervisor_store,
+    )
+    workers = {assignment["worker"] for assignment in details["assignments"]}
+    assert "bot2_route_audit" in workers
+    assert details["summary"]["performance"]["route_audit"]["status"] == "CONFIRM"
+
+
+def test_live_route_audit_cache_reuses_previous_bot2_result(monkeypatch, tmp_path: Path) -> None:
+    import dual_bot_lab
+
+    calls = 0
+
+    def fake_call_chat(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return (
+            json.dumps(
+                {
+                    "status": "CONFIRM",
+                    "recommended_level": "L3",
+                    "risk_level": "high",
+                    "review_required": True,
+                    "human_gate_required": False,
+                    "summary": "Migration planning route confirmed.",
+                    "signals": ["database", "migration"],
+                }
+            ),
+            {"usage": {"total_tokens": 34}},
+        )
+
+    monkeypatch.setattr(dual_bot_lab, "bothub_config", lambda: {"base_url": "https://example.test/v1", "api_key": "test"})
+    monkeypatch.setattr(dual_bot_lab, "call_chat", fake_call_chat)
+
+    first_args = args_for_process(
+        tmp_path,
+        task="Plan database migration for customer schema with rollback",
+        live_route_audit=True,
+    )
+    second_args = args_for_process(
+        tmp_path,
+        task="Plan database migration for customer schema with rollback",
+        live_route_audit=True,
+    )
+
+    first = process_orchestrator.run_process(first_args)
+    second = process_orchestrator.run_process(second_args)
+
+    assert calls == 1
+    assert first["route"]["classification_audit"]["source"] == "bot2_live_route_audit"
+    assert second["route"]["classification_audit"]["source"] == "bot2_live_route_audit_cache"
+    assert second["route"]["classification_audit"]["raw"]["cache_hit"] is True
+    assert second["performance"]["route_audit"]["cache_hit"] is True
+
+    details = process_orchestrator.process_details(
+        second["process_id"],
+        store_path=second_args.process_store,
+        supervisor_store_path=second_args.supervisor_store,
+    )
+    workers = {assignment["worker"] for assignment in details["assignments"]}
+    assert "bot2_route_audit_cache" in workers
 
 
 def test_process_transcript_shows_bot1_bot2_and_human_gate(tmp_path: Path) -> None:

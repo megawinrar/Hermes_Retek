@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,10 +48,15 @@ PROCESS_STORE_PATH = Path(
         "/var/lib/docker/volumes/hermes-data/_data/process_orchestrator_store.db",
     )
 )
+ROUTE_AUDIT_CACHE_VERSION = "route-audit-v1"
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def elapsed_ms(started_at: float) -> int:
+    return max(0, int((time.perf_counter() - started_at) * 1000))
 
 
 def process_id() -> str:
@@ -94,6 +101,17 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
             status TEXT NOT NULL,
             output_json TEXT NOT NULL,
             FOREIGN KEY(process_id) REFERENCES process_runs(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS route_audit_cache (
+            cache_key TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            model TEXT NOT NULL,
+            route_level TEXT NOT NULL,
+            route_risk TEXT NOT NULL,
+            audit_json TEXT NOT NULL,
+            hits INTEGER NOT NULL DEFAULT 0
         );
         """
     )
@@ -222,15 +240,136 @@ def configured_bot2_verdict(args: argparse.Namespace) -> dict[str, Any]:
     return verdict
 
 
+def safe_route_audit_fast_path(route: dict[str, Any]) -> bool:
+    return (
+        route.get("task_level") in {"L0", "L1"}
+        and route.get("risk_level") == "low"
+        and not bool(route.get("review_required"))
+        and not bool(route.get("human_gate_required"))
+    )
+
+
+def skipped_route_audit(route: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": "SKIPPED_LOW_RISK_FAST_PATH",
+        "source": "supervisor_route_audit_policy",
+        "recommended_level": route.get("task_level", ""),
+        "risk_level": route.get("risk_level", ""),
+        "review_required": bool(route.get("review_required")),
+        "human_gate_required": bool(route.get("human_gate_required")),
+        "summary": "Live Bot#2 classification audit skipped for deterministic low-risk L0/L1 route.",
+        "signals": ["task_level_low", "risk_low", "no_review_gate", "no_human_gate"],
+        "audit_skipped": True,
+    }
+
+
+def route_audit_mode(args: argparse.Namespace) -> str:
+    mode = str(getattr(args, "route_audit_mode", "auto") or "auto").lower()
+    return mode if mode in {"auto", "always"} else "auto"
+
+
+def route_audit_cache_key(task: str, route: dict[str, Any], model: str) -> str:
+    route_fingerprint = {
+        "task": " ".join(task.strip().split()).lower(),
+        "model": model,
+        "task_level": route.get("task_level", ""),
+        "task_type": route.get("task_type", ""),
+        "risk_level": route.get("risk_level", ""),
+        "review_required": bool(route.get("review_required")),
+        "human_gate_required": bool(route.get("human_gate_required")),
+        "process_plan": route.get("process_plan", []),
+        "version": ROUTE_AUDIT_CACHE_VERSION,
+    }
+    raw = json.dumps(route_fingerprint, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def cached_route_audit(
+    *,
+    cache_key: str,
+    store_path: Path | str | None = None,
+) -> dict[str, Any]:
+    with connect(store_path) as con:
+        row = con.execute(
+            "SELECT created_at, audit_json, hits FROM route_audit_cache WHERE cache_key=?",
+            (cache_key,),
+        ).fetchone()
+        if not row:
+            return {}
+        hits = int(row["hits"] or 0) + 1
+        con.execute(
+            "UPDATE route_audit_cache SET updated_at=?, hits=? WHERE cache_key=?",
+            (utc_now(), hits, cache_key),
+        )
+        con.commit()
+    try:
+        audit = json.loads(row["audit_json"])
+    except json.JSONDecodeError:
+        return {}
+    audit["source"] = "bot2_live_route_audit_cache"
+    audit["cache_hit"] = True
+    audit["cached_at"] = row["created_at"]
+    audit["cache_hits"] = hits
+    return audit
+
+
+def store_route_audit_cache(
+    *,
+    cache_key: str,
+    model: str,
+    route: dict[str, Any],
+    audit: dict[str, Any],
+    store_path: Path | str | None = None,
+) -> None:
+    if audit.get("audit_skipped") or audit.get("status") == "INVALID_CLASSIFICATION_AUDIT":
+        return
+    now = utc_now()
+    with connect(store_path) as con:
+        con.execute(
+            """
+            INSERT INTO route_audit_cache
+              (cache_key, created_at, updated_at, model, route_level, route_risk, audit_json, hits)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            ON CONFLICT(cache_key) DO UPDATE SET
+              updated_at=excluded.updated_at,
+              model=excluded.model,
+              route_level=excluded.route_level,
+              route_risk=excluded.route_risk,
+              audit_json=excluded.audit_json
+            """,
+            (
+                cache_key,
+                now,
+                now,
+                model,
+                str(route.get("task_level") or ""),
+                str(route.get("risk_level") or ""),
+                dumps(audit),
+            ),
+        )
+        con.commit()
+
+
 def route_audit_from_args(args: argparse.Namespace, task: str, route: dict[str, Any]) -> dict[str, Any]:
     if getattr(args, "bot2_route_audit_json", ""):
         return parse_classification_audit(args.bot2_route_audit_json)
     if not getattr(args, "live_route_audit", False):
         return {}
+    mode = route_audit_mode(args)
+    if mode == "auto" and safe_route_audit_fast_path(route):
+        return skipped_route_audit(route)
+
+    cache_key = route_audit_cache_key(task, route, args.bot2_model)
+    use_cache = mode == "auto" and not bool(getattr(args, "no_route_audit_cache", False))
+    if use_cache:
+        audit = cached_route_audit(cache_key=cache_key, store_path=args.process_store)
+        if audit:
+            return audit
 
     import dual_bot_lab as lab
 
     cfg = lab.bothub_config()
+    started_at = time.perf_counter()
     audit_raw, audit_response = lab.call_chat(
         base_url=cfg["base_url"],
         api_key=cfg["api_key"],
@@ -243,6 +382,16 @@ def route_audit_from_args(args: argparse.Namespace, task: str, route: dict[str, 
     audit["source"] = "bot2_live_route_audit"
     audit["raw_chars"] = len(audit_raw)
     audit["usage"] = audit_response.get("usage", {})
+    audit["latency_ms"] = elapsed_ms(started_at)
+    audit["model"] = args.bot2_model
+    if use_cache:
+        store_route_audit_cache(
+            cache_key=cache_key,
+            model=args.bot2_model,
+            route=route,
+            audit=audit,
+            store_path=args.process_store,
+        )
     return audit
 
 
@@ -252,6 +401,7 @@ def live_bot1_result(task: str, acceptance: str, *, bot1_model: str, max_tokens:
     cfg = lab.bothub_config()
     rid = lab.run_id()
     lab.add_run(rid, task, acceptance, bot1_model, "")
+    started_at = time.perf_counter()
     bot1, bot1_raw = lab.call_chat(
         base_url=cfg["base_url"],
         api_key=cfg["api_key"],
@@ -260,7 +410,13 @@ def live_bot1_result(task: str, acceptance: str, *, bot1_model: str, max_tokens:
         max_tokens=max_tokens,
         timeout=timeout,
     )
-    lab.add_message(rid, "Bot#1", bot1_model, bot1, {"usage": bot1_raw.get("usage", {})})
+    lab.add_message(
+        rid,
+        "Bot#1",
+        bot1_model,
+        bot1,
+        {"usage": bot1_raw.get("usage", {}), "latency_ms": elapsed_ms(started_at)},
+    )
     report = lab.write_report(
         run_id_value=rid,
         task=task,
@@ -300,6 +456,7 @@ def live_dual_result(
         else:
             bot1_messages = lab.bot1_revision_messages(task, acceptance, bot1, verdict, round_no - 1)
             bot1_speaker = f"Bot#1-revision-{round_no}"
+        bot1_started_at = time.perf_counter()
         bot1, bot1_raw = lab.call_chat(
             base_url=cfg["base_url"],
             api_key=cfg["api_key"],
@@ -308,11 +465,21 @@ def live_dual_result(
             max_tokens=max_tokens,
             timeout=timeout,
         )
-        lab.add_message(rid, bot1_speaker, bot1_model, bot1, {"usage": bot1_raw.get("usage", {})})
+        bot1_latency_ms = elapsed_ms(bot1_started_at)
+        lab.add_message(
+            rid,
+            bot1_speaker,
+            bot1_model,
+            bot1,
+            {"usage": bot1_raw.get("usage", {}), "latency_ms": bot1_latency_ms},
+        )
 
         self_check = ""
         fix_closure_checklist: list[dict[str, str]] = []
+        self_check_latency_ms = 0
+        self_check_usage: dict[str, Any] = {}
         if round_no > 1:
+            self_check_started_at = time.perf_counter()
             self_check, self_check_raw = lab.call_chat(
                 base_url=cfg["base_url"],
                 api_key=cfg["api_key"],
@@ -321,12 +488,14 @@ def live_dual_result(
                 max_tokens=max_tokens,
                 timeout=timeout,
             )
+            self_check_latency_ms = elapsed_ms(self_check_started_at)
+            self_check_usage = self_check_raw.get("usage", {})
             lab.add_message(
                 rid,
                 f"Bot#1-self-check-{round_no}",
                 bot1_model,
                 self_check,
-                {"usage": self_check_raw.get("usage", {})},
+                {"usage": self_check_usage, "latency_ms": self_check_latency_ms},
             )
             bot1 = self_check
             fix_closure_checklist = [
@@ -338,6 +507,7 @@ def live_dual_result(
                 for fix in (verdict.get("required_fixes") or [])
             ]
 
+        bot2_started_at = time.perf_counter()
         bot2, bot2_raw = lab.call_chat(
             base_url=cfg["base_url"],
             api_key=cfg["api_key"],
@@ -346,9 +516,19 @@ def live_dual_result(
             max_tokens=max_tokens,
             timeout=timeout,
         )
-        lab.add_message(rid, f"Bot#2-{round_no}", bot2_model, bot2, {"usage": bot2_raw.get("usage", {})})
+        bot2_latency_ms = elapsed_ms(bot2_started_at)
+        bot2_repair_usage: dict[str, Any] = {}
+        lab.add_message(
+            rid,
+            f"Bot#2-{round_no}",
+            bot2_model,
+            bot2,
+            {"usage": bot2_raw.get("usage", {}), "latency_ms": bot2_latency_ms},
+        )
         verdict = parse_verdict(bot2)
+        bot2_repair_latency_ms = 0
         if verdict.get("status") == INVALID_BOT2_STATUS:
+            bot2_repair_started_at = time.perf_counter()
             bot2_repair, bot2_repair_raw = lab.call_chat(
                 base_url=cfg["base_url"],
                 api_key=cfg["api_key"],
@@ -357,12 +537,14 @@ def live_dual_result(
                 max_tokens=max_tokens,
                 timeout=timeout,
             )
+            bot2_repair_latency_ms = elapsed_ms(bot2_repair_started_at)
+            bot2_repair_usage = bot2_repair_raw.get("usage", {})
             lab.add_message(
                 rid,
                 f"Bot#2-repair-{round_no}",
                 bot2_model,
                 bot2_repair,
-                {"usage": bot2_repair_raw.get("usage", {})},
+                {"usage": bot2_repair_usage, "latency_ms": bot2_repair_latency_ms},
             )
             repaired_verdict = parse_verdict(bot2_repair)
             repaired_verdict["repair_attempted"] = True
@@ -395,6 +577,18 @@ def live_dual_result(
             "bot2_summary": verdict.get("summary", ""),
             "required_fixes": verdict.get("required_fixes", []),
             "risks": verdict.get("risks", []),
+            "latency_ms": {
+                "bot1": bot1_latency_ms,
+                "bot1_self_check": self_check_latency_ms,
+                "bot2": bot2_latency_ms,
+                "bot2_repair": bot2_repair_latency_ms,
+            },
+            "usage": {
+                "bot1": bot1_raw.get("usage", {}),
+                "bot1_self_check": self_check_usage,
+                "bot2": bot2_raw.get("usage", {}),
+                "bot2_repair": bot2_repair_usage,
+            },
             "loop_status": verdict.get("loop_status", ""),
             "repair_loop_exhausted": loop_exhausted,
             "fix_closure_checklist": fix_closure_checklist,
@@ -436,7 +630,47 @@ def route_policy_verdict() -> dict[str, Any]:
     }
 
 
+def build_process_performance(
+    *,
+    duration_ms: int,
+    route_audit: dict[str, Any],
+    verdict: dict[str, Any],
+) -> dict[str, Any]:
+    raw_audit = route_audit.get("raw") or {}
+    review_cycles = verdict.get("review_cycles") or []
+    live_review_latency_ms = 0
+    live_review_calls = 0
+    for cycle in review_cycles:
+        latencies = cycle.get("latency_ms") or {}
+        for value in latencies.values():
+            if isinstance(value, int):
+                live_review_latency_ms += value
+        live_review_calls += 2
+        if cycle.get("bot1_self_check"):
+            live_review_calls += 1
+        if cycle.get("bot2_repair_attempted"):
+            live_review_calls += 1
+    return {
+        "duration_ms": duration_ms,
+        "route_audit": {
+            "enabled": bool(route_audit),
+            "skipped": bool(raw_audit.get("audit_skipped")),
+            "cache_hit": bool(raw_audit.get("cache_hit")),
+            "latency_ms": int(raw_audit.get("latency_ms") or 0),
+            "model": raw_audit.get("model", ""),
+            "status": route_audit.get("status", ""),
+            "source": route_audit.get("source", ""),
+        },
+        "live_review": {
+            "cycle_count": len(review_cycles),
+            "llm_call_count": live_review_calls,
+            "latency_ms": live_review_latency_ms,
+        },
+    }
+
+
 def run_process(args: argparse.Namespace) -> dict[str, Any]:
+    process_started_at = time.perf_counter()
     task = args.task.strip()
     acceptance = args.acceptance.strip()
     initial_route = classify_task(task)
@@ -463,26 +697,39 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
     update_process(pid, status="running", current_phase="bot1", store_path=args.process_store)
     update_task(supervisor_task_id, status="running", store_path=args.supervisor_store)
     if route_audit:
+        classification_audit = route.get("classification_audit", {})
+        raw_audit = classification_audit.get("raw") or {}
+        audit_skipped = bool(raw_audit.get("audit_skipped"))
+        cache_hit = bool(raw_audit.get("cache_hit"))
+        audit_worker = "route_audit_policy" if audit_skipped else "bot2_route_audit_cache" if cache_hit else "bot2_route_audit"
+        audit_status = "skipped" if audit_skipped else "completed"
+        audit_message = (
+            "Live Bot#2 classification audit skipped by low-risk fast-path."
+            if audit_skipped
+            else "Bot#2 classification audit reused from cache."
+            if cache_hit
+            else "Bot#2 classification audit completed."
+        )
         add_process_event(
             pid,
             "classification_audit",
-            {"initial_route": initial_route, "route": route, "audit": route.get("classification_audit", {})},
+            {"initial_route": initial_route, "route": route, "audit": classification_audit},
             store_path=args.process_store,
         )
         add_assignment(
             pid,
-            "bot2_route_audit",
+            audit_worker,
             "classification",
-            "completed",
-            route.get("classification_audit", {}),
+            audit_status,
+            classification_audit,
             store_path=args.process_store,
         )
         add_role_run(
             supervisor_task_id,
-            "bot2_route_audit",
-            "completed",
-            "Bot#2 classification audit completed.",
-            {"process_id": pid, "audit": route.get("classification_audit", {})},
+            audit_worker,
+            audit_status,
+            audit_message,
+            {"process_id": pid, "audit": classification_audit},
             store_path=args.supervisor_store,
         )
 
@@ -668,6 +915,12 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
             store_path=args.process_store,
         )
 
+    performance = build_process_performance(
+        duration_ms=elapsed_ms(process_started_at),
+        route_audit=route.get("classification_audit", {}) if route_audit else {},
+        verdict=verdict,
+    )
+    add_process_event(pid, "process_performance", performance, store_path=args.process_store)
     update_process(pid, status=final_status, current_phase=final_status, store_path=args.process_store)
     return {
         "process_id": pid,
@@ -680,6 +933,7 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
         "human_message": human_message,
         "human_notification": human_notification,
         "notification_delivery": notification_delivery,
+        "performance": performance,
     }
 
 
@@ -739,6 +993,7 @@ def process_summary(
     bot2_assignment = latest_assignment(assignments, "bot2")
     bot2_event = latest_event(events, "bot2_verdict")
     human_event = latest_event(events, "human_notification")
+    performance_event = latest_event(events, "process_performance")
     bot2_verdict = (
         (bot2_event.get("payload") or {}).get("verdict")
         or (bot2_assignment.get("output") or {}).get("verdict")
@@ -839,6 +1094,7 @@ def process_summary(
                 "",
             )
         },
+        "performance": performance_event.get("payload") or {},
         "event_count": len(events),
         "assignment_count": len(assignments),
         "last_event_type": last_event.get("event_type", ""),
@@ -1068,6 +1324,13 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--bot2-verdict-json", default="", help="Use an explicit Bot#2 verdict JSON object in dry-run mode")
     run.add_argument("--bot2-route-audit-json", default="", help="Use an explicit Bot#2 classification audit JSON object before execution")
     run.add_argument("--live-route-audit", action="store_true", help="Ask Bot#2 to audit Router classification before execution")
+    run.add_argument(
+        "--route-audit-mode",
+        choices=["auto", "always"],
+        default="auto",
+        help="auto skips deterministic low-risk L0/L1 route audits and caches live audit results; always calls Bot#2",
+    )
+    run.add_argument("--no-route-audit-cache", action="store_true", help="Disable cached Bot#2 route-audit reuse in auto mode")
     run.add_argument("--live-dual", action="store_true")
     run.add_argument("--bot1-model", default="deepseek-v4-flash")
     run.add_argument("--bot2-model", default="gpt-5.3-codex")
