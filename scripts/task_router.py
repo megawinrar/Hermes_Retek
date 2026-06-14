@@ -67,6 +67,8 @@ LEVEL_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_output_tokens": 6000,
     },
 }
+LEVEL_RANK = {level: index for index, level in enumerate(["L0", "L1", "L2", "L3", "L4"])}
+RISK_RANK = {"low": 0, "medium": 1, "high": 2}
 
 PROCESS_PLAN: dict[str, list[str]] = {
     "L0": ["router", "supervisor"],
@@ -199,6 +201,116 @@ def classify_task(task: str) -> dict[str, Any]:
     stress_profile = "adversarial" if adversarial else "normal"
 
     return Route(level, task_type, risk, reason, stress_profile, review_required, human_gate_required).as_dict()
+
+
+def _normalize_level(value: Any) -> str:
+    level = str(value or "").upper()
+    return level if level in LEVEL_RANK else ""
+
+
+def _normalize_risk(value: Any) -> str:
+    risk = str(value or "").lower()
+    return risk if risk in RISK_RANK else ""
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "да", "high", "required"}
+    return bool(value)
+
+
+def _route_with_level(route: dict[str, Any], level: str) -> dict[str, Any]:
+    updated = dict(route)
+    for key, value in LEVEL_DEFAULTS[level].items():
+        updated[key] = value
+    updated["task_level"] = level
+    updated["process_plan"] = PROCESS_PLAN[level]
+    return updated
+
+
+def apply_classification_audit(route: dict[str, Any], audit: dict[str, Any]) -> dict[str, Any]:
+    """Apply Bot#2 classification audit conservatively.
+
+    Bot#2 can raise level/risk or require review/human gate. It cannot lower
+    Router classification or relax gates.
+    """
+
+    updated = dict(route)
+    applied: list[str] = []
+    ignored: list[str] = []
+    original_level = str(route.get("task_level") or "")
+    original_risk = str(route.get("risk_level") or "")
+    recommended_level = _normalize_level(audit.get("recommended_level") or audit.get("task_level"))
+    recommended_risk = _normalize_risk(audit.get("risk_level") or audit.get("recommended_risk_level"))
+
+    if recommended_level:
+        if LEVEL_RANK[recommended_level] > LEVEL_RANK.get(original_level, -1):
+            updated = _route_with_level(updated, recommended_level)
+            applied.append(f"task_level:{original_level}->{recommended_level}")
+        elif LEVEL_RANK[recommended_level] < LEVEL_RANK.get(original_level, -1):
+            ignored.append(f"task_level:{original_level}->{recommended_level}")
+
+    current_risk = str(updated.get("risk_level") or original_risk)
+    if recommended_risk:
+        if RISK_RANK[recommended_risk] > RISK_RANK.get(current_risk, -1):
+            updated["risk_level"] = recommended_risk
+            applied.append(f"risk_level:{current_risk}->{recommended_risk}")
+        elif RISK_RANK[recommended_risk] < RISK_RANK.get(current_risk, -1):
+            ignored.append(f"risk_level:{current_risk}->{recommended_risk}")
+
+    if _truthy(audit.get("review_required")) and not bool(updated.get("review_required")):
+        updated["review_required"] = True
+        applied.append("review_required:false->true")
+    if _truthy(audit.get("human_gate_required")) and not bool(updated.get("human_gate_required")):
+        updated["human_gate_required"] = True
+        applied.append("human_gate_required:false->true")
+
+    if updated.get("task_level") in {"L3", "L4"} or updated.get("risk_level") == "high":
+        if not bool(updated.get("review_required")):
+            updated["review_required"] = True
+            applied.append("review_required:policy->true")
+
+    updated["classification_audit"] = {
+        "source": str(audit.get("source") or "bot2"),
+        "status": str(audit.get("status") or "AUDITED"),
+        "summary": str(audit.get("summary") or audit.get("reason") or ""),
+        "recommended_level": recommended_level,
+        "recommended_risk_level": recommended_risk,
+        "applied": applied,
+        "ignored_demotions": ignored,
+        "raw": audit,
+    }
+    return updated
+
+
+def parse_classification_audit(raw: str) -> dict[str, Any]:
+    invalid_audit = {
+        "status": "INVALID_CLASSIFICATION_AUDIT",
+        "risk_level": "high",
+        "review_required": True,
+        "summary": "Bot#2 route audit did not return a valid JSON object; require review fail-safe.",
+    }
+    text = raw.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.S)
+    if fenced:
+        text = fenced.group(1).strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        candidates = re.findall(r"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})", raw, flags=re.S)
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return invalid_audit
+    if not isinstance(parsed, dict):
+        return invalid_audit
+    return parsed
 
 
 def build_parser() -> argparse.ArgumentParser:

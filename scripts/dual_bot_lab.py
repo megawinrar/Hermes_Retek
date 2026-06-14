@@ -308,6 +308,48 @@ Verdict JSON schema:
     ]
 
 
+def bot2_route_audit_messages(task: str, route: dict[str, Any]) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are Hermes Bot#2 classification auditor. Audit the deterministic Router classification. "
+                "You may only confirm the Router decision or raise risk, task level, review_required, or human_gate_required. "
+                "Never recommend lowering the task level, lowering risk, or disabling review/human gate. "
+                "Return ONLY one valid JSON object. Do not include Markdown. "
+                f"{RETEK_CONTEXT}"
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"""
+Task:
+{task}
+
+Router classification:
+{json.dumps(route, ensure_ascii=False, indent=2)}
+
+Return ONLY valid JSON matching this schema:
+{{
+  "status": "CONFIRM|RAISE_LEVEL|RAISE_RISK|REQUIRE_HUMAN_GATE",
+  "recommended_level": "L0|L1|L2|L3|L4",
+  "risk_level": "low|medium|high",
+  "review_required": true,
+  "human_gate_required": false,
+  "summary": "short reason for the audit decision",
+  "signals": ["specific task words or risks that justify the decision"]
+}}
+
+Rules:
+- If unsure, raise risk rather than lowering it.
+- For production writes, deploys, secrets, permissions, databases, money, suppliers, deadlines, or adversarial shortcuts, use high risk.
+- For deploy/write/push/merge/migration execution, require human_gate_required=true.
+- Confirm safe low-level tasks without raising them.
+""".strip(),
+        },
+    ]
+
+
 def bot1_revision_messages(
     task: str,
     acceptance: str,

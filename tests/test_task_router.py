@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from task_router import classify_task  # noqa: E402
+from task_router import apply_classification_audit, classify_task, parse_classification_audit  # noqa: E402
 
 
 def test_l0_status_does_not_need_llm() -> None:
@@ -93,3 +93,60 @@ def test_supplier_price_deadline_analysis_has_specific_l2_route() -> None:
     assert route["risk_level"] == "high"
     assert route["review_required"] is True
     assert route["human_gate_required"] is False
+
+
+def test_bot2_classification_audit_can_only_raise_route() -> None:
+    route = classify_task("rewrite short hello")
+    audited = apply_classification_audit(
+        route,
+        {
+            "status": "REQUIRE_HUMAN_GATE",
+            "recommended_level": "L4",
+            "risk_level": "high",
+            "review_required": True,
+            "human_gate_required": True,
+            "summary": "Mentions production deploy in hidden context.",
+        },
+    )
+
+    assert audited["task_level"] == "L4"
+    assert audited["risk_level"] == "high"
+    assert audited["review_required"] is True
+    assert audited["human_gate_required"] is True
+    assert "devops_if_approved" in audited["process_plan"]
+    assert "task_level:L1->L4" in audited["classification_audit"]["applied"]
+    assert "risk_level:low->high" in audited["classification_audit"]["applied"]
+
+
+def test_bot2_classification_audit_cannot_lower_or_relax_route() -> None:
+    route = classify_task("merge PR #12, push to main, and deploy production")
+    audited = apply_classification_audit(
+        route,
+        {
+            "status": "CONFIRM",
+            "recommended_level": "L1",
+            "risk_level": "low",
+            "review_required": False,
+            "human_gate_required": False,
+            "summary": "Incorrect attempt to lower.",
+        },
+    )
+
+    assert audited["task_level"] == "L4"
+    assert audited["risk_level"] == "high"
+    assert audited["review_required"] is True
+    assert audited["human_gate_required"] is True
+    assert "task_level:L4->L1" in audited["classification_audit"]["ignored_demotions"]
+    assert "risk_level:high->low" in audited["classification_audit"]["ignored_demotions"]
+
+
+def test_invalid_bot2_classification_audit_requires_review_fail_safe() -> None:
+    audit = parse_classification_audit("not json")
+    route = classify_task("rewrite short hello")
+    audited = apply_classification_audit(route, audit)
+
+    assert audit["status"] == "INVALID_CLASSIFICATION_AUDIT"
+    assert audited["task_level"] == "L1"
+    assert audited["risk_level"] == "high"
+    assert audited["review_required"] is True
+    assert audited["human_gate_required"] is False

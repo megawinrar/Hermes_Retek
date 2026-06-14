@@ -363,3 +363,25 @@ Remaining follow-up fixes:
    `REQUEST_CHANGES`, `INVALID_BOT2_OUTPUT`, and exhausted loop escalations.
 6. Keep provider-side key rotation as the final external manual action before
    production hardening is considered complete.
+
+## Bot#2 Classification Audit
+
+Status: implemented in repository.
+
+Current behavior:
+
+- Router remains the deterministic first classifier for `L0`-`L4`, risk,
+  process plan, review requirement, and human gate.
+- Bot#2 can audit Router classification before execution using explicit JSON or
+  optional live audit.
+- Supervisor applies Bot#2 audit only conservatively: level/risk can be raised,
+  review/human gate can be required, but no downgrade or gate relaxation is
+  applied.
+- Process audit stores `classification_audit` events and `bot2_route_audit`
+  role runs.
+
+Remaining follow-up fixes:
+
+1. Run one server smoke with `--live-route-audit` after provider key rotation.
+2. Add dashboard visibility for classification audit applied changes and ignored
+   demotions.
