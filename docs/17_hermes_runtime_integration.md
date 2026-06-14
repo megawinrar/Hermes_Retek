@@ -190,8 +190,14 @@ Recommended style:
 
 ## Near-Term Roadmap
 
-1. Add a lightweight Telegram command convention for `process_id` follow-ups.
-2. Extend `hermes_process(action="decide")` to optionally auto-resume Bot#1
-   revision after a user agrees with Bot#2.
-3. Keep hardening process state transitions around Bot#2 and human gates.
-4. Add a deployment helper that patches Docker mounts with backup.
+1. Rotate the old provider/GitHub credentials and move the new provider key to
+   a server-side secret file outside git.
+2. Run one live smoke after rotation with:
+   - `hermes_process(action="run", live_dual=true)`;
+   - one Bot#1/Bot#2 human-gate decision post;
+   - one `Выбрать Bot#2` callback;
+   - one safe `show/transcript` callback.
+3. Replace any token-bearing Git remotes with a safer credential strategy.
+4. Keep future runtime changes in the same layer split: host-side supervisor
+   scripts, mounted Hermes tool adapter, and upstream-aware Hermes gateway
+   patches only when button/callback behavior requires it.

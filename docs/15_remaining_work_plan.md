@@ -4,33 +4,39 @@ Date: 2026-06-13
 
 ## Recommended Next Step
 
-Next implementation target: `P1 Runtime-Compatible Hermes Integration`.
+Next project step: `P0 Rotate Exposed Secrets`.
 
 Reason:
 
-- The live Telegram agent runs inside the `hermes-agent` Docker container.
-- The Retek scripts are host-side Supervisor/Bot#2/process gates, not imported
-  by the container.
-- Future work should target the correct layer first: `AGENTS.md`/skills/config
-  for agent behavior, scripts/configs for host-side gates, and `hermes-core`
-  only for upstream-aware runtime changes.
+- Runtime-compatible Hermes integration is now implemented and deployed on the
+  server through the mounted `hermes_process` tool and Telegram Supervisor
+  button callbacks.
+- The latest server test run passed: `126 passed`.
+- Current tracked files pass the secret audit with zero findings.
+- Git history still contains secret-shaped historical metadata, so old keys
+  must be treated as compromised and rotated externally.
 
 Reference:
 
 - `docs/17_hermes_runtime_integration.md`
 - `docs/18_server_rollout_checklist.md`
+- `docs/19_secret_rotation_runbook.md`
 
 ## P0: Rotate Exposed Secrets
 
-Status: repository audit tooling added; provider-side rotation still required.
+Status: current tracked files are clean; provider-side rotation still required.
 
 Why:
 
 - Current tracked files no longer contain the hardcoded key.
 - But the old key existed in git history, so it must be treated as compromised.
-- `scripts/secret_audit.py --current --json` currently returns zero findings.
-- `scripts/secret_audit.py --history --paths scripts configs AGENTS.md skills --json`
-  reports historical metadata-only findings for the old key.
+- `scripts/secret_audit.py --current --paths scripts configs custom AGENTS.md skills --json`
+  returns zero findings.
+- `scripts/secret_audit.py --history --paths scripts configs custom AGENTS.md skills --json`
+  reports historical metadata-only findings (`jwt`, `secret_assignment`) and
+  does not print secret values.
+- The live server still needs a new secret-file store such as
+  `/opt/data/.secrets/bothub_api_key`.
 
 Tasks:
 
@@ -56,30 +62,36 @@ Acceptance:
 
 ## P1: Human Notification / Telegram DevLog
 
-Status: next recommended code task.
+Status: implemented, tested, deployed to the live Hermes gateway.
 
-Tasks:
+Current behavior:
 
-- Add notification adapter for `process_orchestrator.py`.
-- Reuse or extend `scripts/devlog.py` if possible.
-- On `awaiting_human_decision`, send payload containing:
-  - process id;
-  - supervisor task id;
-  - original task;
-  - Bot#1 version;
-  - Bot#2 version;
-  - risk;
-  - recommendation;
-  - clear Yes/No semantics.
-- Add dry-run mode for exact payload without network send.
-- Add tests around payload shape and no-secret redaction.
+- `process_orchestrator.py` sends Telegram human-gate notifications through
+  `scripts/human_notification.py` and `scripts/devlog.py`.
+- Notifications render as Telegram HTML decision posts:
+  - task and process metadata;
+  - quoted Bot#1 position;
+  - quoted Bot#2 position;
+  - explicit Bot#2 argument lines;
+  - missing fixes and risks;
+  - inline buttons to choose `Bot#2` or `Bot#1`.
+- Button callbacks are installed in the live Hermes Telegram adapter through
+  `scripts/patch_telegram_supervisor_buttons.py`.
+- Button labels intentionally expose the decision as a side choice:
+  - `Выбрать Bot#2` means agree with Bot#2 and return Bot#1 to fixes;
+  - `Выбрать Bot#1` means reject Bot#2's objection and accept Bot#1 as-is.
+- Runtime SQLite stores are owned by the `hermes` user so button callbacks can
+  write decisions.
+- Callback fail-safe keeps buttons visible and reports a Russian error if the
+  decision write fails.
 
 Acceptance:
 
-- unit/integration test validates notification payload;
+- unit/integration tests validate notification payload and callback patching;
 - dry-run output can be inspected without Telegram;
-- live human escalation records notification event;
-- no secrets are sent.
+- live human escalation records notification events;
+- no secrets are sent;
+- latest full server suite: `126 passed`.
 
 ## P1: Bot#2 Retry / Repair
 
