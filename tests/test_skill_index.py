@@ -99,6 +99,34 @@ def test_on_demand_browser_skill_loads_only_for_supplier_browser_tasks() -> None
     assert "hermes-browser" in names(supplier["selected_skills"])
 
 
+def test_on_demand_browser_selection_is_not_sticky_after_cache() -> None:
+    clear_caches()
+    manifest = load_manifest()
+    supplier_route = {
+        "task_level": "L2",
+        "task_type": "supplier_price_deadline_analysis",
+        "risk_level": "high",
+        "review_required": True,
+        "human_gate_required": False,
+        "process_plan": ["router", "supervisor", "bot1", "tester", "bot2_light_if_risky"],
+    }
+    generic_route = {
+        "task_level": "L2",
+        "task_type": "standard_task",
+        "risk_level": "medium",
+        "review_required": False,
+        "human_gate_required": False,
+        "process_plan": ["router", "supervisor", "bot1"],
+    }
+
+    supplier = select_skill_context(manifest, route=supplier_route)
+    generic = select_skill_context(manifest, route=generic_route)
+
+    assert "hermes-browser" in names(supplier["selected_skills"])
+    assert "hermes-browser" not in names(generic["selected_skills"])
+    assert cache_stats()["context_entries"] == 2
+
+
 def test_skill_context_selects_by_route_and_marks_gated_devops() -> None:
     manifest = load_manifest()
     route = {

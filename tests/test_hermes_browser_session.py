@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import stat
 import subprocess
 import sys
@@ -85,6 +86,93 @@ def test_build_payload_for_cookies_saves_values_but_does_not_print_by_default(tm
 
     assert payload["cookies_path"] == str(paths.session_dir / "cookies.json")
     assert payload["unsafe_print_values"] is False
+
+
+def test_cookie_action_stdout_summarizes_values_unless_unsafe(monkeypatch, tmp_path: Path, capsys) -> None:
+    secret = "tok_" + "G" * 32
+
+    def fake_run_node_action(_payload: dict[str, object], *, node_bin: str = "node") -> dict[str, object]:
+        return {
+            "saved_to": str(tmp_path / "cookies.json"),
+            "count": 1,
+            "cookies": [
+                {
+                    "name": "auth.sid",
+                    "domain": "zakupki.kontur.ru",
+                    "path": "/",
+                    "value": secret,
+                    "httpOnly": True,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(browser, "run_node_action", fake_run_node_action)
+    args = argparse.Namespace(
+        root=tmp_path,
+        session="kontur",
+        action="cookies",
+        timeout_ms=1000,
+        wait_until="networkidle2",
+        visible=False,
+        chrome_binary="",
+        user_agent="",
+        viewport_width=1000,
+        viewport_height=800,
+        path="",
+        unsafe_print_values=False,
+        keep_open_seconds=0,
+        node_bin="node-test",
+    )
+
+    browser.cmd_action(args)
+    output = json.loads(capsys.readouterr().out)
+
+    assert output["cookies"][0]["name"] == "auth.sid"
+    assert "value" not in output["cookies"][0]
+    assert secret not in json.dumps(output)
+
+    assert browser.action_output(
+        "cookies",
+        {"cookies": [{"name": "auth.sid", "value": secret}]},
+        unsafe_print_values=True,
+    )["cookies"][0]["value"] == secret
+
+
+def test_browser_cli_redacts_runner_errors(monkeypatch, tmp_path: Path, capsys) -> None:
+    secret = "tok_" + "H" * 32
+
+    def fake_run_node_action(_payload: dict[str, object], *, node_bin: str = "node") -> dict[str, object]:
+        raise browser.BrowserSessionError(f"runner failed with {secret}")
+
+    monkeypatch.setattr(browser, "run_node_action", fake_run_node_action)
+
+    try:
+        browser.main(["--root", str(tmp_path), "--session", "kontur", "title"])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("browser CLI did not exit on BrowserSessionError")
+
+    stderr = capsys.readouterr().err
+    assert secret not in stderr
+    assert "[REDACTED]" in stderr
+
+
+def test_hermes_browser_skill_doc_examples_parse_against_cli() -> None:
+    skill_doc = (ROOT / "skills" / "hermes-browser" / "SKILL.md").read_text(encoding="utf-8")
+    commands = [
+        line.strip()
+        for line in skill_doc.splitlines()
+        if line.strip().startswith("python scripts/hermes_browser_session.py")
+    ]
+    assert commands
+
+    parser = browser.build_parser()
+    for command in commands:
+        argv = shlex.split(command)[2:]
+        args = parser.parse_args(argv)
+        assert args.session == "kontur-default"
+        assert callable(args.func)
 
 
 def test_evaluate_requires_explicit_allow_flag(tmp_path: Path) -> None:

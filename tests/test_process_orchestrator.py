@@ -1170,6 +1170,23 @@ def test_process_rlm_records_are_redacted(tmp_path: Path) -> None:
     assert rlm_store.search_records(process_id=payload["process_id"], store_path=rlm_path)
 
 
+def test_process_does_not_write_rlm_events_when_disabled(tmp_path: Path) -> None:
+    args = args_for_process(
+        tmp_path,
+        task="rewrite short hello",
+        acceptance="short answer",
+    )
+
+    payload = process_orchestrator.run_process(args)
+    details = process_orchestrator.process_details(
+        payload["process_id"],
+        store_path=args.process_store,
+        supervisor_store_path=args.supervisor_store,
+    )
+
+    assert not [event for event in details["events"] if event["event_type"].startswith("rlm_")]
+
+
 def test_process_cli_rlm_store_flag_writes_records(tmp_path: Path) -> None:
     process_store = tmp_path / "process.db"
     supervisor_store = tmp_path / "supervisor.db"
@@ -1197,6 +1214,35 @@ def test_process_cli_rlm_store_flag_writes_records(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     records = rlm_store.search_records(process_id=payload["process_id"], store_path=rlm_path)
     assert {record["kind"] for record in records} >= {"process_summary", "bot_output", "bot_review", "skill_usage"}
+
+
+def test_process_rlm_failure_records_event_without_failing(monkeypatch, tmp_path: Path) -> None:
+    secret = "tok_" + "F" * 32
+
+    def fail_write_process_records(_snapshot: object, _config: object) -> list[dict[str, object]]:
+        raise RuntimeError(f"rlm unavailable {secret}")
+
+    monkeypatch.setattr(process_orchestrator.process_rlm_memory, "write_process_records", fail_write_process_records)
+    args = args_for_process(
+        tmp_path,
+        task="rewrite short hello",
+        acceptance="short answer",
+        rlm_store=tmp_path / "rlm.db",
+    )
+
+    payload = process_orchestrator.run_process(args)
+    details = process_orchestrator.process_details(
+        payload["process_id"],
+        store_path=args.process_store,
+        supervisor_store_path=args.supervisor_store,
+    )
+
+    assert payload["status"] == "approved"
+    failure_events = [event for event in details["events"] if event["event_type"] == "rlm_write_failed"]
+    assert failure_events
+    assert "rlm unavailable" in failure_events[-1]["payload"]["error"]
+    assert secret not in json.dumps(details, ensure_ascii=False)
+    assert "[REDACTED]" in failure_events[-1]["payload"]["error"]
 
 
 def test_human_gate_blocks_approved_high_risk_deploy(tmp_path: Path) -> None:
@@ -1366,6 +1412,7 @@ def test_process_decide_yes_returns_bot1_to_fixes(tmp_path: Path) -> None:
 def test_process_continue_after_yes_runs_bot1_revision_and_bot2_review(tmp_path: Path) -> None:
     process_store = tmp_path / "process.db"
     supervisor_store = tmp_path / "supervisor.db"
+    rlm_path = tmp_path / "rlm.db"
     verdict = {
         "status": "REQUEST_CHANGES",
         "summary": "Bot#2 found missing rollback evidence.",
@@ -1382,6 +1429,8 @@ def test_process_continue_after_yes_runs_bot1_revision_and_bot2_review(tmp_path:
         str(process_store),
         "--supervisor-store",
         str(supervisor_store),
+        "--rlm-store",
+        str(rlm_path),
         "run",
         "--task",
         "Change python code and deploy to production server",
@@ -1415,6 +1464,8 @@ def test_process_continue_after_yes_runs_bot1_revision_and_bot2_review(tmp_path:
         str(process_store),
         "--supervisor-store",
         str(supervisor_store),
+        "--rlm-store",
+        str(rlm_path),
         "continue",
         payload["process_id"],
         "--mode",
@@ -1437,6 +1488,9 @@ def test_process_continue_after_yes_runs_bot1_revision_and_bot2_review(tmp_path:
     assert details["summary"]["status"] == "approved"
     assert details["summary"]["current_phase"] == "approved"
     assert details["summary"]["next_action"]["action"] == "completed_after_bot1_revision"
+    rlm_events = [event for event in details["events"] if event["event_type"] == "rlm_records_written"]
+    assert len(rlm_events) >= 2
+    assert rlm_store.search_records(process_id=payload["process_id"], store_path=rlm_path)
     revision_assignments = [
         item for item in details["assignments"] if item["worker"] == "bot1" and item["phase"] == "revision"
     ]

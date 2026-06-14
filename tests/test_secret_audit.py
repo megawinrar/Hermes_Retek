@@ -62,6 +62,7 @@ def test_shared_patterns_cover_runtime_redaction_cases() -> None:
     samples = {
         "telegram_bot_token": "123456789:" + "T" * 35,
         "bearer_header": "authorization: bearer " + "D" * 30,
+        "generic_prefixed_token": "tok_" + "G" * 30,
         "secret_assignment": "password: " + "E" * 30,
         "private_key": "-----BEGIN PRIVATE KEY-----\n" + "F" * 40 + "\n-----END PRIVATE KEY-----",
     }

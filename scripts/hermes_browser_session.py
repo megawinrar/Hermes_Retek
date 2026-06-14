@@ -430,9 +430,16 @@ def run_node_action(
     return result
 
 
-def action_output(action: str, result: dict[str, Any]) -> dict[str, Any]:
-    if action == "cookies" and not result.get("unsafe_print_values"):
-        return result
+def action_output(action: str, result: dict[str, Any], *, unsafe_print_values: bool = False) -> dict[str, Any]:
+    if action == "cookies" and not unsafe_print_values:
+        safe_result = dict(result)
+        cookies = safe_result.get("cookies")
+        if isinstance(cookies, list):
+            safe_result["cookies"] = [
+                {key: value for key, value in cookie.items() if key != "value"} if isinstance(cookie, dict) else cookie
+                for cookie in cookies
+            ]
+        return safe_result
     return result
 
 
@@ -476,7 +483,18 @@ def cmd_action(args: argparse.Namespace) -> None:
         result = run_node_action(payload, node_bin=args.node_bin)
         result["wall_ms"] = int((time.monotonic() - started) * 1000)
         record_audit(paths, action=args.action, status="ok", payload=payload, result=result)
-        print(json.dumps(action_output(args.action, result), ensure_ascii=False, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                action_output(
+                    args.action,
+                    result,
+                    unsafe_print_values=getattr(args, "unsafe_print_values", False),
+                ),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        )
     except Exception as exc:
         record_audit(paths, action=args.action, status="error", payload=payload, error=str(exc))
         raise
@@ -561,7 +579,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args.func(args)
     except BrowserSessionError as exc:
-        parser.exit(2, f"{exc}\n")
+        parser.exit(2, f"{redact_payload(str(exc))}\n")
     return 0
 
 

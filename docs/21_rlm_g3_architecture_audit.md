@@ -98,6 +98,13 @@ Implemented now:
   - tag/process/kind search;
   - token-budgeted context packs;
   - JSON CLI.
+- `scripts/process_rlm_memory.py`
+  - process-to-RLM sidecar writer;
+  - typed `RlmConfig`, `ProcessRlmSnapshot`, and `RlmWriteOutcome` contract;
+  - non-blocking write wrapper so RLM failures become process events instead
+    of breaking Bot1/Bot2 execution;
+  - process summary, Bot1 output, Bot2 review, human-gate, and browser-skill
+    records.
 - `scripts/context_budget.py`
   - 30/50/70/80 context pressure stages.
 - `scripts/agent_workspace.py`
@@ -108,10 +115,8 @@ Implemented now:
 - `scripts/agent_roles.py`
   - machine-readable role contract.
 - `scripts/process_orchestrator.py`
-  - optional RLM sidecar writes via `--rlm-store`, `--rlm-enabled`, or
+  - delegates optional RLM sidecar writes via `--rlm-store`, `--rlm-enabled`, or
     `HERMES_RLM_ENABLED=1`;
-  - process summary, Bot1 output, Bot2 review, human-gate, and browser-skill
-    records;
   - `rlm_records_written` / `rlm_write_failed` process events.
 - `skills/hermes-browser/SKILL.md` and `scripts/hermes_browser_session.py`
   - authenticated browser session skill with persistent profile, artifacts,
@@ -150,11 +155,15 @@ Already covered:
 - secret vault permissions/redaction;
 - workspace path safety;
 - RLM record add/search/context-pack redaction.
+- process-to-RLM sidecar writes, disabled mode, failure events, and secret
+  redaction;
+- browser session stdout/stderr redaction, cookie summary output, and CLI
+  examples in the skill doc;
+- on-demand browser skill cache isolation.
 
 Next tests:
 
 - workspace list/status lifecycle;
-- process event to RLM record mirroring;
 - compaction record generation at context thresholds;
 - child-agent subcall linkage;
 - Supervisor cannot accept workspace output without Bot2/human gate;

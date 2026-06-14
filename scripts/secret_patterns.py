@@ -28,6 +28,7 @@ SECRET_PATTERNS: tuple[SecretPattern, ...] = (
             re.I,
         ),
     ),
+    SecretPattern("generic_prefixed_token", re.compile(r"\b(?:tok|token|key|sk)_[A-Za-z0-9_-]{20,}\b", re.I)),
     SecretPattern(
         "private_key",
         re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----.*?-----END (?:RSA |OPENSSH |EC )?PRIVATE KEY-----", re.S),
