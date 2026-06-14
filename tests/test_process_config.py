@@ -27,6 +27,7 @@ def test_scripts_compile() -> None:
     scripts = [
         SCRIPTS / "task_router.py",
         SCRIPTS / "process_orchestrator.py",
+        SCRIPTS / "parallel_orchestration.py",
         SCRIPTS / "bot2_gate.py",
         SCRIPTS / "tool_gateway.py",
         SCRIPTS / "supervisor_common.py",

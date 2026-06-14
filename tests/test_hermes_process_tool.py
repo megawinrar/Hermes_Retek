@@ -36,6 +36,44 @@ def test_build_run_command_defaults_to_live_process() -> None:
     assert cmd[cmd.index("--bot2-model") + 1] == "auto"
 
 
+def test_build_run_command_passes_bounded_parallel_options() -> None:
+    tool = load_tool()
+    cmd = tool.build_command(
+        {
+            "action": "run",
+            "task": "Design parallel orchestration",
+            "max_parallel_agents": 3,
+            "verification_parallel_agents": 2,
+            "agent_timeout_seconds": 120,
+            "agent_max_tokens": 900,
+            "bothub_max_parallel_calls": 2,
+            "bothub_requests_per_minute": 18,
+        }
+    )
+
+    assert cmd[cmd.index("--max-parallel-agents") + 1] == "3"
+    assert cmd[cmd.index("--verification-parallel-agents") + 1] == "2"
+    assert cmd[cmd.index("--agent-timeout-seconds") + 1] == "120"
+    assert cmd[cmd.index("--agent-max-tokens") + 1] == "900"
+    assert cmd[cmd.index("--bothub-max-parallel-calls") + 1] == "2"
+    assert cmd[cmd.index("--bothub-requests-per-minute") + 1] == "18"
+
+
+def test_tool_schema_exposes_bounded_parallel_options() -> None:
+    tool = load_tool()
+    properties = tool.TOOL_SCHEMA["parameters"]["properties"]
+
+    for name in [
+        "max_parallel_agents",
+        "verification_parallel_agents",
+        "agent_timeout_seconds",
+        "agent_max_tokens",
+        "bothub_max_parallel_calls",
+        "bothub_requests_per_minute",
+    ]:
+        assert properties[name]["type"] == "integer"
+
+
 def test_build_decide_command_validates_choice() -> None:
     tool = load_tool()
     cmd = tool.build_command(
@@ -209,6 +247,58 @@ def test_execute_runs_orchestrator_in_process() -> None:
     assert show_result["ok"] is True
     assert show_result["adapter"]["execution_mode"] == "in_process"
     assert show_result["process_id"] == run_result["process_id"]
+
+
+def test_execute_in_process_passes_bounded_parallel_options() -> None:
+    tool = load_tool()
+    captured = {}
+
+    class FakeOrchestrator:
+        @staticmethod
+        def run_process(namespace):
+            captured.update(vars(namespace))
+            return {
+                "process_id": "proc-parallel",
+                "status": "approved",
+                "route": {
+                    "task_level": "L3",
+                    "task_type": "architecture_or_strategy",
+                    "risk_level": "medium",
+                    "parallel_orchestration": {
+                        "max_parallel_agents": namespace.max_parallel_agents,
+                        "bothub_rate_limits": {
+                            "max_parallel_calls": namespace.bothub_max_parallel_calls,
+                        },
+                    },
+                },
+            }
+
+    tool._ORCHESTRATOR_CACHE = ("fake", FakeOrchestrator)
+    tool._load_orchestrator = lambda: FakeOrchestrator
+
+    result = json.loads(
+        tool.execute(
+            action="run",
+            task="Design parallel orchestration",
+            live_dual=False,
+            live_route_audit=False,
+            notify_telegram=False,
+            max_parallel_agents=2,
+            verification_parallel_agents=1,
+            agent_timeout_seconds=90,
+            agent_max_tokens=800,
+            bothub_max_parallel_calls=2,
+            bothub_requests_per_minute=15,
+        )
+    )
+
+    assert result["ok"] is True
+    assert captured["max_parallel_agents"] == 2
+    assert captured["verification_parallel_agents"] == 1
+    assert captured["agent_timeout_seconds"] == 90
+    assert captured["agent_max_tokens"] == 800
+    assert captured["bothub_max_parallel_calls"] == 2
+    assert captured["bothub_requests_per_minute"] == 15
 
 
 def test_execute_reports_nonzero_exit(monkeypatch) -> None:

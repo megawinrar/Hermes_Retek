@@ -48,6 +48,14 @@ DEFAULT_EXECUTION_MODE = os.environ.get("HERMES_PROCESS_EXECUTION_MODE", "in_pro
 JSON_OUTPUT_ACTIONS = {"route", "run", "show", "transcript", "decide", "continue"}
 SUPPORTED_ACTIONS = sorted(JSON_OUTPUT_ACTIONS | {"events"})
 _ORCHESTRATOR_CACHE: tuple[str, Any] | None = None
+PARALLEL_RUN_OPTIONS = {
+    "max_parallel_agents": ("--max-parallel-agents", 0, 5),
+    "verification_parallel_agents": ("--verification-parallel-agents", 0, 5),
+    "agent_timeout_seconds": ("--agent-timeout-seconds", 1, 900),
+    "agent_max_tokens": ("--agent-max-tokens", 1, 6000),
+    "bothub_max_parallel_calls": ("--bothub-max-parallel-calls", 1, 8),
+    "bothub_requests_per_minute": ("--bothub-requests-per-minute", 1, 120),
+}
 
 
 def _json(data: dict[str, Any]) -> str:
@@ -99,6 +107,14 @@ def _base_command() -> list[str]:
     ]
 
 
+def _append_parallel_run_options(cmd: list[str], args: dict[str, Any]) -> list[str]:
+    for key, (flag, minimum, maximum) in PARALLEL_RUN_OPTIONS.items():
+        if args.get(key) is None:
+            continue
+        cmd += [flag, str(_as_int(args.get(key), minimum, minimum=minimum, maximum=maximum))]
+    return cmd
+
+
 def build_command(args: dict[str, Any]) -> list[str]:
     action = _text(args.get("action"), "run").strip().lower()
     if action not in SUPPORTED_ACTIONS:
@@ -140,7 +156,7 @@ def build_command(args: dict[str, Any]) -> list[str]:
             cmd.append("--notify-telegram")
         if _as_bool(args.get("notification_dry_run"), False):
             cmd.append("--notification-dry-run")
-        return cmd
+        return _append_parallel_run_options(cmd, args)
 
     process_id = _text(args.get("process_id")).strip()
     if not process_id:
@@ -247,8 +263,17 @@ def _common_namespace() -> dict[str, Any]:
 
 
 def _run_namespace(args: dict[str, Any]) -> SimpleNamespace:
+    parallel_options = {
+        key: (
+            None
+            if args.get(key) is None
+            else _as_int(args.get(key), minimum, minimum=minimum, maximum=maximum)
+        )
+        for key, (_flag, minimum, maximum) in PARALLEL_RUN_OPTIONS.items()
+    }
     return SimpleNamespace(
         **_common_namespace(),
+        **parallel_options,
         task=_text(args.get("task")).strip(),
         acceptance=_text(args.get("acceptance"), "Result must satisfy the task with concrete evidence and risk notes."),
         bot1_result=_text(args.get("bot1_result")),
@@ -535,6 +560,42 @@ TOOL_SCHEMA = {
             "bot2_model": {"type": "string", "default": "auto"},
             "timeout": {"type": "integer", "default": 240, "minimum": 30, "maximum": 900},
             "max_tokens": {"type": "integer", "default": 1400, "minimum": 256, "maximum": 6000},
+            "max_parallel_agents": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 5,
+                "description": "Optional run-level cap for bounded discovery agent fan-out.",
+            },
+            "verification_parallel_agents": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 5,
+                "description": "Optional run-level cap for bounded verification fan-out.",
+            },
+            "agent_timeout_seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 900,
+                "description": "Optional per-agent timeout cap for bounded fan-out.",
+            },
+            "agent_max_tokens": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 6000,
+                "description": "Optional per-agent token budget cap for bounded fan-out.",
+            },
+            "bothub_max_parallel_calls": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 8,
+                "description": "Optional BotHub concurrent call cap for the process.",
+            },
+            "bothub_requests_per_minute": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 120,
+                "description": "Optional BotHub request-rate cap for the process.",
+            },
             "limit": {"type": "integer", "default": 20, "minimum": 0, "maximum": 200},
             "include_raw": {"type": "boolean", "default": False},
             "execution_mode": {
