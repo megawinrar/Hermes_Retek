@@ -329,7 +329,10 @@ def test_live_route_audit_cache_reuses_previous_bot2_result(monkeypatch, tmp_pat
     assert first["route"]["classification_audit"]["source"] == "bot2_live_route_audit"
     assert second["route"]["classification_audit"]["source"] == "bot2_live_route_audit_cache"
     assert second["route"]["classification_audit"]["raw"]["cache_hit"] is True
+    assert second["route"]["classification_audit"]["raw"]["latency_ms"] == 0
+    assert "original_latency_ms" in second["route"]["classification_audit"]["raw"]
     assert second["performance"]["route_audit"]["cache_hit"] is True
+    assert second["performance"]["route_audit"]["latency_ms"] == 0
 
     details = process_orchestrator.process_details(
         second["process_id"],
