@@ -72,9 +72,27 @@ Host-side Hermes_Retek package
   -> optional docker exec into hermes-agent for controlled review runs
 ```
 
-Important: `scripts/task_router.py` and `scripts/process_orchestrator.py` are
-not mounted into `/opt/hermes` in the running container. They are host-side
-control scripts.
+The Telegram bridge is `custom/tools/hermes_process_tool.py`. It is mounted
+into `/opt/hermes/tools/hermes_process_tool.py` and registers a
+`hermes_process` tool under the already enabled `terminal` toolset. The tool
+does not patch `hermes-core`; it calls the host-side orchestrator CLI and
+returns a compact JSON status back to the Hermes conversation.
+
+Required mounts for the bridge:
+
+```text
+/opt/hermes-assistant/custom/tools/hermes_process_tool.py:/opt/hermes/tools/hermes_process_tool.py:ro
+/opt/hermes-assistant:/opt/hermes-assistant:ro
+```
+
+Runtime state should stay in the Hermes data volume:
+
+```text
+/opt/data/process_orchestrator_store.db
+/opt/data/supervisor_store.db
+/opt/data/dual_bot_lab_store.db
+/opt/data/reports/
+```
 
 ## Runtime Skill Library
 
@@ -97,8 +115,21 @@ The runtime contract is:
 - execute any skill script or external write only through `scripts/tool_gateway.py`.
 
 This is the host-side integration point for the Telegram bot: Telegram tasks
-should enter through `scripts/process_orchestrator.py run`, which always records
-`route.skill_context` and a `skill_context_selected` process event.
+should enter through `hermes_process(action="run")`, which calls
+`scripts/process_orchestrator.py run` and always records `route.skill_context`
+and a `skill_context_selected` process event.
+
+The Telegram decision loop is:
+
+```text
+User task
+  -> Hermes calls hermes_process(action="run", live_dual=true)
+  -> Router/Supervisor classify L1-L4 and select skills
+  -> Bot#1 executes; Bot#2 reviews when route requires it
+  -> if status=awaiting_human_decision, Hermes asks user Да/Нет
+  -> Hermes calls hermes_process(action="decide", process_id=..., choice=yes|no)
+  -> next_action tells Hermes whether to return Bot#1 to fixes or accept override
+```
 
 ## Change Routing Rules
 
@@ -109,6 +140,7 @@ Use this table before changing files:
 | Change agent personality or operating rules | `AGENTS.md`, `memories/`, `prompts/` | sync/mount into `/opt/data` or `/opt/hermes` |
 | Add a reusable Hermes capability | `skills/<skill>/SKILL.md` and optional scripts | sync skill into `/opt/data/skills` |
 | Add CRM/read-only business tool | `custom/tools/` | mount into container as read-only tool |
+| Attach Retek process supervisor to Telegram | `custom/tools/hermes_process_tool.py`, `scripts/` | mount adapter plus host project read-only |
 | Change LLM gateway, budget, fallback | `custom/yandex-proxy/` | rebuild/restart `hermes-yandex-proxy` |
 | Change process gates, Bot#2 review, routing | `scripts/`, `configs/`, `docs/` in this repo | host-side patch plus tests |
 | Change core agent loop or tool executor | `hermes-core/` | upstream-aware fork/submodule update only |
@@ -158,10 +190,8 @@ Recommended style:
 
 ## Near-Term Roadmap
 
-1. Document and automate a config/skills sync that targets `/opt/data`, not
-   `hermes-core`.
-2. Add a host-side `tool_gateway.py` only for dangerous external writes, leaving
-   normal Hermes tool use inside the container.
-3. Harden process state transitions around Bot#2 and human gates.
-4. Add a deployment checklist that understands Docker mounts and dirty server
-   state.
+1. Add a lightweight Telegram command convention for `process_id` follow-ups.
+2. Extend `hermes_process(action="decide")` to optionally auto-resume Bot#1
+   revision after a user agrees with Bot#2.
+3. Keep hardening process state transitions around Bot#2 and human gates.
+4. Add a deployment helper that patches Docker mounts with backup.
