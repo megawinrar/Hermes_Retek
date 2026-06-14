@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -18,6 +18,8 @@ ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from human_notification import redact_payload  # noqa: E402
+import process_orchestrator as orchestrator  # noqa: E402
+import tool_gateway  # noqa: E402
 
 
 REPORT_DIR = ROOT / "reports" / "real_tasks"
@@ -31,56 +33,38 @@ def suite_id() -> str:
     return f"real-task-suite-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
 
-def run_cmd(args: list[str], *, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, text=True, capture_output=True, timeout=timeout, check=False)
-
-
 def process_run(*, process_store: Path, supervisor_store: Path, task: str, bot2_status: str = "APPROVE") -> dict[str, Any]:
-    result = run_cmd(
-        [
-            sys.executable,
-            str(SCRIPT_DIR / "process_orchestrator.py"),
-            "--process-store",
-            str(process_store),
-            "--supervisor-store",
-            str(supervisor_store),
-            "run",
-            "--task",
-            task,
-            "--bot2-status",
-            bot2_status,
-            "--notification-dry-run",
-        ]
+    args = SimpleNamespace(
+        process_store=process_store,
+        supervisor_store=supervisor_store,
+        task=task,
+        acceptance="Result must satisfy the task with concrete evidence and risk notes.",
+        bot1_result="",
+        evidence="",
+        bot2_status=bot2_status,
+        bot2_verdict_json="",
+        bot2_route_audit_json="",
+        live_route_audit=False,
+        live_dual=False,
+        bot1_model="deepseek-v4-flash",
+        bot2_model="gpt-5.3-codex",
+        timeout=120,
+        max_tokens=1400,
+        notify_telegram=False,
+        notification_dry_run=True,
     )
-    if result.returncode != 0:
+    try:
+        payload = orchestrator.run_process(args)
+        details = orchestrator.process_details(
+            payload["process_id"],
+            store_path=process_store,
+            supervisor_store_path=supervisor_store,
+        )
+    except Exception as exc:
         return {
             "run_failed": True,
-            "exit_code": result.returncode,
-            "stdout_tail": result.stdout[-1200:],
-            "stderr_tail": result.stderr[-1200:],
+            "error": str(exc),
         }
-    payload = json.loads(result.stdout)
-    shown = run_cmd(
-        [
-            sys.executable,
-            str(SCRIPT_DIR / "process_orchestrator.py"),
-            "--process-store",
-            str(process_store),
-            "--supervisor-store",
-            str(supervisor_store),
-            "show",
-            payload["process_id"],
-        ]
-    )
-    if shown.returncode != 0:
-        return {
-            "show_failed": True,
-            "exit_code": shown.returncode,
-            "payload": payload,
-            "stdout_tail": shown.stdout[-1200:],
-            "stderr_tail": shown.stderr[-1200:],
-        }
-    details = json.loads(shown.stdout)
     return {
         "payload": payload,
         "summary": details.get("summary") or {},
@@ -89,19 +73,8 @@ def process_run(*, process_store: Path, supervisor_store: Path, task: str, bot2_
 
 
 def gateway_check(*, supervisor_store: Path, command: list[str]) -> dict[str, Any]:
-    result = run_cmd(
-        [
-            sys.executable,
-            str(SCRIPT_DIR / "tool_gateway.py"),
-            "--store",
-            str(supervisor_store),
-            "check",
-            "--",
-            *command,
-        ]
-    )
-    payload = json.loads(result.stdout) if result.stdout.strip() else {}
-    payload["exit_code"] = result.returncode
+    payload = tool_gateway.gateway_decision(task_id="", argv=command, store_path=supervisor_store)
+    payload["exit_code"] = 0 if payload.get("allowed") else 2
     return payload
 
 

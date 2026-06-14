@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -18,6 +18,8 @@ ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from human_notification import redact_payload  # noqa: E402
+import process_orchestrator as orchestrator  # noqa: E402
+import tool_gateway  # noqa: E402
 
 
 REPORT_DIR = ROOT / "reports"
@@ -31,10 +33,6 @@ def suite_id() -> str:
     return f"stage2-battle-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
 
-def run_cmd(args: list[str], *, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, text=True, capture_output=True, timeout=timeout, check=False)
-
-
 def run_process(
     *,
     process_store: Path,
@@ -43,60 +41,43 @@ def run_process(
     bot2_status: str = "APPROVE",
     timeout: int = 120,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    result = run_cmd(
-        [
-            sys.executable,
-            str(SCRIPT_DIR / "process_orchestrator.py"),
-            "--process-store",
-            str(process_store),
-            "--supervisor-store",
-            str(supervisor_store),
-            "run",
-            "--task",
-            task,
-            "--bot2-status",
-            bot2_status,
-            "--notification-dry-run",
-        ],
-        timeout=timeout,
+    del timeout
+    args = SimpleNamespace(
+        process_store=process_store,
+        supervisor_store=supervisor_store,
+        task=task,
+        acceptance="Result must satisfy the task with concrete evidence and risk notes.",
+        bot1_result="",
+        evidence="",
+        bot2_status=bot2_status,
+        bot2_verdict_json="",
+        bot2_route_audit_json="",
+        live_route_audit=False,
+        live_dual=False,
+        bot1_model="deepseek-v4-flash",
+        bot2_model="gpt-5.3-codex",
+        timeout=120,
+        max_tokens=1400,
+        notify_telegram=False,
+        notification_dry_run=True,
     )
-    if result.returncode != 0:
+    try:
+        payload = orchestrator.run_process(args)
+        details = orchestrator.process_details(
+            payload["process_id"],
+            store_path=process_store,
+            supervisor_store_path=supervisor_store,
+        )
+    except Exception as exc:
         return (
             {},
             {
                 "passed": False,
-                "reason": "process_run_failed",
-                "exit_code": result.returncode,
-                "stdout": result.stdout[-2000:],
-                "stderr": result.stderr[-2000:],
+                "reason": "process_api_failed",
+                "error": str(exc),
             },
         )
-    payload = json.loads(result.stdout)
-    shown = run_cmd(
-        [
-            sys.executable,
-            str(SCRIPT_DIR / "process_orchestrator.py"),
-            "--process-store",
-            str(process_store),
-            "--supervisor-store",
-            str(supervisor_store),
-            "show",
-            payload["process_id"],
-        ],
-        timeout=timeout,
-    )
-    if shown.returncode != 0:
-        return (
-            payload,
-            {
-                "passed": False,
-                "reason": "process_show_failed",
-                "exit_code": shown.returncode,
-                "stdout": shown.stdout[-2000:],
-                "stderr": shown.stderr[-2000:],
-            },
-        )
-    return payload, json.loads(shown.stdout)
+    return payload, details
 
 
 def gateway_check(
@@ -106,19 +87,9 @@ def gateway_check(
     task_id: str = "",
     timeout: int = 120,
 ) -> dict[str, Any]:
-    args = [
-        sys.executable,
-        str(SCRIPT_DIR / "tool_gateway.py"),
-        "--store",
-        str(supervisor_store),
-        "check",
-    ]
-    if task_id:
-        args.extend(["--task-id", task_id])
-    args.extend(["--", *command])
-    result = run_cmd(args, timeout=timeout)
-    payload = json.loads(result.stdout) if result.stdout.strip() else {}
-    payload["exit_code"] = result.returncode
+    del timeout
+    payload = tool_gateway.gateway_decision(task_id=task_id, argv=command, store_path=supervisor_store)
+    payload["exit_code"] = 0 if payload.get("allowed") else 2
     return payload
 
 
