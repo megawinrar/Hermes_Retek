@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from supervisor_common import (  # noqa: E402
     YES_MEANING,
     build_acceptance_contract,
     escalation_text,
+    parse_bot2_verdict,
     supervisor_status_for_verdict,
 )
 
@@ -64,3 +66,28 @@ def test_escalation_text_contains_both_versions_and_readable_choices() -> None:
     assert "run smoke test" in message
     assert "Да —" in message
     assert "Нет —" in message
+
+
+def test_bot2_verdict_parser_compacts_verbose_fields() -> None:
+    long_summary = " ".join(["summary"] * 80)
+    long_item = " ".join(["item"] * 80)
+    raw = {
+        "status": "REQUEST_CHANGES",
+        "approved_action": "needs_human",
+        "summary": long_summary,
+        "evidence_checked": [long_item, long_item, long_item, long_item],
+        "risks": [long_item, long_item, long_item, long_item],
+        "required_fixes": [long_item, long_item, long_item, long_item],
+        "confidence": 0.5,
+    }
+
+    verdict = parse_bot2_verdict(json.dumps(raw))
+
+    assert verdict["status"] == "REQUEST_CHANGES"
+    assert len(verdict["summary"]) <= 180
+    assert len(verdict["evidence_checked"]) == 3
+    assert len(verdict["risks"]) == 3
+    assert len(verdict["required_fixes"]) == 3
+    assert all(len(item) <= 120 for item in verdict["evidence_checked"])
+    assert all(len(item) <= 160 for item in verdict["risks"])
+    assert all(len(item) <= 180 for item in verdict["required_fixes"])

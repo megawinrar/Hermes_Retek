@@ -48,6 +48,13 @@ ESCALATION_STATUSES = {
 BLOCKED_STATUSES = {"BLOCKED_BY_POLICY", "LOOP_DETECTED"}
 INVALID_BOT2_STATUS = "INVALID_BOT2_OUTPUT"
 BOT2_VERDICT_STATUSES = APPROVED_STATUSES | ESCALATION_STATUSES | BLOCKED_STATUSES | {INVALID_BOT2_STATUS}
+BOT2_SUMMARY_MAX_CHARS = 180
+BOT2_EVIDENCE_MAX_ITEMS = 3
+BOT2_RISK_MAX_ITEMS = 3
+BOT2_FIX_MAX_ITEMS = 3
+BOT2_EVIDENCE_ITEM_MAX_CHARS = 120
+BOT2_RISK_ITEM_MAX_CHARS = 160
+BOT2_FIX_ITEM_MAX_CHARS = 180
 
 YES_MEANING = "Agree with Bot#2 and return Bot#1 to fixes."
 NO_MEANING = "Reject Bot#2 objection and accept Bot#1 result as-is."
@@ -444,6 +451,52 @@ def _strip_single_json_fence(raw: str) -> str:
     return match.group(1).strip() if match else stripped
 
 
+def _compact_text(value: Any, max_chars: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 15)].rstrip() + "...[truncated]"
+
+
+def _compact_text_list(value: Any, *, max_items: int, max_chars: int) -> list[str]:
+    if isinstance(value, list):
+        raw_items = value
+    elif value in (None, ""):
+        raw_items = []
+    else:
+        raw_items = [value]
+    items: list[str] = []
+    for raw_item in raw_items:
+        item = _compact_text(raw_item, max_chars)
+        if item:
+            items.append(item)
+        if len(items) >= max_items:
+            break
+    return items
+
+
+def compact_bot2_verdict(verdict: dict[str, Any]) -> dict[str, Any]:
+    """Keep Bot#2 as a compact defect-review package for Bot#1 and Telegram."""
+    compact = dict(verdict)
+    compact["summary"] = _compact_text(compact.get("summary", ""), BOT2_SUMMARY_MAX_CHARS)
+    compact["evidence_checked"] = _compact_text_list(
+        compact.get("evidence_checked"),
+        max_items=BOT2_EVIDENCE_MAX_ITEMS,
+        max_chars=BOT2_EVIDENCE_ITEM_MAX_CHARS,
+    )
+    compact["risks"] = _compact_text_list(
+        compact.get("risks"),
+        max_items=BOT2_RISK_MAX_ITEMS,
+        max_chars=BOT2_RISK_ITEM_MAX_CHARS,
+    )
+    compact["required_fixes"] = _compact_text_list(
+        compact.get("required_fixes"),
+        max_items=BOT2_FIX_MAX_ITEMS,
+        max_chars=BOT2_FIX_ITEM_MAX_CHARS,
+    )
+    return compact
+
+
 def parse_bot2_verdict(raw: str) -> dict[str, Any]:
     payload = _strip_single_json_fence(raw)
     try:
@@ -458,7 +511,7 @@ def parse_bot2_verdict(raw: str) -> dict[str, Any]:
     data["status"] = status
     if status in APPROVED_STATUSES:
         data.setdefault("approved_action", "execute")
-    return data
+    return compact_bot2_verdict(data)
 
 
 def extract_bot2_verdict(raw: str) -> dict[str, Any]:

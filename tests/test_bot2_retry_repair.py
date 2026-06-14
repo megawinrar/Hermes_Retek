@@ -43,6 +43,34 @@ def test_bot2_primary_prompt_requires_json_only() -> None:
     assert "## Verdict JSON" not in messages[1]["content"]
 
 
+def test_bot2_primary_prompt_requires_concise_defect_review() -> None:
+    messages = dual_bot_lab.bot2_messages(
+        "Plan migration",
+        "Need rollback and tests",
+        "Bot#1 result",
+    )
+    combined = "\n".join(message["content"] for message in messages)
+
+    assert "Bot#2 is a defect reviewer, not a second implementer" in combined
+    assert "Do not solve the task again" in combined
+    assert "Return compact one-line JSON" in combined
+    assert "risks: max 3 items" in combined
+    assert "required_fixes: max 3 actionable items" in combined
+
+
+def test_bot2_repair_prompt_keeps_repaired_verdict_concise() -> None:
+    messages = dual_bot_lab.bot2_repair_messages(
+        "Plan migration",
+        "Need rollback and tests",
+        "Bot#1 result",
+        "invalid prose",
+    )
+    combined = "\n".join(message["content"] for message in messages)
+
+    assert "Keep the repaired verdict concise" in combined
+    assert "Bot#2 concise defect-review rules" in combined
+
+
 def test_live_dual_result_repairs_invalid_bot2_json_once(monkeypatch, tmp_path: Path) -> None:
     calls: list[list[dict[str, str]]] = []
     messages: list[tuple[str, str]] = []
@@ -310,3 +338,26 @@ def test_dual_bot_lab_storage_and_report_are_redacted(monkeypatch, tmp_path: Pat
     report_text = report.read_text(encoding="utf-8")
     assert secret not in report_text
     assert "[REDACTED]" in report_text
+
+
+def test_dual_bot_lab_report_falls_back_to_writable_data_dir(monkeypatch, tmp_path: Path) -> None:
+    blocked_report_path = tmp_path / "reports-is-a-file"
+    blocked_report_path.write_text("not a directory", encoding="utf-8")
+    data_reports = tmp_path / "data-reports"
+
+    monkeypatch.setattr(dual_bot_lab, "REPORT_DIR", blocked_report_path)
+    monkeypatch.setattr(dual_bot_lab, "DATA_REPORT_DIR", data_reports)
+    monkeypatch.setattr(dual_bot_lab, "FALLBACK_REPORT_DIR", tmp_path / "fallback-reports")
+
+    report = dual_bot_lab.write_report(
+        run_id_value="dual-fallback",
+        task="Task",
+        acceptance="Acceptance",
+        bot1_model="bot1",
+        bot1_result="Bot#1 transcript",
+        bot2_model="bot2",
+        bot2_result="Bot#2 transcript",
+    )
+
+    assert report == data_reports / "dual-fallback.md"
+    assert report.exists()

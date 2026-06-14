@@ -124,7 +124,7 @@ def test_adaptive_token_budget_scales_by_task_level(monkeypatch) -> None:
         1400,
         role="bot2_verdict",
         route={"task_level": "L4", "human_gate_required": True},
-    ) == 900
+    ) == 1000
 
 
 def test_token_budget_env_override_beats_adaptive_policy(monkeypatch) -> None:

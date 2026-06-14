@@ -34,7 +34,20 @@ STORE_PATH = Path(
         "/var/lib/docker/volumes/hermes-data/_data/dual_bot_lab_store.db",
     )
 )
-REPORT_DIR = Path(os.environ.get("DUAL_BOT_REPORT_DIR", PROJECT_DIR / "reports"))
+DATA_REPORT_DIR = Path(os.environ.get("HERMES_DATA_REPORT_DIR", "/opt/data/reports"))
+FALLBACK_REPORT_DIR = Path(os.environ.get("DUAL_BOT_FALLBACK_REPORT_DIR", "/tmp/hermes-dual-bot-reports"))
+
+
+def default_report_dir() -> Path:
+    explicit = os.environ.get("DUAL_BOT_REPORT_DIR", "").strip()
+    if explicit:
+        return Path(explicit)
+    if DATA_REPORT_DIR.parent.exists():
+        return DATA_REPORT_DIR
+    return PROJECT_DIR / "reports"
+
+
+REPORT_DIR = default_report_dir()
 DEFAULT_BASE_URL = "https://openai.bothub.chat/v1"
 DEFAULT_BOT1_MODEL = os.environ.get("BOT1_MODEL", "deepseek-v4-flash")
 DEFAULT_BOT2_MODEL = os.environ.get("BOT2_MODEL", "gpt-5.3-codex")
@@ -53,12 +66,23 @@ SUPERVISOR_TRANSCRIPT_CONTEXT = (
 BOT2_VERDICT_JSON_SCHEMA = """{
   "status": "APPROVE" | "APPROVE_WITH_EVIDENCE" | "REQUEST_CHANGES" | "REJECT" | "NEEDS_HUMAN" | "INSUFFICIENT_EVIDENCE" | "MISSING_TESTS_FOR_CODE_CHANGE" | "FAKE_IMPLEMENTATION_DETECTED" | "TEST_THEATER_DETECTED" | "RUBBER_STAMP_RISK" | "BLOCKED_BY_POLICY" | "LOOP_DETECTED",
   "approved_action": "execute" | "refuse" | "no_op" | "needs_human",
-  "summary": "...",
-  "evidence_checked": ["..."],
-  "risks": ["..."],
-  "required_fixes": ["..."],
+  "summary": "one short sentence with the verdict reason",
+  "evidence_checked": ["specific evidence item checked"],
+  "risks": ["explicit defect/risk and why it matters"],
+  "required_fixes": ["specific action Bot#1 must take"],
   "confidence": 0.0
 }"""
+BOT2_VERDICT_CONCISION_RULES = """Bot#2 concise defect-review rules:
+- Do not solve the task again and do not rewrite Bot#1's answer.
+- Return compact one-line JSON without indentation or pretty printing.
+- Report only explicit defects, missing evidence, contradictions, or concrete residual risks.
+- summary: one sentence, max 180 chars.
+- evidence_checked: max 3 items, max 120 chars each.
+- risks: max 3 items, max 160 chars each; each item must include why it matters.
+- required_fixes: max 3 actionable items, max 180 chars each; map them to the blocking risks when possible.
+- For APPROVE/APPROVE_WITH_EVIDENCE, use empty risks and required_fixes unless a concrete residual risk remains.
+- For REQUEST_CHANGES/REJECT/INSUFFICIENT_EVIDENCE/etc., include at least one required_fixes item.
+"""
 
 
 def format_skill_context(skill_context: dict[str, Any] | None) -> str:
@@ -206,6 +230,24 @@ def update_run(run_id_value: str, status: str, report_path: str = "") -> None:
         con.commit()
 
 
+def writable_report_dir(preferred: Path | None = None) -> Path:
+    candidates: list[Path] = []
+    for candidate in [preferred or REPORT_DIR, DATA_REPORT_DIR, FALLBACK_REPORT_DIR]:
+        if candidate not in candidates:
+            candidates.append(candidate)
+    errors: list[str] = []
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / f".write-test-{os.getpid()}"
+            probe.write_text("", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return candidate
+        except OSError as exc:
+            errors.append(f"{candidate}: {exc}")
+    raise RuntimeError("No writable dual-bot report directory: " + " | ".join(errors))
+
+
 def call_chat(
     *,
     base_url: str,
@@ -344,7 +386,7 @@ def bot2_messages(
                 "You are Hermes Bot#2, the independent Codex reviewer. "
                 "Do not rubber-stamp. Return ONLY one valid JSON object matching the verdict schema. "
                 "Do not include Markdown, fences, prose, logs, or explanations outside the JSON object. "
-                "Keep fields concise so the whole verdict fits in one response. "
+                "Keep fields concise: Bot#2 is a defect reviewer, not a second implementer. "
                 "Do not reveal hidden chain-of-thought. "
                 f"{RETEK_CONTEXT} {SUPERVISOR_TRANSCRIPT_CONTEXT}"
             ),
@@ -369,6 +411,8 @@ Supervisor context:
 
 Return ONLY valid JSON matching this schema:
 {BOT2_VERDICT_JSON_SCHEMA}
+
+{BOT2_VERDICT_CONCISION_RULES}
 """.strip(),
         },
     ]
@@ -539,6 +583,7 @@ def bot2_repair_messages(task: str, acceptance: str, bot1_result: str, invalid_o
             "content": (
                 "You are Hermes Bot#2 JSON repair. Return ONLY one valid JSON object. "
                 "Do not include Markdown, fences, prose, logs, or explanations. "
+                "Keep the repaired verdict concise; preserve only explicit defects and fixes. "
                 "If the original review lacks enough evidence, choose INSUFFICIENT_EVIDENCE or NEEDS_HUMAN."
             ),
         },
@@ -559,6 +604,8 @@ Bot#2 invalid output to repair:
 
 Return ONLY valid JSON matching this schema:
 {BOT2_VERDICT_JSON_SCHEMA}
+
+{BOT2_VERDICT_CONCISION_RULES}
 """.strip(),
         },
     ]
@@ -574,8 +621,8 @@ def write_report(
     bot2_model: str,
     bot2_result: str,
 ) -> Path:
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    path = REPORT_DIR / f"{run_id_value}.md"
+    report_dir = writable_report_dir()
+    path = report_dir / f"{run_id_value}.md"
     safe_task = redact_text(task)
     safe_acceptance = redact_text(acceptance)
     safe_bot1_result = redact_text(bot1_result)

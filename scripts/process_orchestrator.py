@@ -128,8 +128,8 @@ TOKEN_POLICY_PROFILES: dict[str, dict[str, int]] = {
     "L0": {"bot1": 384, "bot1_revision": 512, "bot1_self_check": 512, "bot2_verdict": 384, "bot2_repair": 384},
     "L1": {"bot1": 512, "bot1_revision": 700, "bot1_self_check": 700, "bot2_verdict": 512, "bot2_repair": 384},
     "L2": {"bot1": 900, "bot1_revision": 1100, "bot1_self_check": 900, "bot2_verdict": 650, "bot2_repair": 500},
-    "L3": {"bot1": 1400, "bot1_revision": 1400, "bot1_self_check": 1200, "bot2_verdict": 700, "bot2_repair": 500},
-    "L4": {"bot1": 0, "bot1_revision": 0, "bot1_self_check": 0, "bot2_verdict": 900, "bot2_repair": 700},
+    "L3": {"bot1": 1400, "bot1_revision": 1400, "bot1_self_check": 1200, "bot2_verdict": 800, "bot2_repair": 650},
+    "L4": {"bot1": 0, "bot1_revision": 0, "bot1_self_check": 0, "bot2_verdict": 1000, "bot2_repair": 800},
 }
 ROLE_ENV_TOKEN_CAPS = {
     "bot1": "HERMES_BOT1_MAX_TOKENS",

@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from dual_bot_lab import BOT2_VERDICT_JSON_SCHEMA, bot2_repair_messages
+from dual_bot_lab import BOT2_VERDICT_CONCISION_RULES, BOT2_VERDICT_JSON_SCHEMA, bot2_repair_messages
 from human_notification import redact_payload, redact_text
 from supervisor_common import INVALID_BOT2_STATUS, parse_bot2_verdict
 
@@ -266,6 +266,8 @@ Evidence supplied:
 
 Return ONLY valid JSON matching this schema:
 {BOT2_VERDICT_JSON_SCHEMA}
+
+{BOT2_VERDICT_CONCISION_RULES}
 
 Rules:
 - APPROVE only if acceptance criteria are satisfied by evidence.
