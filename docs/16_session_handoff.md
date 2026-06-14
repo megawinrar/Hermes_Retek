@@ -25,7 +25,7 @@ https://github.com/megawinrar/Hermes_Retek/tree/ops-safe-restart-speed-g3-rlm-20
 Code baseline before this handoff update:
 
 ```text
-9cf4894 feat: add durable startup context packs
+1e8b0b4 test: expand context and rlm coverage
 ```
 
 Key commits in this session:
@@ -41,6 +41,7 @@ Key commits in this session:
 - `ed77da3 refactor: isolate process rlm memory writer`
 - `55b9b9e feat: add supervisor-gated agent workspace lifecycle`
 - `9cf4894 feat: add durable startup context packs`
+- `1e8b0b4 test: expand context and rlm coverage`
 
 ## What Was Implemented
 
@@ -80,7 +81,9 @@ Bot1/Bot2 durable startup context packs:
 - Supervisor logs `durable_context_pack_built` and `context_engineer`
   `session_startup` records in process SQLite;
 - Bot1/Bot2 prompt formatting includes `startup_context_pack`;
-- cookie/session-like values are redacted before prompt/event storage.
+- cookie/session-like values are redacted before prompt/event storage;
+- live prompt builders redact task, acceptance, Bot1 output, revision input,
+  route audit payloads, and JSON repair input before LLM calls.
 
 Skills and browser work:
 
@@ -103,7 +106,11 @@ Secret/runtime safety:
 Local verification before server deploy:
 
 ```text
-pytest: 245 passed
+pytest: 256 passed
+coverage over scripts/: 64%
+process_context_pack.py coverage: 97%
+rlm_store.py coverage: 73%
+secret_patterns.py coverage: 100%
 secret_audit on current tracked target paths: 0 findings
 ```
 
@@ -122,6 +129,9 @@ Focused coverage added:
 - durable Bot1/Bot2 startup context pack construction;
 - prompt inclusion of startup context without cookie/session leaks;
 - run/continue process logging of context pack startup.
+- live prompt redaction for task/acceptance/Bot1 output/revision/repair inputs;
+- RLM store get/kind/artifact fallback/metadata/CLI add+pack edge coverage;
+- shared secret tuple payload and cookie/session assignment redaction coverage.
 
 ## Server Deploy
 
@@ -231,7 +241,7 @@ session/workspace metadata, plus context thinning/compaction instead of simply
 throwing everything away. Hermes should keep that shape, but with stronger
 Supervisor/Bot2 gates.
 
-Implemented status as of `9cf4894`:
+Implemented status as of `1e8b0b4`:
 
 - initial `run` builds startup packs for Bot1/Bot2 when Bot2/review is required
   or RLM is enabled;
