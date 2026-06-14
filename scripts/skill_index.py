@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,40 @@ ROLE_ALIASES = {
     "bot2_light_if_risky": "bot2",
     "devops_if_approved": "devops",
 }
+_MANIFEST_CACHE: dict[str, tuple[int, int, float, dict[str, Any]]] = {}
+_CONTEXT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _cache_enabled() -> bool:
+    return os.environ.get("HERMES_SKILL_INDEX_CACHE", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _cache_ttl_seconds() -> int:
+    raw = os.environ.get("HERMES_SKILL_INDEX_CACHE_TTL_SECONDS", "300")
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 300
+
+
+def _context_cache_size() -> int:
+    raw = os.environ.get("HERMES_SKILL_INDEX_CONTEXT_CACHE_SIZE", "256")
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 256
+
+
+def clear_caches() -> None:
+    _MANIFEST_CACHE.clear()
+    _CONTEXT_CACHE.clear()
+
+
+def cache_stats() -> dict[str, int]:
+    return {
+        "manifest_entries": len(_MANIFEST_CACHE),
+        "context_entries": len(_CONTEXT_CACHE),
+    }
 
 
 def manifest_path(path: str | None = None) -> Path:
@@ -24,10 +60,28 @@ def manifest_path(path: str | None = None) -> Path:
 
 def load_manifest(path: str | Path | None = None) -> dict[str, Any]:
     target = manifest_path(str(path) if path else None)
+    if _cache_enabled():
+        stat = target.stat()
+        cache_key = str(target.resolve())
+        cached = _MANIFEST_CACHE.get(cache_key)
+        now = time.monotonic()
+        if cached:
+            cached_mtime_ns, cached_size, expires_at, cached_data = cached
+            if cached_mtime_ns == stat.st_mtime_ns and cached_size == stat.st_size and now <= expires_at:
+                return copy.deepcopy(cached_data)
+
     data = json.loads(target.read_text(encoding="utf-8"))
     validate_manifest(data, base_dir=target.parents[1])
     data["_manifest_path"] = str(target)
-    return data
+    if _cache_enabled():
+        stat = target.stat()
+        _MANIFEST_CACHE[str(target.resolve())] = (
+            stat.st_mtime_ns,
+            stat.st_size,
+            time.monotonic() + _cache_ttl_seconds(),
+            copy.deepcopy(data),
+        )
+    return copy.deepcopy(data)
 
 
 def validate_manifest(data: dict[str, Any], *, base_dir: Path = ROOT) -> None:
@@ -199,7 +253,41 @@ def approval_gated_items(
     return gated
 
 
-def select_skill_context(
+def _context_cache_key(
+    manifest: dict[str, Any],
+    *,
+    route: dict[str, Any],
+    include_approval_required: bool,
+) -> str:
+    manifest_path_value = str(manifest.get("_manifest_path") or manifest_path())
+    try:
+        stat = Path(manifest_path_value).stat()
+        manifest_signature: Any = [manifest_path_value, stat.st_mtime_ns, stat.st_size]
+    except OSError:
+        manifest_signature = [manifest_path_value, manifest.get("version"), len(manifest.get("skills") or [])]
+    route_signature = {
+        "task_level": route.get("task_level", ""),
+        "task_type": route.get("task_type", ""),
+        "risk_level": route.get("risk_level", ""),
+        "review_required": bool(route.get("review_required")),
+        "human_gate_required": bool(route.get("human_gate_required")),
+        "process_plan": [str(item) for item in route.get("process_plan") or []],
+        "include_approval_required": bool(include_approval_required),
+        "manifest": manifest_signature,
+    }
+    return json.dumps(route_signature, ensure_ascii=False, sort_keys=True)
+
+
+def _remember_context(cache_key: str, context: dict[str, Any]) -> None:
+    max_size = _context_cache_size()
+    if max_size <= 0:
+        return
+    while len(_CONTEXT_CACHE) >= max_size:
+        _CONTEXT_CACHE.pop(next(iter(_CONTEXT_CACHE)))
+    _CONTEXT_CACHE[cache_key] = (time.monotonic() + _cache_ttl_seconds(), copy.deepcopy(context))
+
+
+def _select_skill_context_uncached(
     manifest: dict[str, Any],
     *,
     route: dict[str, Any],
@@ -262,6 +350,41 @@ def select_skill_context(
             "skill_scripts_require_tool_gateway": bool((manifest.get("default_policy") or {}).get("scripts_require_gateway", True)),
         },
     }
+
+
+def select_skill_context(
+    manifest: dict[str, Any],
+    *,
+    route: dict[str, Any],
+    include_approval_required: bool = False,
+) -> dict[str, Any]:
+    if not _cache_enabled():
+        return _select_skill_context_uncached(
+            manifest,
+            route=route,
+            include_approval_required=include_approval_required,
+        )
+
+    cache_key = _context_cache_key(
+        manifest,
+        route=route,
+        include_approval_required=include_approval_required,
+    )
+    cached = _CONTEXT_CACHE.get(cache_key)
+    now = time.monotonic()
+    if cached:
+        expires_at, context = cached
+        if now <= expires_at:
+            return copy.deepcopy(context)
+        _CONTEXT_CACHE.pop(cache_key, None)
+
+    context = _select_skill_context_uncached(
+        manifest,
+        route=route,
+        include_approval_required=include_approval_required,
+    )
+    _remember_context(cache_key, context)
+    return copy.deepcopy(context)
 
 
 def cmd_list(args: argparse.Namespace) -> None:
