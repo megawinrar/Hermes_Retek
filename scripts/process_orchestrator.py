@@ -306,10 +306,13 @@ def cached_route_audit(
         audit = json.loads(row["audit_json"])
     except json.JSONDecodeError:
         return {}
+    original_latency_ms = int(audit.get("latency_ms") or 0)
     audit["source"] = "bot2_live_route_audit_cache"
     audit["cache_hit"] = True
     audit["cached_at"] = row["created_at"]
     audit["cache_hits"] = hits
+    audit["original_latency_ms"] = original_latency_ms
+    audit["latency_ms"] = 0
     return audit
 
 
