@@ -124,6 +124,71 @@ def capped_llm_tokens(requested: int, *, env_name: str, default_cap: int = 0) ->
     return max(1, min(requested, cap))
 
 
+TOKEN_POLICY_PROFILES: dict[str, dict[str, int]] = {
+    "L0": {"bot1": 384, "bot1_revision": 512, "bot1_self_check": 512, "bot2_verdict": 384, "bot2_repair": 384},
+    "L1": {"bot1": 512, "bot1_revision": 700, "bot1_self_check": 700, "bot2_verdict": 512, "bot2_repair": 384},
+    "L2": {"bot1": 900, "bot1_revision": 1100, "bot1_self_check": 900, "bot2_verdict": 650, "bot2_repair": 500},
+    "L3": {"bot1": 1400, "bot1_revision": 1400, "bot1_self_check": 1200, "bot2_verdict": 700, "bot2_repair": 500},
+    "L4": {"bot1": 0, "bot1_revision": 0, "bot1_self_check": 0, "bot2_verdict": 900, "bot2_repair": 700},
+}
+ROLE_ENV_TOKEN_CAPS = {
+    "bot1": "HERMES_BOT1_MAX_TOKENS",
+    "bot1_revision": "HERMES_BOT1_MAX_TOKENS",
+    "bot1_self_check": "HERMES_BOT1_MAX_TOKENS",
+    "bot2_verdict": "HERMES_BOT2_VERDICT_MAX_TOKENS",
+    "bot2_repair": "HERMES_BOT2_REPAIR_MAX_TOKENS",
+}
+
+
+def adaptive_token_budget_enabled() -> bool:
+    return os.environ.get("HERMES_ADAPTIVE_TOKEN_BUDGET", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def token_policy_level(route: dict[str, Any] | None = None) -> str:
+    route = route or {}
+    level = str(route.get("task_level") or "L3").upper()
+    if level not in TOKEN_POLICY_PROFILES:
+        level = "L3"
+    if bool(route.get("human_gate_required")):
+        return "L4"
+    return level
+
+
+def token_budget_for_role(
+    requested: int,
+    *,
+    role: str,
+    route: dict[str, Any] | None = None,
+) -> int:
+    requested = max(1, int(requested))
+    env_name = ROLE_ENV_TOKEN_CAPS.get(role, "")
+    if env_name and os.environ.get(env_name, "").strip():
+        return capped_llm_tokens(requested, env_name=env_name)
+    if not adaptive_token_budget_enabled():
+        return requested
+    level = token_policy_level(route)
+    cap = TOKEN_POLICY_PROFILES[level].get(role, 0)
+    return requested if cap <= 0 else max(1, min(requested, cap))
+
+
+def token_policy_snapshot(
+    *,
+    requested: int,
+    route: dict[str, Any] | None,
+    budgets: dict[str, int],
+) -> dict[str, Any]:
+    route = route or {}
+    return {
+        "enabled": adaptive_token_budget_enabled(),
+        "level": token_policy_level(route),
+        "route_level": str(route.get("task_level") or ""),
+        "risk_level": str(route.get("risk_level") or ""),
+        "human_gate_required": bool(route.get("human_gate_required")),
+        "requested_max_tokens": max(1, int(requested)),
+        "budgets": dict(budgets),
+    }
+
+
 def llm_http_timing(response: dict[str, Any]) -> dict[str, Any]:
     timing = response.get("_hermes_http_timing_ms") if isinstance(response, dict) else {}
     return dict(timing) if isinstance(timing, dict) else {}
@@ -631,10 +696,12 @@ def live_bot1_result(
     max_tokens: int,
     timeout: int,
     skill_context: dict[str, Any] | None = None,
+    route: dict[str, Any] | None = None,
 ) -> tuple[str, str, str]:
     import dual_bot_lab as lab
 
     cfg = lab.bothub_config()
+    bot1_max_tokens = token_budget_for_role(max_tokens, role="bot1", route=route)
     rid = lab.run_id()
     lab.add_run(rid, task, acceptance, bot1_model, "")
     started_at = time.perf_counter()
@@ -643,7 +710,7 @@ def live_bot1_result(
         api_key=cfg["api_key"],
         model=bot1_model,
         messages=lab.bot1_messages(task, acceptance, skill_context=skill_context or {}),
-        max_tokens=max_tokens,
+        max_tokens=bot1_max_tokens,
         timeout=timeout,
     )
     lab.add_message(
@@ -655,6 +722,12 @@ def live_bot1_result(
             "usage": bot1_raw.get("usage", {}),
             "latency_ms": elapsed_ms(started_at),
             "http_timing_ms": llm_http_timing(bot1_raw),
+            "completion_budget": llm_completion_budget(bot1_raw, max_tokens=bot1_max_tokens),
+            "token_policy": token_policy_snapshot(
+                requested=max_tokens,
+                route=route,
+                budgets={"bot1": bot1_max_tokens},
+            ),
         },
     )
     report = lab.write_report(
@@ -679,13 +752,19 @@ def live_dual_result(
     max_tokens: int,
     timeout: int,
     skill_context: dict[str, Any] | None = None,
+    route: dict[str, Any] | None = None,
 ) -> tuple[str, str, dict[str, Any], str]:
     import dual_bot_lab as lab
 
     cfg = lab.bothub_config()
-    bot1_max_tokens = capped_llm_tokens(max_tokens, env_name="HERMES_BOT1_MAX_TOKENS")
-    bot2_verdict_max_tokens = capped_llm_tokens(max_tokens, env_name="HERMES_BOT2_VERDICT_MAX_TOKENS", default_cap=700)
-    bot2_repair_max_tokens = capped_llm_tokens(max_tokens, env_name="HERMES_BOT2_REPAIR_MAX_TOKENS", default_cap=500)
+    token_budgets = {
+        "bot1": token_budget_for_role(max_tokens, role="bot1", route=route),
+        "bot1_revision": token_budget_for_role(max_tokens, role="bot1_revision", route=route),
+        "bot1_self_check": token_budget_for_role(max_tokens, role="bot1_self_check", route=route),
+        "bot2_verdict": token_budget_for_role(max_tokens, role="bot2_verdict", route=route),
+        "bot2_repair": token_budget_for_role(max_tokens, role="bot2_repair", route=route),
+    }
+    token_policy = token_policy_snapshot(requested=max_tokens, route=route, budgets=token_budgets)
     rid = lab.run_id()
     lab.add_run(rid, task, acceptance, bot1_model, bot2_model)
     review_cycles: list[dict[str, Any]] = []
@@ -695,6 +774,7 @@ def live_dual_result(
 
     for round_no in range(1, MAX_BOT_REVIEW_CYCLES + 1):
         if round_no == 1:
+            bot1_max_tokens = token_budgets["bot1"]
             bot1_messages = lab.bot1_messages(
                 task,
                 acceptance,
@@ -702,6 +782,7 @@ def live_dual_result(
             )
             bot1_speaker = "Bot#1"
         else:
+            bot1_max_tokens = token_budgets["bot1_revision"]
             bot1_messages = lab.bot1_revision_messages(
                 task,
                 acceptance,
@@ -752,7 +833,7 @@ def live_dual_result(
                     round_no,
                     skill_context=skill_context_for_role(skill_context or {}, "bot1"),
                 ),
-                max_tokens=bot1_max_tokens,
+                max_tokens=token_budgets["bot1_self_check"],
                 timeout=timeout,
             )
             self_check_latency_ms = elapsed_ms(self_check_started_at)
@@ -763,7 +844,11 @@ def live_dual_result(
                 f"Bot#1-self-check-{round_no}",
                 bot1_model,
                 self_check,
-                {"usage": self_check_usage, "latency_ms": self_check_latency_ms, "http_timing_ms": self_check_http_timing},
+                {
+                    "usage": self_check_usage,
+                    "latency_ms": self_check_latency_ms,
+                    "http_timing_ms": self_check_http_timing,
+                },
             )
             bot1 = self_check
             fix_closure_checklist = [
@@ -786,7 +871,7 @@ def live_dual_result(
                 bot1,
                 skill_context=skill_context_for_role(skill_context or {}, "bot2"),
             ),
-            max_tokens=bot2_verdict_max_tokens,
+            max_tokens=token_budgets["bot2_verdict"],
             timeout=timeout,
         )
         bot2_latency_ms = elapsed_ms(bot2_started_at)
@@ -812,7 +897,7 @@ def live_dual_result(
                 api_key=cfg["api_key"],
                 model=bot2_model,
                 messages=lab.bot2_repair_messages(task, acceptance, bot1, bot2),
-                max_tokens=bot2_repair_max_tokens,
+                max_tokens=token_budgets["bot2_repair"],
                 timeout=timeout,
             )
             bot2_repair_latency_ms = elapsed_ms(bot2_repair_started_at)
@@ -881,15 +966,18 @@ def live_dual_result(
             "completion_budget": {
                 "bot1": llm_completion_budget(bot1_raw, max_tokens=bot1_max_tokens),
                 "bot1_self_check": (
-                    llm_completion_budget(self_check_raw, max_tokens=bot1_max_tokens) if self_check else {}
+                    llm_completion_budget(self_check_raw, max_tokens=token_budgets["bot1_self_check"])
+                    if self_check
+                    else {}
                 ),
-                "bot2": llm_completion_budget(bot2_raw, max_tokens=bot2_verdict_max_tokens),
+                "bot2": llm_completion_budget(bot2_raw, max_tokens=token_budgets["bot2_verdict"]),
                 "bot2_repair": (
-                    llm_completion_budget(bot2_repair_raw, max_tokens=bot2_repair_max_tokens)
+                    llm_completion_budget(bot2_repair_raw, max_tokens=token_budgets["bot2_repair"])
                     if bot2_repair_latency_ms
                     else {}
                 ),
             },
+            "token_policy": token_policy,
             "loop_status": verdict.get("loop_status", ""),
             "repair_loop_exhausted": loop_exhausted,
             "fix_closure_checklist": fix_closure_checklist,
@@ -905,6 +993,7 @@ def live_dual_result(
             break
 
     verdict["review_cycles"] = review_cycles
+    verdict["token_policy"] = token_policy
     final_fix_closure = next((cycle.get("fix_closure_checklist") for cycle in reversed(review_cycles) if cycle.get("fix_closure_checklist")), [])
     verdict["fix_closure_checklist"] = final_fix_closure
     report = lab.write_report(
@@ -931,13 +1020,18 @@ def live_bot1_revision_result(
     max_tokens: int,
     timeout: int,
     skill_context: dict[str, Any] | None = None,
+    route: dict[str, Any] | None = None,
 ) -> tuple[str, str, dict[str, Any], str]:
     import dual_bot_lab as lab
 
     cfg = lab.bothub_config()
-    bot1_max_tokens = capped_llm_tokens(max_tokens, env_name="HERMES_BOT1_MAX_TOKENS")
-    bot2_verdict_max_tokens = capped_llm_tokens(max_tokens, env_name="HERMES_BOT2_VERDICT_MAX_TOKENS", default_cap=700)
-    bot2_repair_max_tokens = capped_llm_tokens(max_tokens, env_name="HERMES_BOT2_REPAIR_MAX_TOKENS", default_cap=500)
+    token_budgets = {
+        "bot1_revision": token_budget_for_role(max_tokens, role="bot1_revision", route=route),
+        "bot1_self_check": token_budget_for_role(max_tokens, role="bot1_self_check", route=route),
+        "bot2_verdict": token_budget_for_role(max_tokens, role="bot2_verdict", route=route),
+        "bot2_repair": token_budget_for_role(max_tokens, role="bot2_repair", route=route),
+    }
+    token_policy = token_policy_snapshot(requested=max_tokens, route=route, budgets=token_budgets)
     rid = lab.run_id()
     lab.add_run(rid, task, acceptance, bot1_model, bot2_model)
     previous_cycles = list(prior_verdict.get("review_cycles") or [])
@@ -957,7 +1051,7 @@ def live_bot1_revision_result(
             round_no,
             skill_context=skill_context_for_role(skill_context or {}, "bot1"),
         ),
-        max_tokens=bot1_max_tokens,
+        max_tokens=token_budgets["bot1_revision"],
         timeout=timeout,
     )
     bot1_latency_ms = elapsed_ms(bot1_started_at)
@@ -986,7 +1080,7 @@ def live_bot1_revision_result(
             round_no,
             skill_context=skill_context_for_role(skill_context or {}, "bot1"),
         ),
-        max_tokens=bot1_max_tokens,
+        max_tokens=token_budgets["bot1_self_check"],
         timeout=timeout,
     )
     self_check_latency_ms = elapsed_ms(self_check_started_at)
@@ -1022,7 +1116,7 @@ def live_bot1_revision_result(
             bot1,
             skill_context=skill_context_for_role(skill_context or {}, "bot2"),
         ),
-        max_tokens=bot2_verdict_max_tokens,
+        max_tokens=token_budgets["bot2_verdict"],
         timeout=timeout,
     )
     bot2_latency_ms = elapsed_ms(bot2_started_at)
@@ -1049,7 +1143,7 @@ def live_bot1_revision_result(
             api_key=cfg["api_key"],
             model=bot2_model,
             messages=lab.bot2_repair_messages(task, acceptance, bot1, bot2),
-            max_tokens=bot2_repair_max_tokens,
+            max_tokens=token_budgets["bot2_repair"],
             timeout=timeout,
         )
         bot2_repair_latency_ms = elapsed_ms(bot2_repair_started_at)
@@ -1104,20 +1198,22 @@ def live_bot1_revision_result(
             "bot2_repair": bot2_repair_http_timing,
         },
         "completion_budget": {
-            "bot1": llm_completion_budget(bot1_raw, max_tokens=bot1_max_tokens),
-            "bot1_self_check": llm_completion_budget(self_check_raw, max_tokens=bot1_max_tokens),
-            "bot2": llm_completion_budget(bot2_raw, max_tokens=bot2_verdict_max_tokens),
+            "bot1": llm_completion_budget(bot1_raw, max_tokens=token_budgets["bot1_revision"]),
+            "bot1_self_check": llm_completion_budget(self_check_raw, max_tokens=token_budgets["bot1_self_check"]),
+            "bot2": llm_completion_budget(bot2_raw, max_tokens=token_budgets["bot2_verdict"]),
             "bot2_repair": (
-                llm_completion_budget(bot2_repair_raw, max_tokens=bot2_repair_max_tokens)
+                llm_completion_budget(bot2_repair_raw, max_tokens=token_budgets["bot2_repair"])
                 if bot2_repair_latency_ms
                 else {}
             ),
         },
+        "token_policy": token_policy,
         "fix_closure_checklist": fix_closure_checklist,
         "bot2_repair_attempted": bool(verdict.get("repair_attempted")),
         "bot2_repair_status": verdict.get("repair_status", ""),
     }
     verdict["review_cycles"] = previous_cycles + [cycle]
+    verdict["token_policy"] = token_policy
     verdict["fix_closure_checklist"] = fix_closure_checklist
     report = lab.write_report(
         run_id_value=rid,
@@ -1494,6 +1590,7 @@ def continue_process(args: argparse.Namespace) -> dict[str, Any]:
                 max_tokens=args.max_tokens,
                 timeout=args.timeout,
                 skill_context=skill_context,
+                route=route,
             )
         else:
             bot1_result = dry_bot1_revision_result(task, acceptance, previous_answer, prior_verdict, route)
@@ -1740,6 +1837,7 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
                 max_tokens=args.max_tokens,
                 timeout=args.timeout,
                 skill_context=skill_context,
+                route=route,
             )
         elif args.live_dual:
             bot1_result, bot2_session_id, report_path = live_bot1_result(
@@ -1749,6 +1847,7 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
                 max_tokens=args.max_tokens,
                 timeout=args.timeout,
                 skill_context=skill_context_for_role(skill_context, "bot1"),
+                route=route,
             )
         else:
             bot1_result = args.bot1_result or dry_bot1_result(task, acceptance, route)

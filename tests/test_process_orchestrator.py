@@ -100,6 +100,43 @@ def test_process_route_cache_returns_isolated_copies() -> None:
     assert process_orchestrator.runtime_cache_stats()["route_entries"] >= 1
 
 
+def test_adaptive_token_budget_scales_by_task_level(monkeypatch) -> None:
+    monkeypatch.delenv("HERMES_BOT1_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("HERMES_BOT2_VERDICT_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("HERMES_ADAPTIVE_TOKEN_BUDGET", raising=False)
+
+    assert process_orchestrator.token_budget_for_role(
+        1400,
+        role="bot1",
+        route={"task_level": "L1", "risk_level": "low"},
+    ) == 512
+    assert process_orchestrator.token_budget_for_role(
+        1400,
+        role="bot1",
+        route={"task_level": "L3", "risk_level": "high"},
+    ) == 1400
+    assert process_orchestrator.token_budget_for_role(
+        1400,
+        role="bot1",
+        route={"task_level": "L4", "human_gate_required": True},
+    ) == 1400
+    assert process_orchestrator.token_budget_for_role(
+        1400,
+        role="bot2_verdict",
+        route={"task_level": "L4", "human_gate_required": True},
+    ) == 900
+
+
+def test_token_budget_env_override_beats_adaptive_policy(monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_BOT1_MAX_TOKENS", "1200")
+
+    assert process_orchestrator.token_budget_for_role(
+        1400,
+        role="bot1",
+        route={"task_level": "L1", "risk_level": "low"},
+    ) == 1200
+
+
 def test_process_reject_creates_human_escalation(tmp_path: Path) -> None:
     process_store = tmp_path / "process.db"
     supervisor_store = tmp_path / "supervisor.db"
