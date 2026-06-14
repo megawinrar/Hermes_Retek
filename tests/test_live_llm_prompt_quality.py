@@ -57,6 +57,29 @@ def test_bot1_l2_prompt_uses_compact_math_output_contract() -> None:
     assert "finish without truncation" in combined
 
 
+def test_bot1_prompt_includes_deterministic_tool_results() -> None:
+    messages = dual_bot_lab.bot1_messages(
+        "Score suppliers",
+        "Need ranked suppliers.",
+        skill_context={
+            "role": "bot1",
+            "tool_results": [
+                {
+                    "tool": "supplier_score_calculator",
+                    "status": "ok",
+                    "winner": "Alpha",
+                    "ranking": ["Alpha", "Gamma", "Beta"],
+                }
+            ],
+        },
+    )
+    combined = "\n".join(message["content"] for message in messages)
+
+    assert "supplier_score_calculator" in combined
+    assert '"winner": "Alpha"' in combined
+    assert '"ranking": [' in combined
+
+
 def test_bot2_prompt_does_not_require_future_supervisor_transcript() -> None:
     messages = dual_bot_lab.bot2_messages(
         "Live LLM smoke for CRM Ретек supplier analysis",

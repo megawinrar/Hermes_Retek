@@ -22,6 +22,7 @@ from human_notification import (
 )
 from skill_index import load_manifest as load_skill_manifest
 from skill_index import select_skill_context
+from supplier_score_calculator import build_tool_result as build_supplier_score_result
 from supervisor_common import (
     BOT2_VERDICT_STATUSES,
     INVALID_BOT2_STATUS,
@@ -451,12 +452,23 @@ def build_route_skill_context(route: dict[str, Any], *, include_approval_require
     )
 
 
+def deterministic_tool_results_for_route(task: str, route: dict[str, Any]) -> list[dict[str, Any]]:
+    task_type = str(route.get("task_type") or "")
+    if task_type != "supplier_price_deadline_analysis":
+        return []
+    result = build_supplier_score_result(task, route)
+    if result.get("status") == "not_applicable":
+        return []
+    return [result]
+
+
 def skill_context_for_role(skill_context: dict[str, Any], role: str) -> dict[str, Any]:
     return {
         "role": role,
         "skills": (skill_context.get("roles") or {}).get(role, []),
         "gated_skills": (skill_context.get("gated_roles") or {}).get(role, []),
         "task_tags": skill_context.get("task_tags", []),
+        "tool_results": skill_context.get("tool_results", []),
         "runtime_contract": skill_context.get("runtime_contract", {}),
     }
 
@@ -1907,8 +1919,13 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
     initial_route = classify_task(task)
     route_audit = route_audit_from_args(args, task, initial_route)
     route = apply_classification_audit(initial_route, route_audit) if route_audit else initial_route
-    skill_context = build_route_skill_context(route)
     route = dict(route)
+    skill_context = build_route_skill_context(route)
+    deterministic_tool_results = deterministic_tool_results_for_route(task, route)
+    if deterministic_tool_results:
+        skill_context = dict(skill_context)
+        skill_context["tool_results"] = deterministic_tool_results
+        route["tool_results"] = deterministic_tool_results
     route["skill_context"] = skill_context
     supervisor_created = create_task(task, store_path=args.supervisor_store)
     supervisor_task_id = supervisor_created["task_id"]
@@ -1921,6 +1938,22 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
     )
     add_process_event(pid, "routed", route, store_path=args.process_store)
     add_process_event(pid, "skill_context_selected", skill_context, store_path=args.process_store)
+    if deterministic_tool_results:
+        tool_status = "completed" if any(item.get("status") == "ok" for item in deterministic_tool_results) else "skipped"
+        add_process_event(
+            pid,
+            "deterministic_tool_results",
+            {"tool_results": deterministic_tool_results},
+            store_path=args.process_store,
+        )
+        add_assignment(
+            pid,
+            "deterministic_tools",
+            "pre_bot1",
+            tool_status,
+            {"tool_results": deterministic_tool_results},
+            store_path=args.process_store,
+        )
     add_assignment(pid, "router", "intake", "completed", route, store_path=args.process_store)
     add_assignment(pid, "skill_index", "context_selection", "completed", skill_context, store_path=args.process_store)
     add_assignment(pid, "supervisor", "create_contract", "completed", supervisor_created, store_path=args.process_store)

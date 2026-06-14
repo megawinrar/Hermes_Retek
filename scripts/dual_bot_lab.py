@@ -223,6 +223,7 @@ def format_skill_context(skill_context: dict[str, Any] | None) -> str:
             }
             for item in skill_context.get("gated_skills", [])
         ],
+        "tool_results": skill_context.get("tool_results", []),
         "runtime_contract": skill_context.get("runtime_contract", {}),
     }
     return json.dumps(compact, ensure_ascii=False, indent=2, sort_keys=True)
