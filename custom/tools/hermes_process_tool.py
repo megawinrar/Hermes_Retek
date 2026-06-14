@@ -225,6 +225,15 @@ def summarize_payload(action: str, payload: Any, *, include_raw: bool = False) -
     next_action = summary.get("next_action") or payload.get("next_action") or {}
     status = _first_nonempty(summary.get("status"), payload.get("status"))
     human_required = bool(human.get("required") or status == "awaiting_human_decision" or human_notification)
+    if "required" in bot2:
+        bot2_required = bool(bot2.get("required"))
+    else:
+        bot2_required = bool(
+            route.get("review_required")
+            or route.get("human_gate_required")
+            or route.get("task_level") in {"L3", "L4"}
+        )
+    bot2_session_id = _first_nonempty(bot2.get("session_id"), payload.get("bot2_session_id")) if bot2_required else ""
 
     result = {
         "action": action,
@@ -235,8 +244,8 @@ def summarize_payload(action: str, payload: Any, *, include_raw: bool = False) -
         "task_type": _first_nonempty(summary.get("task_type"), route.get("task_type")),
         "risk_level": _first_nonempty(summary.get("risk_level"), route.get("risk_level")),
         "bot2": {
-            "required": bool(bot2.get("required", bool(payload.get("bot2_session_id")))),
-            "session_id": _first_nonempty(bot2.get("session_id"), payload.get("bot2_session_id")),
+            "required": bot2_required,
+            "session_id": bot2_session_id,
             "status": _first_nonempty(bot2.get("status"), bot2.get("status")),
             "summary": _first_nonempty(bot2.get("summary")),
             "risks": bot2.get("risks", []),
