@@ -12,6 +12,7 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import process_orchestrator  # noqa: E402
+import process_context_pack  # noqa: E402
 import rlm_store  # noqa: E402
 
 
@@ -489,9 +490,18 @@ def test_run_process_records_bounded_parallel_orchestration_policy(tmp_path: Pat
     )
     event_types = {event["event_type"] for event in details["events"]}
     scheduler = [item for item in details["assignments"] if item["worker"] == "parallel_scheduler"][-1]
+    context_assignment = [item for item in details["assignments"] if item["worker"] == "context_engineer"][-1]
     assert "parallel_orchestration_policy" in event_types
+    assert "durable_context_pack_built" in event_types
     assert scheduler["status"] == "bounded"
     assert scheduler["output"]["workspace"]["merge_owner"] == "supervisor"
+    assert context_assignment["phase"] == "session_startup"
+    assert context_assignment["output"]["session_strategy"] == process_context_pack.SESSION_STRATEGY
+    assert set(context_assignment["output"]["packs"]) == {"bot1", "bot2"}
+    assert (
+        payload["route"]["skill_context"]["role_context_packs"]["bot1"]["session_strategy"]
+        == process_context_pack.SESSION_STRATEGY
+    )
     assert details["summary"]["parallel_orchestration"]["max_parallel_agents"] == 2
 
 
@@ -905,6 +915,11 @@ def test_process_live_dual_repairs_invalid_bot2_json_in_main_orchestrator(monkey
     assert payload["bot2_verdict"]["repair_attempted"] is True
     assert payload["bot2_verdict"]["repair_status"] == "repaired"
     assert speakers == ["Bot#1", "Bot#2-1", "Bot#2-repair-1"]
+    assert len(calls[0]) == 2
+    assert len(calls[1]) == 2
+    assert process_context_pack.SESSION_STRATEGY in calls[0][1]["content"]
+    assert process_context_pack.SESSION_STRATEGY in calls[1][1]["content"]
+    assert '"startup_context_pack"' in calls[0][1]["content"]
     assert "Return ONLY valid JSON matching this schema" in calls[2][1]["content"]
 
     details = process_orchestrator.process_details(
@@ -915,6 +930,7 @@ def test_process_live_dual_repairs_invalid_bot2_json_in_main_orchestrator(monkey
     assert details["summary"]["bot2"]["repair_attempted"] is True
     assert details["summary"]["bot2"]["repair_status"] == "repaired"
     assert "bot2_json_repair" in {event["event_type"] for event in details["events"]}
+    assert "durable_context_pack_built" in {event["event_type"] for event in details["events"]}
     activity_events = [event for event in details["events"] if event["event_type"] == "bot_activity"]
     assert [event["payload"]["phase"] for event in activity_events] == ["execution", "quality_gate", "json_repair"]
     assert [event["payload"]["actor"] for event in activity_events] == ["bot1", "bot2", "bot2"]
@@ -1488,14 +1504,24 @@ def test_process_continue_after_yes_runs_bot1_revision_and_bot2_review(tmp_path:
     assert details["summary"]["status"] == "approved"
     assert details["summary"]["current_phase"] == "approved"
     assert details["summary"]["next_action"]["action"] == "completed_after_bot1_revision"
+    context_events = [event for event in details["events"] if event["event_type"] == "durable_context_pack_built"]
+    assert len(context_events) >= 2
+    assert context_events[-1]["payload"]["roles"]["bot1"]["required_fix_count"] == 1
     rlm_events = [event for event in details["events"] if event["event_type"] == "rlm_records_written"]
     assert len(rlm_events) >= 2
     assert rlm_store.search_records(process_id=payload["process_id"], store_path=rlm_path)
+    context_assignments = [item for item in details["assignments"] if item["worker"] == "context_engineer"]
+    assert context_assignments[-1]["output"]["packs"]["bot1"]["phase"] == "human_continue"
+    assert context_assignments[-1]["output"]["packs"]["bot1"]["required_fixes"] == ["Add rollback evidence and rerun tests."]
     revision_assignments = [
         item for item in details["assignments"] if item["worker"] == "bot1" and item["phase"] == "revision"
     ]
     assert [item["status"] for item in revision_assignments][-2:] == ["running", "completed"]
     assert revision_assignments[-1]["output"]["mode"] == "dry"
+    assert revision_assignments[-1]["output"]["skills"]["startup_context_pack"]["phase"] == "human_continue"
+    assert revision_assignments[-1]["output"]["skills"]["startup_context_pack"]["required_fixes"] == [
+        "Add rollback evidence and rerun tests."
+    ]
     assert "bot1_revision" in {event["event_type"] for event in details["events"]}
 
     transcript = process_orchestrator.process_transcript(

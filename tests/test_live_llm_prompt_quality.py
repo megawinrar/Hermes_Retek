@@ -80,6 +80,34 @@ def test_bot1_prompt_includes_deterministic_tool_results() -> None:
     assert '"ranking": [' in combined
 
 
+def test_bot_prompt_includes_startup_context_pack_without_cookie_values() -> None:
+    cookie = "cookie_" + "C" * 40
+    messages = dual_bot_lab.bot1_messages(
+        "Change restart guard",
+        "Need tests.",
+        skill_context={
+            "role": "bot1",
+            "startup_context_pack": {
+                "session_strategy": "fresh_session_with_durable_context_pack",
+                "required_fixes": ["Add rollback evidence."],
+                "rlm_context": {
+                    "context": f"[7] process_summary Restart guard: use safe restart auth.sid={cookie}",
+                    "records": [],
+                    "estimated_tokens": 12,
+                    "token_budget": 120,
+                },
+            },
+        },
+    )
+    combined = "\n".join(message["content"] for message in messages)
+
+    assert "fresh_session_with_durable_context_pack" in combined
+    assert "Add rollback evidence." in combined
+    assert "Restart guard" in combined
+    assert cookie not in combined
+    assert "[REDACTED]" in combined
+
+
 def test_bot2_prompt_does_not_require_future_supervisor_transcript() -> None:
     messages = dual_bot_lab.bot2_messages(
         "Live LLM smoke for CRM Ретек supplier analysis",

@@ -22,6 +22,14 @@ SECRET_PATTERNS: tuple[SecretPattern, ...] = (
     SecretPattern("telegram_bot_token", re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{30,}\b")),
     SecretPattern("bearer_header", re.compile(r"Authorization:\s*Bearer\s+[A-Za-z0-9_.-]{20,}", re.I)),
     SecretPattern(
+        "cookie_assignment",
+        re.compile(
+            r"(?:(?:\b(?:auth\.sid|auth\.check)\b|\.AspNetCore\.Cookies)\s*(?:=|:)\s*['\"]?[A-Za-z0-9_.:%-]{16,}['\"]?"
+            r"|\b(?:sessionid|session_id|cookie)\s*(?:=|:)\s*['\"][^'\"\s]{16,}['\"])",
+            re.I,
+        ),
+    ),
+    SecretPattern(
         "secret_assignment",
         re.compile(
             r"\b[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD)\s*(?:=|:)\s*['\"]?(?!\$\{?)[A-Za-z0-9_.:-]{20,}['\"]?",

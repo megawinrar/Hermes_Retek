@@ -225,8 +225,9 @@ def format_skill_context(skill_context: dict[str, Any] | None) -> str:
         ],
         "tool_results": skill_context.get("tool_results", []),
         "runtime_contract": skill_context.get("runtime_contract", {}),
+        "startup_context_pack": skill_context.get("startup_context_pack", {}),
     }
-    return json.dumps(compact, ensure_ascii=False, indent=2, sort_keys=True)
+    return json.dumps(redact_payload(compact), ensure_ascii=False, indent=2, sort_keys=True)
 
 
 def utc_now() -> str:

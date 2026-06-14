@@ -20,6 +20,7 @@ from human_notification import (
     dispatch_human_notification,
     redact_payload,
 )
+import process_context_pack
 import process_rlm_memory
 from skill_index import load_manifest as load_skill_manifest
 from skill_index import select_skill_context
@@ -626,7 +627,58 @@ def skill_context_for_role(skill_context: dict[str, Any], role: str) -> dict[str
         "task_tags": skill_context.get("task_tags", []),
         "tool_results": skill_context.get("tool_results", []),
         "runtime_contract": skill_context.get("runtime_contract", {}),
+        "startup_context_pack": (skill_context.get("role_context_packs") or {}).get(role, {}),
     }
+
+
+def context_pack_roles_for_route(route: dict[str, Any], *, rlm_enabled: bool = False) -> list[str]:
+    roles: list[str] = []
+    if route_requires_bot1(route) and (rlm_enabled or route_requires_bot2(route)):
+        roles.append("bot1")
+    if route_requires_bot2(route):
+        roles.append("bot2")
+    return roles
+
+
+def build_startup_context_packs_for_process(
+    *,
+    args: argparse.Namespace,
+    roles: list[str],
+    process_id_value: str,
+    task: str,
+    acceptance: str,
+    route: dict[str, Any],
+    skill_context: dict[str, Any],
+    phase: str,
+    events: list[dict[str, Any]] | None = None,
+    assignments: list[dict[str, Any]] | None = None,
+    supervisor_state: dict[str, Any] | None = None,
+    previous_answer: str = "",
+    prior_verdict: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    if not roles:
+        return {}
+    rlm_config = process_rlm_memory.config_from_args(args)
+    workspace = route.get("parallel_orchestration", {}).get("workspace", {}) if isinstance(route, dict) else {}
+    workspace_root = str(workspace.get("root") or AGENT_WORKSPACE_ROOT)
+    return process_context_pack.build_role_context_packs(
+        roles=roles,
+        process_id=process_id_value,
+        task=task,
+        acceptance=acceptance,
+        route=route,
+        skill_context=skill_context,
+        phase=phase,
+        events=events or [],
+        assignments=assignments or [],
+        supervisor_state=supervisor_state or {},
+        previous_answer=previous_answer,
+        prior_verdict=prior_verdict or {},
+        rlm_store_path=rlm_config.store_path,
+        rlm_enabled=rlm_config.enabled,
+        workspace_root=workspace_root,
+        token_budget=process_context_pack.startup_context_token_budget(getattr(args, "max_tokens", 0)),
+    )
 
 
 def maybe_write_rlm_records_for_process(
@@ -2091,6 +2143,41 @@ def continue_process(args: argparse.Namespace) -> dict[str, Any]:
         process_store=args.process_store,
         supervisor_store=args.supervisor_store,
     )
+    context_pack_roles = context_pack_roles_for_route(
+        route,
+        rlm_enabled=process_rlm_memory.config_from_args(args).enabled,
+    )
+    role_context_packs = build_startup_context_packs_for_process(
+        args=args,
+        roles=context_pack_roles,
+        process_id_value=args.process_id,
+        task=task,
+        acceptance=acceptance,
+        route=route,
+        skill_context=skill_context,
+        phase="human_continue",
+        events=events,
+        assignments=list(details.get("assignments") or []),
+        supervisor_state=supervisor,
+        previous_answer=previous_answer,
+        prior_verdict=prior_verdict,
+    )
+    if role_context_packs:
+        skill_context = process_context_pack.attach_role_context_packs(skill_context, role_context_packs)
+        add_process_event(
+            args.process_id,
+            "durable_context_pack_built",
+            process_context_pack.event_payload(role_context_packs),
+            store_path=args.process_store,
+        )
+        add_assignment(
+            args.process_id,
+            "context_engineer",
+            "session_startup",
+            "completed",
+            process_context_pack.assignment_payload(role_context_packs),
+            store_path=args.process_store,
+        )
 
     add_process_event(
         args.process_id,
@@ -2378,6 +2465,21 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
     pid = process_id()
     parallel_orchestration = bounded_parallel_orchestration_policy(route, process_id_value=pid, args=args)
     route["parallel_orchestration"] = parallel_orchestration
+    rlm_config = process_rlm_memory.config_from_args(args)
+    context_pack_roles = context_pack_roles_for_route(route, rlm_enabled=rlm_config.enabled)
+    role_context_packs = build_startup_context_packs_for_process(
+        args=args,
+        roles=context_pack_roles,
+        process_id_value=pid,
+        task=task,
+        acceptance=acceptance,
+        route=route,
+        skill_context=skill_context,
+        phase="initial",
+    )
+    if role_context_packs:
+        skill_context = process_context_pack.attach_role_context_packs(skill_context, role_context_packs)
+        route["skill_context"] = skill_context
     pid = create_process_run(
         task=task,
         acceptance=acceptance,
@@ -2389,6 +2491,13 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
     add_process_event(pid, "routed", route, store_path=args.process_store)
     add_process_event(pid, "skill_context_selected", skill_context, store_path=args.process_store)
     add_process_event(pid, "parallel_orchestration_policy", parallel_orchestration, store_path=args.process_store)
+    if role_context_packs:
+        add_process_event(
+            pid,
+            "durable_context_pack_built",
+            process_context_pack.event_payload(role_context_packs),
+            store_path=args.process_store,
+        )
     bot_activity_recorder = make_bot_activity_recorder(
         process_id_value=pid,
         supervisor_task_id=supervisor_task_id,
@@ -2403,6 +2512,15 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
         parallel_orchestration,
         store_path=args.process_store,
     )
+    if role_context_packs:
+        add_assignment(
+            pid,
+            "context_engineer",
+            "session_startup",
+            "completed",
+            process_context_pack.assignment_payload(role_context_packs),
+            store_path=args.process_store,
+        )
     if deterministic_tool_results:
         tool_status = "completed" if any(item.get("status") == "ok" for item in deterministic_tool_results) else "skipped"
         add_process_event(
