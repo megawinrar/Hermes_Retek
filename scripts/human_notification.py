@@ -83,6 +83,24 @@ def format_human_notification(payload: dict[str, Any]) -> str:
     return redact_text("\n".join(lines))
 
 
+def build_human_notification_buttons(payload: dict[str, Any]) -> dict[str, Any]:
+    process_id = str(payload.get("process_id") or "").strip()
+    if not process_id:
+        return {}
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "YES: return Bot#1 to fixes", "callback_data": f"hp:y:{process_id}"},
+                {"text": "NO: accept Bot#1", "callback_data": f"hp:n:{process_id}"},
+            ],
+            [
+                {"text": "Show process", "callback_data": f"hp:s:{process_id}"},
+                {"text": "Transcript", "callback_data": f"hp:t:{process_id}"},
+            ],
+        ]
+    }
+
+
 def dispatch_human_notification(
     payload: dict[str, Any],
     *,
@@ -96,10 +114,19 @@ def dispatch_human_notification(
     if not telegram:
         return {"mode": "record_only", "telegram_requested": False, "telegram_delivered": False, "text_chars": len(text)}
     try:
-        from devlog import send_telegram
+        from devlog import send_telegram_message
 
-        delivered = bool(send_telegram(text))
-        return {"mode": "telegram", "telegram_requested": True, "telegram_delivered": delivered, "text_chars": len(text)}
+        buttons = build_human_notification_buttons(safe_payload)
+        delivery = send_telegram_message(text, reply_markup=buttons or None)
+        return {
+            "mode": "telegram_buttons" if buttons else "telegram",
+            "telegram_requested": True,
+            "telegram_delivered": bool(delivery.get("delivered")),
+            "text_chars": len(text),
+            "buttons": bool(buttons),
+            "message_id": delivery.get("message_id"),
+            "error": delivery.get("error", ""),
+        }
     except Exception as exc:  # pragma: no cover - defensive logging path
         return {
             "mode": "telegram",

@@ -7,17 +7,40 @@ import argparse
 import json
 import os
 import subprocess
+from typing import Any
 
 from supervisor_common import add_event
 
 
-def send_telegram(text: str) -> bool:
+def telegram_chat_id() -> str:
+    explicit = (
+        os.environ.get("BOT2_DEVLOG_CHAT_ID")
+        or os.environ.get("TELEGRAM_SUPERVISOR_CHAT_ID")
+        or os.environ.get("TELEGRAM_CHAT_ID")
+        or ""
+    ).strip()
+    if explicit:
+        return explicit
+    allowed_users = os.environ.get("TELEGRAM_ALLOWED_USERS", "")
+    return next((item.strip() for item in allowed_users.split(",") if item.strip()), "")
+
+
+def send_telegram_message(
+    text: str,
+    *,
+    reply_markup: dict[str, Any] | None = None,
+    parse_mode: str | None = None,
+) -> dict[str, Any]:
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("BOT2_DEVLOG_CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID", "")
+    chat_id = telegram_chat_id()
     if not token or not chat_id:
-        return False
+        return {"delivered": False, "error": "missing_telegram_token_or_chat_id", "chat_id": bool(chat_id)}
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     result = subprocess.run(
         [
             "curl",
@@ -36,7 +59,24 @@ def send_telegram(text: str) -> bool:
         capture_output=True,
         check=False,
     )
-    return result.returncode == 0
+    response: dict[str, Any] = {}
+    if result.stdout.strip():
+        try:
+            response = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            response = {"raw": result.stdout.strip()[:500]}
+    delivered = result.returncode == 0 and bool(response.get("ok", result.returncode == 0))
+    message = response.get("result") if isinstance(response.get("result"), dict) else {}
+    return {
+        "delivered": delivered,
+        "chat_id": chat_id,
+        "message_id": message.get("message_id"),
+        "error": "" if delivered else response.get("description", result.stderr.strip()),
+    }
+
+
+def send_telegram(text: str) -> bool:
+    return bool(send_telegram_message(text).get("delivered"))
 
 
 def cmd_send(args: argparse.Namespace) -> None:

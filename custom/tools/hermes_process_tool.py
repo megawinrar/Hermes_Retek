@@ -126,9 +126,9 @@ def build_command(args: dict[str, Any]) -> list[str]:
             cmd.append("--live-route-audit")
         if _as_bool(args.get("no_route_audit_cache"), False):
             cmd.append("--no-route-audit-cache")
-        if _as_bool(args.get("notify_telegram"), False):
+        if _as_bool(args.get("notify_telegram"), True):
             cmd.append("--notify-telegram")
-        if _as_bool(args.get("notification_dry_run"), True):
+        if _as_bool(args.get("notification_dry_run"), False):
             cmd.append("--notification-dry-run")
         return cmd
 
@@ -330,8 +330,8 @@ TOOL_SCHEMA = {
             "live_dual": {"type": "boolean", "default": True, "description": "Use real Bot#1/Bot#2 LLM calls."},
             "live_route_audit": {"type": "boolean", "default": True, "description": "Let Bot#2 audit risky route classifications."},
             "no_route_audit_cache": {"type": "boolean", "default": False},
-            "notify_telegram": {"type": "boolean", "default": False, "description": "Also send human-gate notification through DevLog Telegram settings."},
-            "notification_dry_run": {"type": "boolean", "default": True},
+            "notify_telegram": {"type": "boolean", "default": True, "description": "Send human-gate notification with Telegram Supervisor buttons when human decision is required."},
+            "notification_dry_run": {"type": "boolean", "default": False},
             "bot1_model": {"type": "string", "default": "deepseek-v4-flash"},
             "bot2_model": {"type": "string", "default": "gpt-5.3-codex"},
             "timeout": {"type": "integer", "default": 240, "minimum": 30, "maximum": 900},
