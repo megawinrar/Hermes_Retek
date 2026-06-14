@@ -167,6 +167,7 @@ def select_skills(
     level: str,
     role: str | None = None,
     include_approval_required: bool = False,
+    preferred_tags: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     policy = (manifest.get("level_policy") or {}).get(level)
     if not policy:
@@ -178,6 +179,7 @@ def select_skills(
     forbidden_tags = set(policy.get("forbidden_tags") or [])
     autoload = set(policy.get("autoload_skills") or [])
     approval_only = set(policy.get("approval_only_skills") or [])
+    preferred = set(preferred_tags or [])
 
     selected: list[dict[str, Any]] = []
     for item in manifest["skills"]:
@@ -195,6 +197,8 @@ def select_skills(
         if name in approval_only and not include_approval_required:
             continue
         if item.get("load_policy") == "approval_required" and not include_approval_required:
+            continue
+        if item.get("load_policy") == "on_demand" and name not in autoload and not tags.intersection(preferred):
             continue
         if name in autoload or role:
             selected.append(item)
@@ -310,6 +314,7 @@ def _select_skill_context_uncached(
                 level=level,
                 role=role,
                 include_approval_required=include_approval_required,
+                preferred_tags=preferred_tags,
             ),
             preferred_tags=preferred_tags,
         )
@@ -399,6 +404,7 @@ def cmd_select(args: argparse.Namespace) -> None:
         level=args.level,
         role=args.role or None,
         include_approval_required=args.include_approval_required,
+        preferred_tags=task_tags(manifest, args.task_type),
     )
     print(json.dumps(as_output(selected, preferred_tags=task_tags(manifest, args.task_type)), ensure_ascii=False, indent=2, sort_keys=True))
 

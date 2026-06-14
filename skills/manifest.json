@@ -18,7 +18,7 @@
     "github_lookup": ["github", "review", "pull-request"],
     "simple_text_task": ["implementation"],
     "standard_task": ["analysis", "requirements"],
-    "supplier_price_deadline_analysis": ["analysis", "requirements", "documents", "testing", "review"]
+    "supplier_price_deadline_analysis": ["analysis", "requirements", "documents", "testing", "review", "browser", "supplier", "research"]
   },
   "skills": [
     {
@@ -98,6 +98,19 @@
       "auth_required": true,
       "load_policy": "on_demand",
       "levels": ["L3", "L4"]
+    },
+    {
+      "name": "hermes-browser",
+      "path": "skills/hermes-browser/SKILL.md",
+      "description": "Authenticated browser automation for supplier research and evidence capture.",
+      "tags": ["browser", "supplier", "research", "auth"],
+      "worker_roles": ["bot1", "tester"],
+      "risk_level": "medium",
+      "script_presence": true,
+      "network_required": true,
+      "auth_required": true,
+      "load_policy": "on_demand",
+      "levels": ["L2", "L3", "L4"]
     },
     {
       "name": "hermes-devops",

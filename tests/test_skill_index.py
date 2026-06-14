@@ -21,6 +21,7 @@ def test_skill_manifest_validates_and_paths_exist() -> None:
     manifest = load_manifest()
     assert manifest["version"] == 1
     assert manifest["task_type_tags"]["code_change"] == ["code", "tdd", "implementation", "testing", "review"]
+    assert "browser" in manifest["task_type_tags"]["supplier_price_deadline_analysis"]
     for item in manifest["skills"]:
         assert (ROOT / item["path"]).exists()
 
@@ -66,6 +67,36 @@ def test_skill_index_cli_select_outputs_json() -> None:
     payload = json.loads(result.stdout)
     assert names(payload) == {"hermes-architect"}
     assert payload[0]["tags"] == ["architecture", "adr", "design"]
+
+
+def test_on_demand_browser_skill_loads_only_for_supplier_browser_tasks() -> None:
+    manifest = load_manifest()
+
+    generic = select_skill_context(
+        manifest,
+        route={
+            "task_level": "L2",
+            "task_type": "standard_task",
+            "risk_level": "medium",
+            "review_required": False,
+            "human_gate_required": False,
+            "process_plan": ["router", "supervisor", "bot1"],
+        },
+    )
+    supplier = select_skill_context(
+        manifest,
+        route={
+            "task_level": "L2",
+            "task_type": "supplier_price_deadline_analysis",
+            "risk_level": "high",
+            "review_required": True,
+            "human_gate_required": False,
+            "process_plan": ["router", "supervisor", "bot1", "tester", "bot2_light_if_risky"],
+        },
+    )
+
+    assert "hermes-browser" not in names(generic["selected_skills"])
+    assert "hermes-browser" in names(supplier["selected_skills"])
 
 
 def test_skill_context_selects_by_route_and_marks_gated_devops() -> None:
