@@ -17,6 +17,7 @@ DEFAULT_TARGET = Path("/opt/hermes-assistant/hermes-core/gateway/platforms/teleg
 HELPER_MARKER = "_run_hermes_process_callback"
 CALLBACK_MARKER = "# --- Hermes process supervisor callbacks (hp:action:process_id) ---"
 HELPER_CONTINUE_MARKER = 'elif action == "continue":'
+HELPER_FAST_PATH_MARKER = "_run_hermes_process_tool_callback"
 CALLBACK_CONTINUE_MARKER = 'result["continue_result"] = await self._run_hermes_process_callback("continue", process_id)'
 
 
@@ -33,8 +34,44 @@ HELPER_BLOCK = r'''
             os.environ.get("HERMES_SUPERVISOR_STORE", "/opt/data/supervisor_store.db"),
         ]
 
+    def _hermes_process_callback_payload(self, action: str, process_id: str, *, choice: str = "", reason: str = "") -> dict:
+        """Build a hermes_process tool payload for Supervisor Telegram buttons."""
+        payload = {
+            "action": action,
+            "process_id": process_id,
+            "include_raw": True,
+            "execution_mode": os.environ.get("HERMES_PROCESS_EXECUTION_MODE", "in_process"),
+        }
+        if action == "decide":
+            payload.update({"choice": choice, "reason": reason})
+        elif action == "continue":
+            payload.update({"mode": "auto", "notify_telegram": True})
+        elif action not in {"show", "transcript"}:
+            return {"ok": False, "error": f"unsupported hermes_process action: {action}"}
+        return payload
+
+    def _run_hermes_process_tool_callback(self, action: str, process_id: str, *, choice: str = "", reason: str = "") -> dict:
+        """Run the already-mounted hermes_process tool without spawning Python."""
+        import importlib as _importlib
+
+        hermes_process_tool = _importlib.import_module("tools.hermes_process_tool")
+        payload = self._hermes_process_callback_payload(action, process_id, choice=choice, reason=reason)
+        if not payload.get("ok", True):
+            return payload
+        raw = hermes_process_tool.execute(**payload)
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            return {"ok": False, "error": "unexpected hermes_process tool payload"}
+        if not parsed.get("ok", True):
+            return parsed
+        result = parsed.get("raw") if isinstance(parsed.get("raw"), dict) else parsed
+        result.setdefault("ok", True)
+        if parsed.get("adapter"):
+            result["adapter"] = parsed.get("adapter")
+        return result
+
     async def _run_hermes_process_callback(self, action: str, process_id: str, *, choice: str = "", reason: str = "") -> dict:
-        """Run process_orchestrator.py for a Supervisor Telegram button."""
+        """Run hermes_process for a Supervisor Telegram button."""
         import subprocess as _subprocess
 
         cmd = self._hermes_process_cli_base()
@@ -55,6 +92,10 @@ HELPER_BLOCK = r'''
                 return 300 if action == "continue" else 45
 
         def _run() -> dict:
+            try:
+                return self._run_hermes_process_tool_callback(action, process_id, choice=choice, reason=reason)
+            except Exception:
+                pass
             completed = _subprocess.run(cmd, text=True, capture_output=True, check=False, timeout=_timeout_seconds())
             if completed.returncode != 0:
                 return {
@@ -247,7 +288,7 @@ def patch_text(text: str) -> tuple[str, list[str]]:
             raise RuntimeError("callback handler anchor not found")
         text = text.replace(callback_anchor, HELPER_BLOCK + callback_anchor, 1)
         changes.append("helper_methods")
-    elif HELPER_CONTINUE_MARKER not in text:
+    elif HELPER_CONTINUE_MARKER not in text or HELPER_FAST_PATH_MARKER not in text:
         helper_start = text.find("    def _hermes_process_cli_base(self) -> list[str]:\n")
         helper_end = text.find(callback_anchor)
         if helper_start < 0 or helper_end < 0 or helper_start >= helper_end:
