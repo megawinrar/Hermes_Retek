@@ -239,6 +239,29 @@ def dry_bot1_result(task: str, acceptance: str, route: dict[str, Any]) -> str:
     )
 
 
+def dry_bot1_revision_result(
+    task: str,
+    acceptance: str,
+    previous_answer: str,
+    verdict: dict[str, Any],
+    route: dict[str, Any],
+) -> str:
+    fixes = verdict.get("required_fixes") or []
+    risks = verdict.get("risks") or []
+    return (
+        "Bot#1 dry-run revised result\n"
+        f"- task_level: {route['task_level']}\n"
+        f"- task_type: {route['task_type']}\n"
+        "- source: human_agreed_with_bot2\n"
+        f"- previous_answer_chars: {len(previous_answer)}\n"
+        f"- applied_required_fixes: {json.dumps(fixes, ensure_ascii=False)}\n"
+        f"- acknowledged_risks: {json.dumps(risks, ensure_ascii=False)}\n"
+        "- tests: dry-run revision evidence only\n"
+        f"- task: {task}\n"
+        f"- acceptance: {acceptance}\n"
+    )
+
+
 def dry_verdict(status: str) -> dict[str, Any]:
     normalized = status.upper()
     approved = normalized in {"APPROVE", "APPROVE_WITH_EVIDENCE"}
@@ -676,6 +699,181 @@ def live_dual_result(
     return bot1, rid, verdict, str(report)
 
 
+def live_bot1_revision_result(
+    task: str,
+    acceptance: str,
+    *,
+    previous_answer: str,
+    prior_verdict: dict[str, Any],
+    bot1_model: str,
+    bot2_model: str,
+    max_tokens: int,
+    timeout: int,
+    skill_context: dict[str, Any] | None = None,
+) -> tuple[str, str, dict[str, Any], str]:
+    import dual_bot_lab as lab
+
+    cfg = lab.bothub_config()
+    rid = lab.run_id()
+    lab.add_run(rid, task, acceptance, bot1_model, bot2_model)
+    previous_cycles = list(prior_verdict.get("review_cycles") or [])
+    previous_rounds = [int(cycle.get("round") or 0) for cycle in previous_cycles if isinstance(cycle, dict)]
+    round_no = max(previous_rounds or [0]) + 1
+
+    bot1_started_at = time.perf_counter()
+    bot1, bot1_raw = lab.call_chat(
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        model=bot1_model,
+        messages=lab.bot1_revision_messages(
+            task,
+            acceptance,
+            previous_answer,
+            prior_verdict,
+            round_no,
+            skill_context=skill_context_for_role(skill_context or {}, "bot1"),
+        ),
+        max_tokens=max_tokens,
+        timeout=timeout,
+    )
+    bot1_latency_ms = elapsed_ms(bot1_started_at)
+    lab.add_message(
+        rid,
+        f"Bot#1-human-revision-{round_no}",
+        bot1_model,
+        bot1,
+        {"usage": bot1_raw.get("usage", {}), "latency_ms": bot1_latency_ms},
+    )
+
+    self_check_started_at = time.perf_counter()
+    self_check, self_check_raw = lab.call_chat(
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        model=bot1_model,
+        messages=lab.bot1_self_check_messages(
+            task,
+            acceptance,
+            bot1,
+            prior_verdict,
+            round_no,
+            skill_context=skill_context_for_role(skill_context or {}, "bot1"),
+        ),
+        max_tokens=max_tokens,
+        timeout=timeout,
+    )
+    self_check_latency_ms = elapsed_ms(self_check_started_at)
+    lab.add_message(
+        rid,
+        f"Bot#1-human-self-check-{round_no}",
+        bot1_model,
+        self_check,
+        {"usage": self_check_raw.get("usage", {}), "latency_ms": self_check_latency_ms},
+    )
+    bot1 = self_check
+    fix_closure_checklist = [
+        {
+            "required_fix": str(fix),
+            "status": "claimed_closed_by_bot1_self_check",
+            "evidence": f"Bot#1 human-approved self-check round {round_no}",
+        }
+        for fix in (prior_verdict.get("required_fixes") or [])
+    ]
+
+    bot2_started_at = time.perf_counter()
+    bot2, bot2_raw = lab.call_chat(
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        model=bot2_model,
+        messages=lab.bot2_messages(
+            task,
+            acceptance,
+            bot1,
+            skill_context=skill_context_for_role(skill_context or {}, "bot2"),
+        ),
+        max_tokens=max_tokens,
+        timeout=timeout,
+    )
+    bot2_latency_ms = elapsed_ms(bot2_started_at)
+    lab.add_message(
+        rid,
+        f"Bot#2-human-review-{round_no}",
+        bot2_model,
+        bot2,
+        {"usage": bot2_raw.get("usage", {}), "latency_ms": bot2_latency_ms},
+    )
+
+    verdict = parse_verdict(bot2)
+    bot2_repair_latency_ms = 0
+    bot2_repair_usage: dict[str, Any] = {}
+    if verdict.get("status") == INVALID_BOT2_STATUS:
+        bot2_repair_started_at = time.perf_counter()
+        bot2_repair, bot2_repair_raw = lab.call_chat(
+            base_url=cfg["base_url"],
+            api_key=cfg["api_key"],
+            model=bot2_model,
+            messages=lab.bot2_repair_messages(task, acceptance, bot1, bot2),
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+        bot2_repair_latency_ms = elapsed_ms(bot2_repair_started_at)
+        bot2_repair_usage = bot2_repair_raw.get("usage", {})
+        lab.add_message(
+            rid,
+            f"Bot#2-human-repair-{round_no}",
+            bot2_model,
+            bot2_repair,
+            {"usage": bot2_repair_usage, "latency_ms": bot2_repair_latency_ms},
+        )
+        repaired_verdict = parse_verdict(bot2_repair)
+        repaired_verdict["repair_attempted"] = True
+        if repaired_verdict.get("status") != INVALID_BOT2_STATUS:
+            repaired_verdict["repair_status"] = "repaired"
+            verdict = repaired_verdict
+            bot2 = f"{bot2}\n\n## Bot#2 JSON Repair\n\n{bot2_repair}"
+        else:
+            verdict["repair_attempted"] = True
+            verdict["repair_status"] = "failed_closed"
+
+    cycle = {
+        "round": round_no,
+        "human_continue": True,
+        "bot1_chars": len(bot1),
+        "bot1_self_check": True,
+        "bot2_status": verdict.get("status", ""),
+        "bot2_summary": verdict.get("summary", ""),
+        "required_fixes": verdict.get("required_fixes", []),
+        "risks": verdict.get("risks", []),
+        "latency_ms": {
+            "bot1": bot1_latency_ms,
+            "bot1_self_check": self_check_latency_ms,
+            "bot2": bot2_latency_ms,
+            "bot2_repair": bot2_repair_latency_ms,
+        },
+        "usage": {
+            "bot1": bot1_raw.get("usage", {}),
+            "bot1_self_check": self_check_raw.get("usage", {}),
+            "bot2": bot2_raw.get("usage", {}),
+            "bot2_repair": bot2_repair_usage,
+        },
+        "fix_closure_checklist": fix_closure_checklist,
+        "bot2_repair_attempted": bool(verdict.get("repair_attempted")),
+        "bot2_repair_status": verdict.get("repair_status", ""),
+    }
+    verdict["review_cycles"] = previous_cycles + [cycle]
+    verdict["fix_closure_checklist"] = fix_closure_checklist
+    report = lab.write_report(
+        run_id_value=rid,
+        task=task,
+        acceptance=acceptance,
+        bot1_model=bot1_model,
+        bot1_result=bot1,
+        bot2_model=bot2_model,
+        bot2_result=bot2,
+    )
+    lab.update_run(rid, "completed", str(report))
+    return bot1, rid, verdict, str(report)
+
+
 def route_policy_verdict() -> dict[str, Any]:
     return {
         "status": "NEEDS_HUMAN",
@@ -723,6 +921,63 @@ def build_process_performance(
             "llm_call_count": live_review_calls,
             "latency_ms": live_review_latency_ms,
         },
+    }
+
+
+def emit_human_gate(
+    *,
+    process_id_value: str,
+    supervisor_task_id: str,
+    route: dict[str, Any],
+    bot2_session_id: str,
+    verdict: dict[str, Any],
+    notify_telegram: bool,
+    notification_dry_run: bool,
+    process_store: Path | str | None,
+    supervisor_store: Path | str | None,
+) -> dict[str, Any]:
+    task_state = get_task(supervisor_task_id, store_path=supervisor_store)
+    safe_task_state = redact_payload(task_state)
+    safe_verdict = redact_payload(verdict)
+    create_human_escalation(safe_task_state, bot2_session_id, safe_verdict, store_path=supervisor_store)
+    human_message = escalation_text(safe_task_state, safe_verdict)
+    human_notification = build_human_notification_payload(
+        process_id=process_id_value,
+        supervisor_task_id=supervisor_task_id,
+        task=safe_task_state,
+        route=route,
+        bot2_session_id=bot2_session_id,
+        verdict=safe_verdict,
+    )
+    notification_delivery = dispatch_human_notification(
+        human_notification,
+        telegram=notify_telegram,
+        dry_run=notification_dry_run,
+    )
+    add_supervisor_event(
+        supervisor_task_id,
+        "human_escalation",
+        {"message": human_message, "notification": human_notification, "delivery": notification_delivery},
+        store_path=supervisor_store,
+    )
+    add_process_event(
+        process_id_value,
+        "human_notification",
+        {"notification": human_notification, "delivery": notification_delivery},
+        store_path=process_store,
+    )
+    add_assignment(
+        process_id_value,
+        "supervisor",
+        "human_decision",
+        "waiting",
+        {"message": human_message, "notification_event": "human_notification", "delivery": notification_delivery},
+        store_path=process_store,
+    )
+    return {
+        "human_message": human_message,
+        "human_notification": human_notification,
+        "notification_delivery": notification_delivery,
     }
 
 
@@ -839,6 +1094,276 @@ def decide_process(args: argparse.Namespace) -> dict[str, Any]:
         "decision": decision,
         "status": next_status,
         "next_action": next_action,
+    }
+
+
+def process_was_dry(details: dict[str, Any]) -> bool:
+    supervisor = details.get("supervisor") or {}
+    previous_bot1 = str(supervisor.get("bot1_result") or "")
+    summary = details.get("summary") or {}
+    bot2 = summary.get("bot2") or {}
+    bot2_session_id = str(bot2.get("session_id") or "")
+    return (
+        previous_bot1.startswith("Bot#1 dry-run result")
+        or bot2_session_id.endswith("-bot2-dry")
+        or bot2_session_id.endswith("-route-policy")
+    )
+
+
+def continue_mode(args: argparse.Namespace, details: dict[str, Any]) -> str:
+    mode = str(getattr(args, "mode", "auto") or "auto").lower()
+    if mode in {"dry", "live"}:
+        return mode
+    return "dry" if process_was_dry(details) else "live"
+
+
+def dry_revision_verdict(prior_verdict: dict[str, Any]) -> dict[str, Any]:
+    previous_cycles = list(prior_verdict.get("review_cycles") or [])
+    previous_rounds = [int(cycle.get("round") or 0) for cycle in previous_cycles if isinstance(cycle, dict)]
+    round_no = max(previous_rounds or [0]) + 1
+    verdict = dry_verdict("APPROVE_WITH_EVIDENCE")
+    verdict.update(
+        {
+            "summary": "Dry Bot#2 verdict after human-approved Bot#1 revision.",
+            "evidence_checked": ["dry-run Bot#1 revision package", "human YES decision"],
+            "review_cycles": previous_cycles
+            + [
+                {
+                    "round": round_no,
+                    "human_continue": True,
+                    "bot1_self_check": True,
+                    "bot2_status": "APPROVE_WITH_EVIDENCE",
+                    "bot2_summary": "Dry Bot#2 verdict after human-approved Bot#1 revision.",
+                    "required_fixes": [],
+                    "risks": [],
+                    "fix_closure_checklist": [
+                        {
+                            "required_fix": str(fix),
+                            "status": "claimed_closed_by_bot1_self_check",
+                            "evidence": f"Dry Bot#1 human-approved revision round {round_no}",
+                        }
+                        for fix in (prior_verdict.get("required_fixes") or [])
+                    ],
+                }
+            ],
+        }
+    )
+    verdict["fix_closure_checklist"] = verdict["review_cycles"][-1]["fix_closure_checklist"]
+    return verdict
+
+
+def continue_process(args: argparse.Namespace) -> dict[str, Any]:
+    process_started_at = time.perf_counter()
+    details = process_details(
+        args.process_id,
+        store_path=args.process_store,
+        supervisor_store_path=args.supervisor_store,
+    )
+    status = str(details.get("status") or "")
+    if status != "return_to_bot1":
+        raise SystemExit(f"process is not ready for Bot#1 continuation: {args.process_id} status={status}")
+
+    events = list(details.get("events") or [])
+    next_action = (latest_event(events, "process_next_action").get("payload") or {})
+    if next_action.get("action") != "return_to_bot1_with_bot2_fixes":
+        raise SystemExit(f"process has no Bot#1 revision action: {args.process_id}")
+
+    supervisor_task_id = str(details.get("supervisor_task_id") or "")
+    supervisor = details.get("supervisor") or task_details(supervisor_task_id, store_path=args.supervisor_store)
+    route = details.get("router") or {}
+    skill_context = route.get("skill_context") or {}
+    task = str(details.get("task") or "")
+    acceptance = str(details.get("acceptance") or "")
+    previous_answer = str(supervisor.get("bot1_result") or "")
+    prior_verdict = latest_bot2_verdict_from_process(details)
+    mode = continue_mode(args, details)
+
+    add_process_event(
+        args.process_id,
+        "bot1_revision_started",
+        {"mode": mode, "next_action": next_action, "prior_required_fixes": prior_verdict.get("required_fixes", [])},
+        store_path=args.process_store,
+    )
+    add_assignment(
+        args.process_id,
+        "bot1",
+        "revision",
+        "running",
+        {"mode": mode, "source": "human_agreed_with_bot2", "required_fixes": prior_verdict.get("required_fixes", [])},
+        store_path=args.process_store,
+    )
+    update_task(supervisor_task_id, status="running", store_path=args.supervisor_store)
+    update_process(args.process_id, status="running", current_phase="bot1_revision", store_path=args.process_store)
+
+    try:
+        if mode == "live":
+            bot1_result, bot2_session_id, verdict, report_path = live_bot1_revision_result(
+                task,
+                acceptance,
+                previous_answer=previous_answer,
+                prior_verdict=prior_verdict,
+                bot1_model=args.bot1_model,
+                bot2_model=args.bot2_model,
+                max_tokens=args.max_tokens,
+                timeout=args.timeout,
+                skill_context=skill_context,
+            )
+        else:
+            bot1_result = dry_bot1_revision_result(task, acceptance, previous_answer, prior_verdict, route)
+            bot2_session_id = f"{args.process_id}-bot2-continue-dry"
+            verdict = dry_revision_verdict(prior_verdict)
+            report_path = ""
+    except Exception as exc:
+        failure = {"mode": mode, "error": f"{type(exc).__name__}: {exc}"}
+        add_process_event(args.process_id, "bot1_revision_failed", failure, store_path=args.process_store)
+        add_assignment(args.process_id, "bot1", "revision", "failed", failure, store_path=args.process_store)
+        update_task(supervisor_task_id, status="failed", store_path=args.supervisor_store)
+        update_process(args.process_id, status="failed", current_phase="bot1_revision_failed", store_path=args.process_store)
+        raise
+
+    evidence = bot1_result
+    update_task(supervisor_task_id, bot1_result=bot1_result, evidence=evidence, store_path=args.supervisor_store)
+    add_assignment(
+        args.process_id,
+        "bot1",
+        "revision",
+        "completed",
+        {
+            "mode": mode,
+            "result_chars": len(bot1_result),
+            "report_path": report_path,
+            "review_cycle_count": len(verdict.get("review_cycles") or []),
+            "skills": skill_context_for_role(skill_context, "bot1"),
+        },
+        store_path=args.process_store,
+    )
+    add_role_run(
+        supervisor_task_id,
+        "bot1",
+        "completed",
+        "Bot#1 revision completed after human YES.",
+        {"process_id": args.process_id, "mode": mode, "report_path": report_path},
+        store_path=args.supervisor_store,
+    )
+    add_process_event(
+        args.process_id,
+        "bot1_revision",
+        {"mode": mode, "result_chars": len(bot1_result), "report_path": report_path},
+        store_path=args.process_store,
+    )
+
+    if route_requires_tester(route):
+        add_assignment(
+            args.process_id,
+            "tester",
+            "verification",
+            "completed",
+            {"evidence_chars": len(evidence), "source": "bot1_revision", "skills": skill_context_for_role(skill_context, "tester")},
+            store_path=args.process_store,
+        )
+        add_role_run(
+            supervisor_task_id,
+            "tester",
+            "completed",
+            "Tester evidence package completed after Bot#1 revision.",
+            {"process_id": args.process_id},
+            store_path=args.supervisor_store,
+        )
+
+    link_bot2(supervisor_task_id, bot2_session_id, verdict, store_path=args.supervisor_store)
+    final_status = supervisor_status_for_verdict(verdict)
+    add_assignment(
+        args.process_id,
+        "bot2",
+        "quality_gate",
+        "completed",
+        {"session_id": bot2_session_id, "verdict": verdict, "skills": skill_context_for_role(skill_context, "bot2")},
+        store_path=args.process_store,
+    )
+    add_role_run(
+        supervisor_task_id,
+        "bot2",
+        "completed",
+        f"Bot#2 verdict after Bot#1 revision: {verdict.get('status')}",
+        {"process_id": args.process_id, "verdict": verdict},
+        store_path=args.supervisor_store,
+    )
+    add_process_event(
+        args.process_id,
+        "bot2_verdict",
+        {"bot2_session_id": bot2_session_id, "verdict": verdict, "supervisor_status": final_status, "after_human_continue": True},
+        store_path=args.process_store,
+    )
+    if verdict.get("review_cycles"):
+        add_process_event(
+            args.process_id,
+            "bot_review_cycles",
+            {
+                "bot2_session_id": bot2_session_id,
+                "review_cycles": verdict.get("review_cycles", []),
+                "fix_closure_checklist": verdict.get("fix_closure_checklist", []),
+                "after_human_continue": True,
+            },
+            store_path=args.process_store,
+        )
+    if verdict.get("fix_closure_checklist"):
+        add_process_event(
+            args.process_id,
+            "bot1_self_check",
+            {
+                "round": (verdict.get("review_cycles") or [{}])[-1].get("round"),
+                "fix_closure_checklist": verdict.get("fix_closure_checklist", []),
+                "after_human_continue": True,
+            },
+            store_path=args.process_store,
+        )
+
+    update_task(supervisor_task_id, status=final_status, store_path=args.supervisor_store)
+    human_gate = {"human_message": "", "human_notification": {}, "notification_delivery": {}}
+    if final_status == "awaiting_human_decision":
+        human_gate = emit_human_gate(
+            process_id_value=args.process_id,
+            supervisor_task_id=supervisor_task_id,
+            route=route,
+            bot2_session_id=bot2_session_id,
+            verdict=verdict,
+            notify_telegram=args.notify_telegram,
+            notification_dry_run=args.notification_dry_run,
+            process_store=args.process_store,
+            supervisor_store=args.supervisor_store,
+        )
+
+    if final_status in {"approved", "approved_refusal"}:
+        final_action_name = "completed_after_bot1_revision"
+    elif final_status == "awaiting_human_decision":
+        final_action_name = "await_human_after_bot1_revision"
+    else:
+        final_action_name = "stop_after_bot1_revision"
+    final_next_action = {
+        "action": final_action_name,
+        "status": final_status,
+        "target_worker": "supervisor" if final_status == "awaiting_human_decision" else "",
+        "process_id": args.process_id,
+        "bot2_status": verdict.get("status", ""),
+        "bot2_summary": verdict.get("summary", ""),
+    }
+    add_process_event(args.process_id, "process_next_action", final_next_action, store_path=args.process_store)
+    performance = build_process_performance(duration_ms=elapsed_ms(process_started_at), route_audit={}, verdict=verdict)
+    add_process_event(args.process_id, "process_performance", performance, store_path=args.process_store)
+    update_process(args.process_id, status=final_status, current_phase=final_status, store_path=args.process_store)
+    return {
+        "process_id": args.process_id,
+        "supervisor_task_id": supervisor_task_id,
+        "status": final_status,
+        "mode": mode,
+        "bot2_session_id": bot2_session_id,
+        "bot2_verdict": verdict,
+        "report_path": report_path,
+        "human_message": human_gate.get("human_message", ""),
+        "human_notification": human_gate.get("human_notification", {}),
+        "notification_delivery": human_gate.get("notification_delivery", {}),
+        "next_action": final_next_action,
+        "performance": performance,
     }
 
 
@@ -1075,44 +1600,20 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
 
     update_task(supervisor_task_id, status=final_status, store_path=args.supervisor_store)
     if final_status == "awaiting_human_decision":
-        task_state = get_task(supervisor_task_id, store_path=args.supervisor_store)
-        safe_task_state = redact_payload(task_state)
-        safe_verdict = redact_payload(verdict)
-        create_human_escalation(safe_task_state, bot2_session_id, safe_verdict, store_path=args.supervisor_store)
-        human_message = escalation_text(safe_task_state, safe_verdict)
-        human_notification = build_human_notification_payload(
-            process_id=pid,
+        human_gate = emit_human_gate(
+            process_id_value=pid,
             supervisor_task_id=supervisor_task_id,
-            task=safe_task_state,
             route=route,
             bot2_session_id=bot2_session_id,
-            verdict=safe_verdict,
+            verdict=verdict,
+            notify_telegram=args.notify_telegram,
+            notification_dry_run=args.notification_dry_run,
+            process_store=args.process_store,
+            supervisor_store=args.supervisor_store,
         )
-        notification_delivery = dispatch_human_notification(
-            human_notification,
-            telegram=args.notify_telegram,
-            dry_run=args.notification_dry_run,
-        )
-        add_supervisor_event(
-            supervisor_task_id,
-            "human_escalation",
-            {"message": human_message, "notification": human_notification, "delivery": notification_delivery},
-            store_path=args.supervisor_store,
-        )
-        add_process_event(
-            pid,
-            "human_notification",
-            {"notification": human_notification, "delivery": notification_delivery},
-            store_path=args.process_store,
-        )
-        add_assignment(
-            pid,
-            "supervisor",
-            "human_decision",
-            "waiting",
-            {"message": human_message, "notification_event": "human_notification", "delivery": notification_delivery},
-            store_path=args.process_store,
-        )
+        human_message = str(human_gate.get("human_message") or "")
+        human_notification = human_gate.get("human_notification") or {}
+        notification_delivery = human_gate.get("notification_delivery") or {}
 
     performance = build_process_performance(
         duration_ms=elapsed_ms(process_started_at),
@@ -1495,6 +1996,10 @@ def cmd_decide(args: argparse.Namespace) -> None:
     print(json.dumps(decide_process(args), ensure_ascii=False, indent=2))
 
 
+def cmd_continue(args: argparse.Namespace) -> None:
+    print(json.dumps(continue_process(args), ensure_ascii=False, indent=2))
+
+
 def cmd_show(args: argparse.Namespace) -> None:
     print(
         json.dumps(
@@ -1568,6 +2073,17 @@ def build_parser() -> argparse.ArgumentParser:
     decide.add_argument("--choice", required=True, choices=["yes", "no"], help="yes=Да, agree with Bot#2; no=Нет, accept Bot#1")
     decide.add_argument("--reason", default="")
     decide.set_defaults(func=cmd_decide)
+
+    continue_cmd = sub.add_parser("continue", help="Execute the next process action after a human YES decision")
+    continue_cmd.add_argument("process_id")
+    continue_cmd.add_argument("--mode", choices=["auto", "dry", "live"], default="auto")
+    continue_cmd.add_argument("--bot1-model", default="deepseek-v4-flash")
+    continue_cmd.add_argument("--bot2-model", default="gpt-5.3-codex")
+    continue_cmd.add_argument("--timeout", type=int, default=180)
+    continue_cmd.add_argument("--max-tokens", type=int, default=1400)
+    continue_cmd.add_argument("--notify-telegram", action="store_true", help="Send a new human-gate notification if Bot#2 still requests changes")
+    continue_cmd.add_argument("--notification-dry-run", action="store_true", help="Record any repeated human-gate notification without network delivery")
+    continue_cmd.set_defaults(func=cmd_continue)
 
     show = sub.add_parser("show")
     show.add_argument("process_id")

@@ -820,6 +820,97 @@ def test_process_decide_yes_returns_bot1_to_fixes(tmp_path: Path) -> None:
     assert pending_bot1_revision[-1]["status"] == "pending"
 
 
+def test_process_continue_after_yes_runs_bot1_revision_and_bot2_review(tmp_path: Path) -> None:
+    process_store = tmp_path / "process.db"
+    supervisor_store = tmp_path / "supervisor.db"
+    verdict = {
+        "status": "REQUEST_CHANGES",
+        "summary": "Bot#2 found missing rollback evidence.",
+        "approved_action": "needs_human",
+        "evidence_checked": ["bot1"],
+        "risks": ["rollback_not_proven"],
+        "required_fixes": ["Add rollback evidence and rerun tests."],
+        "confidence": 0.72,
+    }
+    result = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "run",
+        "--task",
+        "Change python code and deploy to production server",
+        "--bot2-verdict-json",
+        json.dumps(verdict),
+        "--notification-dry-run",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+
+    decided = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "decide",
+        payload["process_id"],
+        "--choice",
+        "yes",
+        "--reason",
+        "Bot2 is right",
+    )
+    assert decided.returncode == 0, decided.stderr
+
+    continued = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "continue",
+        payload["process_id"],
+        "--mode",
+        "dry",
+        "--notification-dry-run",
+    )
+    assert continued.returncode == 0, continued.stderr
+    continuation = json.loads(continued.stdout)
+    assert continuation["status"] == "approved"
+    assert continuation["mode"] == "dry"
+    assert continuation["bot2_session_id"].endswith("-bot2-continue-dry")
+    assert continuation["bot2_verdict"]["status"] == "APPROVE_WITH_EVIDENCE"
+    assert continuation["next_action"]["action"] == "completed_after_bot1_revision"
+
+    details = process_orchestrator.process_details(
+        payload["process_id"],
+        store_path=process_store,
+        supervisor_store_path=supervisor_store,
+    )
+    assert details["summary"]["status"] == "approved"
+    assert details["summary"]["current_phase"] == "approved"
+    assert details["summary"]["next_action"]["action"] == "completed_after_bot1_revision"
+    revision_assignments = [
+        item for item in details["assignments"] if item["worker"] == "bot1" and item["phase"] == "revision"
+    ]
+    assert [item["status"] for item in revision_assignments][-2:] == ["running", "completed"]
+    assert revision_assignments[-1]["output"]["mode"] == "dry"
+    assert "bot1_revision" in {event["event_type"] for event in details["events"]}
+
+    transcript = process_orchestrator.process_transcript(
+        payload["process_id"],
+        store_path=process_store,
+        supervisor_store_path=supervisor_store,
+    )
+    assert transcript["status"] == "approved"
+    assert transcript["review_cycles"][-1]["human_continue"] is True
+    assert transcript["fix_closure_checklist"][0]["required_fix"] == "Add rollback evidence and rerun tests."
+
+
 def test_process_decide_no_accepts_bot1_user_override(tmp_path: Path) -> None:
     process_store = tmp_path / "process.db"
     supervisor_store = tmp_path / "supervisor.db"

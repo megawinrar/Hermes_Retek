@@ -49,6 +49,19 @@ def test_build_decide_command_validates_choice() -> None:
     assert cmd[-6:] == ["decide", "proc-123", "--choice", "yes", "--reason", "Bot2 is right"]
 
 
+def test_build_continue_command_defaults_to_auto_and_notifications() -> None:
+    tool = load_tool()
+    cmd = tool.build_command({"action": "continue", "process_id": "proc-123"})
+
+    assert cmd[:2] == [tool.DEFAULT_PYTHON, str(tool.DEFAULT_ORCHESTRATOR)]
+    assert cmd[cmd.index("continue") + 1] == "proc-123"
+    assert cmd[cmd.index("--mode") + 1] == "auto"
+    assert cmd[cmd.index("--bot1-model") + 1] == "deepseek-v4-flash"
+    assert cmd[cmd.index("--bot2-model") + 1] == "gpt-5.3-codex"
+    assert "--notify-telegram" in cmd
+    assert "--notification-dry-run" not in cmd
+
+
 def test_summary_extracts_process_runtime_fields() -> None:
     tool = load_tool()
     payload = {

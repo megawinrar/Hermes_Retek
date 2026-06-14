@@ -40,7 +40,7 @@ DEFAULT_SUPERVISOR_STORE = os.environ.get("HERMES_SUPERVISOR_STORE", "/opt/data/
 DEFAULT_DUAL_BOT_STORE = os.environ.get("DUAL_BOT_LAB_STORE", "/opt/data/dual_bot_lab_store.db")
 DEFAULT_DUAL_BOT_REPORT_DIR = os.environ.get("DUAL_BOT_REPORT_DIR", "/opt/data/reports")
 
-JSON_OUTPUT_ACTIONS = {"route", "run", "show", "transcript", "decide"}
+JSON_OUTPUT_ACTIONS = {"route", "run", "show", "transcript", "decide", "continue"}
 SUPPORTED_ACTIONS = sorted(JSON_OUTPUT_ACTIONS | {"events"})
 
 
@@ -148,6 +148,28 @@ def build_command(args: dict[str, Any]) -> list[str]:
             "--reason",
             _text(args.get("reason")),
         ]
+
+    if action == "continue":
+        result = [
+            *cmd,
+            "continue",
+            process_id,
+            "--mode",
+            _text(args.get("mode"), "auto"),
+            "--bot1-model",
+            _text(args.get("bot1_model"), "deepseek-v4-flash"),
+            "--bot2-model",
+            _text(args.get("bot2_model"), "gpt-5.3-codex"),
+            "--timeout",
+            str(_as_int(args.get("timeout"), 240, minimum=30, maximum=900)),
+            "--max-tokens",
+            str(_as_int(args.get("max_tokens"), 1400, minimum=256, maximum=6000)),
+        ]
+        if _as_bool(args.get("notify_telegram"), True):
+            result.append("--notify-telegram")
+        if _as_bool(args.get("notification_dry_run"), False):
+            result.append("--notification-dry-run")
+        return result
 
     if action == "events":
         result = cmd + ["events", process_id]
@@ -311,7 +333,7 @@ TOOL_SCHEMA = {
     "description": (
         "Run the Retek supervisor process loop from Telegram: route the task, "
         "run Bot#1/Bot#2 when needed, show logs, transcript, events, and record "
-        "human yes/no decisions."
+        "human yes/no decisions or continue after a human YES."
     ),
     "parameters": {
         "type": "object",
@@ -320,13 +342,14 @@ TOOL_SCHEMA = {
                 "type": "string",
                 "enum": SUPPORTED_ACTIONS,
                 "default": "run",
-                "description": "run starts a process; decide records a human yes/no answer; show/transcript/events inspect it.",
+                "description": "run starts a process; decide records a human yes/no answer; continue executes the next action; show/transcript/events inspect it.",
             },
             "task": {"type": "string", "description": "User task or TZ for route/run."},
             "acceptance": {"type": "string", "description": "Acceptance criteria for Bot#1 and Bot#2."},
             "process_id": {"type": "string", "description": "Process id for show/transcript/events/decide."},
             "choice": {"type": "string", "enum": ["yes", "no"], "description": "Human decision for action=decide."},
             "reason": {"type": "string", "description": "Short reason for the human decision."},
+            "mode": {"type": "string", "enum": ["auto", "dry", "live"], "default": "auto", "description": "Continuation mode for action=continue."},
             "live_dual": {"type": "boolean", "default": True, "description": "Use real Bot#1/Bot#2 LLM calls."},
             "live_route_audit": {"type": "boolean", "default": True, "description": "Let Bot#2 audit risky route classifications."},
             "no_route_audit_cache": {"type": "boolean", "default": False},
