@@ -176,7 +176,7 @@ Acceptance:
 
 ## P2: Skills Index / Lazy Loading
 
-Status: manifest and selector implemented in repository; runtime adoption pending.
+Status: manifest, selector, and process runtime adoption implemented.
 
 Tasks:
 
@@ -192,17 +192,22 @@ Tasks:
   - load policy.
 - Update Hermes role skills for Router, Supervisor, Bot#1, Tester, Bot#2, DevOps.
 - Mark legacy GitLab/YandexGPT context.
+- Add `task_type_tags` so Router classification can preselect skills by task type.
+- Attach `route.skill_context` in `scripts/process_orchestrator.py` before worker execution.
+- Record `skill_context_selected` in process events and per-worker skill references in assignments.
 
 Runner:
 
 ```bash
 scripts/skill_index.py select --level L3 --role architect
+scripts/skill_index.py context --level L4 --task-type git_write_or_deploy --process-plan router supervisor architect bot1 tester bot2 devops_if_approved
 ```
 
-Next behavior:
+Runtime behavior:
 
-- wire Router/Supervisor prompts to load from `scripts/skill_index.py` output;
-- keep DevOps/GitHub write skills behind explicit approval and `tool_gateway.py`.
+- Router/Supervisor load from `scripts/skill_index.py` output through `route.skill_context`;
+- Bot#1, Tester, and Bot#2 receive only their role-specific skill references in live prompts;
+- DevOps/GitHub write skills are listed as `gated_skills` until explicit human approval and still require `tool_gateway.py`.
 
 Acceptance:
 

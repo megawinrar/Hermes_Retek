@@ -25,11 +25,24 @@ live_runtime:
     - /var/lib/docker/volumes/hermes-data/_data/dual_bot_lab_store.db
     - /var/lib/docker/volumes/hermes-data/_data/token_usage.db
 
+runtime_skill_library:
+  manifest: skills/manifest.json
+  selector: scripts/skill_index.py
+  orchestrator_hook: route.skill_context
+  selection_policy: lazy_by_task_level_role_and_tags
+  telegram_entrypoint: scripts/process_orchestrator.py run
+  prompt_contract:
+    load_only_selected_skill_paths: true
+    do_not_load_full_skills_tree: true
+    approval_required_skills_are_gated: true
+    skill_scripts_require_tool_gateway: true
+
 change_layers:
   agent_behavior:
     paths:
       - AGENTS.md
       - skills/
+      - skills/manifest.json
       - prompts/
       - memories/
     deploy_shape: sync_to_hermes_home_or_mount
@@ -40,6 +53,7 @@ change_layers:
   host_side_governance:
     paths:
       - scripts/
+      - scripts/skill_index.py
       - configs/
       - docs/
     deploy_shape: host_patch_plus_tests

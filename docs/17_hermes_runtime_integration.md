@@ -63,6 +63,7 @@ Telegram user
 Host-side Hermes_Retek package
   -> scripts/task_router.py
   -> scripts/process_orchestrator.py
+  -> scripts/skill_index.py
   -> scripts/supervisor_*.py
   -> scripts/bot2_gate.py on the live server
   -> configs/*.yaml
@@ -74,6 +75,30 @@ Host-side Hermes_Retek package
 Important: `scripts/task_router.py` and `scripts/process_orchestrator.py` are
 not mounted into `/opt/hermes` in the running container. They are host-side
 control scripts.
+
+## Runtime Skill Library
+
+Hermes Retek keeps the large `skills/` tree behind a small manifest-driven
+library:
+
+```text
+Router classification
+  -> skills/manifest.json task_type_tags
+  -> scripts/skill_index.py context
+  -> route.skill_context
+  -> Bot#1 / Tester / Bot#2 role-specific prompt package
+```
+
+The runtime contract is:
+
+- load only the selected `SKILL.md` paths for the current worker role;
+- do not load the full `skills/` tree into a prompt;
+- expose DevOps/GitHub write skills as `gated_skills` until human approval;
+- execute any skill script or external write only through `scripts/tool_gateway.py`.
+
+This is the host-side integration point for the Telegram bot: Telegram tasks
+should enter through `scripts/process_orchestrator.py run`, which always records
+`route.skill_context` and a `skill_context_selected` process event.
 
 ## Change Routing Rules
 

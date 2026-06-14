@@ -76,13 +76,17 @@ def test_process_l1_approve_path_without_bot2(tmp_path: Path) -> None:
     )
     assert shown.returncode == 0, shown.stderr
     details = json.loads(shown.stdout)
-    assert {item["worker"] for item in details["assignments"]} == {"router", "supervisor", "bot1"}
+    assert {item["worker"] for item in details["assignments"]} == {"router", "skill_index", "supervisor", "bot1"}
     assert details["summary"]["status"] == "approved"
     assert details["summary"]["task_level"] == "L1"
+    assert details["summary"]["skills"]["selected"] == ["hermes-developer"]
+    assert details["summary"]["skills"]["roles"]["bot1"] == ["hermes-developer"]
     assert details["summary"]["bot2"]["required"] is False
     assert details["summary"]["waiting_on"] == ""
     assert details["summary"]["supervisor_available"] is False
     assert details["timeline"]
+    bot1_assignment = [item for item in details["assignments"] if item["worker"] == "bot1"][-1]
+    assert bot1_assignment["output"]["skills"]["skills"][0]["path"] == "skills/hermes-developer/SKILL.md"
 
 
 def test_process_reject_creates_human_escalation(tmp_path: Path) -> None:
@@ -156,8 +160,10 @@ def test_bot2_route_audit_raises_l1_to_human_gate(tmp_path: Path) -> None:
     event_types = {event["event_type"] for event in details["events"]}
     workers = {assignment["worker"] for assignment in details["assignments"]}
     assert "classification_audit" in event_types
+    assert "skill_context_selected" in event_types
     assert "bot2_route_audit" in workers
     assert details["summary"]["route"]["classification_audit"]["applied"]
+    assert "hermes-devops" in details["summary"]["skills"]["gated"]
 
 
 def test_live_route_audit_auto_skips_low_risk_l1(monkeypatch, tmp_path: Path) -> None:
@@ -645,7 +651,44 @@ def test_l0_process_does_not_start_bot1_or_bot2(tmp_path: Path) -> None:
         payload["process_id"],
     )
     details = json.loads(shown.stdout)
-    assert {item["worker"] for item in details["assignments"]} == {"router", "supervisor"}
+    assert {item["worker"] for item in details["assignments"]} == {"router", "skill_index", "supervisor"}
+    assert details["summary"]["skills"]["selected"] == []
+
+
+def test_process_records_skill_context_for_l4_without_enabling_gated_devops(tmp_path: Path) -> None:
+    process_store = tmp_path / "process.db"
+    supervisor_store = tmp_path / "supervisor.db"
+    result = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "run",
+        "--task",
+        "merge PR #12, push to main, and deploy production",
+        "--bot2-status",
+        "APPROVE",
+        "--notification-dry-run",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "awaiting_human_decision"
+
+    details = process_orchestrator.process_details(
+        payload["process_id"],
+        store_path=process_store,
+        supervisor_store_path=supervisor_store,
+    )
+    summary = details["summary"]
+    assert summary["skills"]["selection_policy"] == "lazy_by_task_level_role_and_tags"
+    assert "github-code-review" in summary["skills"]["selected"]
+    assert summary["skills"]["gated_roles"]["devops"] == ["hermes-devops", "github-pr-workflow"]
+    assert "github-pr-workflow" in summary["skills"]["gated_roles"]["supervisor"]
+    assert summary["skills"]["runtime_contract"]["approval_required_skills_are_gated"] is True
+    skill_event = [event for event in details["events"] if event["event_type"] == "skill_context_selected"][-1]
+    assert skill_event["payload"]["task_type"] == "git_write_or_deploy"
 
 
 def test_human_gate_blocks_approved_high_risk_deploy(tmp_path: Path) -> None:

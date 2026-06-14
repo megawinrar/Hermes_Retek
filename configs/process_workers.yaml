@@ -7,6 +7,7 @@ principles:
   single_writer_for_external_state: true
   discovery_and_verification_can_parallelize: true
   deployment_requires_approval: true
+  skills_selected_by_manifest_before_worker_run: true
 
 workers:
   router:
@@ -18,6 +19,7 @@ workers:
       - risk_level
       - process_plan
       - review_required
+      - skill_context
 
   supervisor:
     process: process_orchestrator
@@ -28,6 +30,7 @@ workers:
       - approval_state
       - human_decision
       - final_status
+      - skill_context
 
   architect:
     process: architect_worker
@@ -41,6 +44,7 @@ workers:
     process: bot1_worker
     provider_class: deepseek
     default_model: deepseek-v4-flash
+    skill_context_source: skills/manifest.json
     writes_state: false
     output:
       - implementation_result
@@ -50,6 +54,7 @@ workers:
 
   tester:
     process: tester_worker
+    skill_context_source: skills/manifest.json
     writes_state: false
     output:
       - test_commands
@@ -60,6 +65,7 @@ workers:
     process: bot2_worker
     provider_class: codex
     default_model: gpt-5.3-codex
+    skill_context_source: skills/manifest.json
     writes_state: false
     input_contract:
       - task
@@ -75,10 +81,24 @@ workers:
 
   devops:
     process: devops_worker
+    skill_context_source: skills/manifest.json
     writes_state: false
     blocked_until:
       - approved
       - accepted_by_user_override
+
+skill_library:
+  manifest: skills/manifest.json
+  selector: scripts/skill_index.py
+  runtime_hook: scripts/process_orchestrator.py
+  selection_policy: lazy_by_task_level_role_and_tags
+  active_skills_are_attached_to:
+    - route.skill_context
+    - process_events.skill_context_selected
+    - process_assignments.output.skills
+  approval_required_skills:
+    mode: gated_until_human_decision
+    requires_tool_gateway: true
 
 levels:
   L0:

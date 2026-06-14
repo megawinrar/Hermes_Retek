@@ -21,6 +21,20 @@
 |------|-------|---------------------|
 | **Dispatcher** | role-dispatcher | Маршрутизация задач между ролями |
 
+### Skill Library
+
+Перед запуском worker Hermes должен выбрать навыки через
+`skills/manifest.json` и `scripts/skill_index.py`, а не загружать весь каталог
+`skills/`.
+
+Runtime-контракт:
+
+1. Router определяет `task_level`, `task_type`, `risk_level` и `process_plan`.
+2. Supervisor строит `route.skill_context` через `scripts/skill_index.py context`.
+3. Bot#1, Tester и Bot#2 получают только свои role-specific skill paths/tags.
+4. DevOps/GitHub write skills остаются `gated_skills` до human approval.
+5. Любые skill scripts и внешние write-actions проходят через `tool_gateway.py`.
+
 ### Workflow (этапы для сложных задач)
 
 
@@ -89,4 +103,4 @@ Phase 0: Event Storming -> Phase 1: ADR -> Phase 2: C4 Model
 
 - Модель: DeepSeek V4 Flash (Bothub API)
 - API: https://openai.bothub.chat/v1
-- Git: GitLab (hermes-gitlab скилл)
+- Git: GitHub workflow через `github-*` skills; GitLab/YandexGPT считать legacy-контекстом, если задача явно не просит обратного.

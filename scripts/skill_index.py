@@ -12,6 +12,10 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "skills" / "manifest.json"
+ROLE_ALIASES = {
+    "bot2_light_if_risky": "bot2",
+    "devops_if_approved": "devops",
+}
 
 
 def manifest_path(path: str | None = None) -> Path:
@@ -22,6 +26,7 @@ def load_manifest(path: str | Path | None = None) -> dict[str, Any]:
     target = manifest_path(str(path) if path else None)
     data = json.loads(target.read_text(encoding="utf-8"))
     validate_manifest(data, base_dir=target.parents[1])
+    data["_manifest_path"] = str(target)
     return data
 
 
@@ -63,10 +68,43 @@ def validate_manifest(data: dict[str, Any], *, base_dir: Path = ROOT) -> None:
     for level in ["L0", "L1", "L2", "L3", "L4"]:
         if level not in level_policy:
             raise ValueError(f"missing level_policy for {level}")
+    task_type_tags = data.get("task_type_tags") or {}
+    if not isinstance(task_type_tags, dict):
+        raise ValueError("task_type_tags must be an object when present")
+    for task_type, tags in task_type_tags.items():
+        if not isinstance(task_type, str) or not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
+            raise ValueError("task_type_tags values must be string lists")
 
 
 def skill_map(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {str(item["name"]): item for item in manifest["skills"]}
+
+
+def normalize_role(role: str) -> str:
+    return ROLE_ALIASES.get(role, role)
+
+
+def task_tags(manifest: dict[str, Any], task_type: str) -> list[str]:
+    tags = (manifest.get("task_type_tags") or {}).get(task_type) or []
+    return sorted({str(tag) for tag in tags})
+
+
+def route_worker_roles(route: dict[str, Any]) -> list[str]:
+    roles: list[str] = []
+    include_conditional_bot2 = bool(
+        route.get("review_required")
+        or route.get("human_gate_required")
+        or route.get("risk_level") == "high"
+        or route.get("task_level") in {"L3", "L4"}
+    )
+    for raw_role in route.get("process_plan") or []:
+        role = str(raw_role)
+        if role == "bot2_light_if_risky" and not include_conditional_bot2:
+            continue
+        normalized = normalize_role(role)
+        if normalized not in roles:
+            roles.append(normalized)
+    return roles
 
 
 def select_skills(
@@ -79,6 +117,7 @@ def select_skills(
     policy = (manifest.get("level_policy") or {}).get(level)
     if not policy:
         raise ValueError(f"unknown level: {level}")
+    role = normalize_role(role) if role else None
     allowed_roles = set(policy.get("allowed_roles") or [])
     if role and role not in allowed_roles:
         return []
@@ -108,19 +147,121 @@ def select_skills(
     return selected
 
 
-def as_output(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def as_output(items: list[dict[str, Any]], *, preferred_tags: list[str] | None = None) -> list[dict[str, Any]]:
+    preferred = set(preferred_tags or [])
     return [
         {
             "name": item["name"],
             "path": item["path"],
             "description": item["description"],
+            "tags": item["tags"],
+            "matched_tags": sorted(preferred.intersection(set(item.get("tags") or []))),
             "worker_roles": item["worker_roles"],
             "risk_level": item["risk_level"],
+            "script_presence": bool(item.get("script_presence")),
+            "network_required": bool(item.get("network_required")),
+            "auth_required": bool(item.get("auth_required")),
             "load_policy": item["load_policy"],
             "gateway_required": bool(item.get("gateway_required")),
         }
         for item in items
     ]
+
+
+def unique_skill_records(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for item in items:
+        name = str(item.get("name") or "")
+        if name in seen:
+            continue
+        seen.add(name)
+        unique.append(item)
+    return unique
+
+
+def approval_gated_items(
+    manifest: dict[str, Any],
+    *,
+    level: str,
+    role: str,
+    active_names: set[str],
+) -> list[dict[str, Any]]:
+    policy = (manifest.get("level_policy") or {}).get(level) or {}
+    approval_only = set(policy.get("approval_only_skills") or [])
+    gated: list[dict[str, Any]] = []
+    for item in select_skills(manifest, level=level, role=role, include_approval_required=True):
+        name = str(item["name"])
+        if name in active_names:
+            continue
+        if name in approval_only or item.get("load_policy") == "approval_required":
+            gated.append(item)
+    return gated
+
+
+def select_skill_context(
+    manifest: dict[str, Any],
+    *,
+    route: dict[str, Any],
+    include_approval_required: bool = False,
+) -> dict[str, Any]:
+    level = str(route.get("task_level") or "")
+    task_type = str(route.get("task_type") or "")
+    preferred_tags = task_tags(manifest, task_type)
+    roles = route_worker_roles(route)
+
+    by_role: dict[str, list[dict[str, Any]]] = {}
+    gated_by_role: dict[str, list[dict[str, Any]]] = {}
+    selected_records: list[dict[str, Any]] = []
+    gated_records: list[dict[str, Any]] = []
+
+    for role in roles:
+        selected = as_output(
+            select_skills(
+                manifest,
+                level=level,
+                role=role,
+                include_approval_required=include_approval_required,
+            ),
+            preferred_tags=preferred_tags,
+        )
+        if selected:
+            by_role[role] = selected
+            selected_records.extend(selected)
+
+        active_names = {str(item["name"]) for item in selected}
+        gated = as_output(
+            approval_gated_items(manifest, level=level, role=role, active_names=active_names),
+            preferred_tags=preferred_tags,
+        )
+        if gated:
+            gated_by_role[role] = gated
+            gated_records.extend(gated)
+
+    return {
+        "version": 1,
+        "manifest": {
+            "name": manifest.get("name", ""),
+            "version": manifest.get("version"),
+            "path": str(manifest.get("_manifest_path") or manifest_path()),
+        },
+        "status": "selected",
+        "selection_policy": "lazy_by_task_level_role_and_tags",
+        "task_level": level,
+        "task_type": task_type,
+        "task_tags": preferred_tags,
+        "risk_level": route.get("risk_level", ""),
+        "roles": by_role,
+        "selected_skills": unique_skill_records(selected_records),
+        "gated_roles": gated_by_role,
+        "gated_skills": unique_skill_records(gated_records),
+        "runtime_contract": {
+            "load_only_selected_skill_paths": True,
+            "do_not_load_full_skills_tree": True,
+            "approval_required_skills_are_gated": True,
+            "skill_scripts_require_tool_gateway": bool((manifest.get("default_policy") or {}).get("scripts_require_gateway", True)),
+        },
+    }
 
 
 def cmd_list(args: argparse.Namespace) -> None:
@@ -136,7 +277,36 @@ def cmd_select(args: argparse.Namespace) -> None:
         role=args.role or None,
         include_approval_required=args.include_approval_required,
     )
-    print(json.dumps(as_output(selected), ensure_ascii=False, indent=2, sort_keys=True))
+    print(json.dumps(as_output(selected, preferred_tags=task_tags(manifest, args.task_type)), ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_context(args: argparse.Namespace) -> None:
+    manifest = load_manifest(args.manifest)
+    if args.route_json:
+        route = json.loads(args.route_json)
+        if not isinstance(route, dict):
+            raise SystemExit("--route-json must be a JSON object")
+    else:
+        route = {
+            "task_level": args.level,
+            "task_type": args.task_type,
+            "risk_level": args.risk_level,
+            "review_required": args.review_required,
+            "human_gate_required": args.human_gate_required,
+            "process_plan": args.process_plan,
+        }
+    print(
+        json.dumps(
+            select_skill_context(
+                manifest,
+                route=route,
+                include_approval_required=args.include_approval_required,
+            ),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -150,8 +320,20 @@ def build_parser() -> argparse.ArgumentParser:
     select = sub.add_parser("select")
     select.add_argument("--level", required=True, choices=["L0", "L1", "L2", "L3", "L4"])
     select.add_argument("--role", default="")
+    select.add_argument("--task-type", default="")
     select.add_argument("--include-approval-required", action="store_true")
     select.set_defaults(func=cmd_select)
+
+    context = sub.add_parser("context")
+    context.add_argument("--route-json", default="")
+    context.add_argument("--level", default="L2", choices=["L0", "L1", "L2", "L3", "L4"])
+    context.add_argument("--task-type", default="standard_task")
+    context.add_argument("--risk-level", default="medium", choices=["low", "medium", "high"])
+    context.add_argument("--review-required", action="store_true")
+    context.add_argument("--human-gate-required", action="store_true")
+    context.add_argument("--process-plan", nargs="*", default=["router", "supervisor", "bot1"])
+    context.add_argument("--include-approval-required", action="store_true")
+    context.set_defaults(func=cmd_context)
     return parser
 
 

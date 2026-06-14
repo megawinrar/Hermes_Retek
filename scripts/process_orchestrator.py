@@ -19,6 +19,8 @@ from human_notification import (
     dispatch_human_notification,
     redact_payload,
 )
+from skill_index import load_manifest as load_skill_manifest
+from skill_index import select_skill_context
 from supervisor_common import (
     BOT2_VERDICT_STATUSES,
     INVALID_BOT2_STATUS,
@@ -204,6 +206,25 @@ def route_requires_tester(route: dict[str, Any]) -> bool:
 
 def route_requires_bot2(route: dict[str, Any]) -> bool:
     return bool(route.get("review_required") or route.get("human_gate_required") or route.get("task_level") in {"L3", "L4"})
+
+
+def build_route_skill_context(route: dict[str, Any], *, include_approval_required: bool = False) -> dict[str, Any]:
+    manifest = load_skill_manifest()
+    return select_skill_context(
+        manifest,
+        route=route,
+        include_approval_required=include_approval_required,
+    )
+
+
+def skill_context_for_role(skill_context: dict[str, Any], role: str) -> dict[str, Any]:
+    return {
+        "role": role,
+        "skills": (skill_context.get("roles") or {}).get(role, []),
+        "gated_skills": (skill_context.get("gated_roles") or {}).get(role, []),
+        "task_tags": skill_context.get("task_tags", []),
+        "runtime_contract": skill_context.get("runtime_contract", {}),
+    }
 
 
 def dry_bot1_result(task: str, acceptance: str, route: dict[str, Any]) -> str:
@@ -399,7 +420,15 @@ def route_audit_from_args(args: argparse.Namespace, task: str, route: dict[str, 
     return audit
 
 
-def live_bot1_result(task: str, acceptance: str, *, bot1_model: str, max_tokens: int, timeout: int) -> tuple[str, str, str]:
+def live_bot1_result(
+    task: str,
+    acceptance: str,
+    *,
+    bot1_model: str,
+    max_tokens: int,
+    timeout: int,
+    skill_context: dict[str, Any] | None = None,
+) -> tuple[str, str, str]:
     import dual_bot_lab as lab
 
     cfg = lab.bothub_config()
@@ -410,7 +439,7 @@ def live_bot1_result(task: str, acceptance: str, *, bot1_model: str, max_tokens:
         base_url=cfg["base_url"],
         api_key=cfg["api_key"],
         model=bot1_model,
-        messages=lab.bot1_messages(task, acceptance),
+        messages=lab.bot1_messages(task, acceptance, skill_context=skill_context or {}),
         max_tokens=max_tokens,
         timeout=timeout,
     )
@@ -442,6 +471,7 @@ def live_dual_result(
     bot2_model: str,
     max_tokens: int,
     timeout: int,
+    skill_context: dict[str, Any] | None = None,
 ) -> tuple[str, str, dict[str, Any], str]:
     import dual_bot_lab as lab
 
@@ -455,10 +485,21 @@ def live_dual_result(
 
     for round_no in range(1, MAX_BOT_REVIEW_CYCLES + 1):
         if round_no == 1:
-            bot1_messages = lab.bot1_messages(task, acceptance)
+            bot1_messages = lab.bot1_messages(
+                task,
+                acceptance,
+                skill_context=skill_context_for_role(skill_context or {}, "bot1"),
+            )
             bot1_speaker = "Bot#1"
         else:
-            bot1_messages = lab.bot1_revision_messages(task, acceptance, bot1, verdict, round_no - 1)
+            bot1_messages = lab.bot1_revision_messages(
+                task,
+                acceptance,
+                bot1,
+                verdict,
+                round_no - 1,
+                skill_context=skill_context_for_role(skill_context or {}, "bot1"),
+            )
             bot1_speaker = f"Bot#1-revision-{round_no}"
         bot1_started_at = time.perf_counter()
         bot1, bot1_raw = lab.call_chat(
@@ -488,7 +529,14 @@ def live_dual_result(
                 base_url=cfg["base_url"],
                 api_key=cfg["api_key"],
                 model=bot1_model,
-                messages=lab.bot1_self_check_messages(task, acceptance, bot1, verdict, round_no),
+                messages=lab.bot1_self_check_messages(
+                    task,
+                    acceptance,
+                    bot1,
+                    verdict,
+                    round_no,
+                    skill_context=skill_context_for_role(skill_context or {}, "bot1"),
+                ),
                 max_tokens=max_tokens,
                 timeout=timeout,
             )
@@ -516,7 +564,12 @@ def live_dual_result(
             base_url=cfg["base_url"],
             api_key=cfg["api_key"],
             model=bot2_model,
-            messages=lab.bot2_messages(task, acceptance, bot1),
+            messages=lab.bot2_messages(
+                task,
+                acceptance,
+                bot1,
+                skill_context=skill_context_for_role(skill_context or {}, "bot2"),
+            ),
             max_tokens=max_tokens,
             timeout=timeout,
         )
@@ -796,6 +849,9 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
     initial_route = classify_task(task)
     route_audit = route_audit_from_args(args, task, initial_route)
     route = apply_classification_audit(initial_route, route_audit) if route_audit else initial_route
+    skill_context = build_route_skill_context(route)
+    route = dict(route)
+    route["skill_context"] = skill_context
     supervisor_created = create_task(task, store_path=args.supervisor_store)
     supervisor_task_id = supervisor_created["task_id"]
     pid = create_process_run(
@@ -806,7 +862,9 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
         store_path=args.process_store,
     )
     add_process_event(pid, "routed", route, store_path=args.process_store)
+    add_process_event(pid, "skill_context_selected", skill_context, store_path=args.process_store)
     add_assignment(pid, "router", "intake", "completed", route, store_path=args.process_store)
+    add_assignment(pid, "skill_index", "context_selection", "completed", skill_context, store_path=args.process_store)
     add_assignment(pid, "supervisor", "create_contract", "completed", supervisor_created, store_path=args.process_store)
     add_supervisor_event(
         supervisor_task_id,
@@ -869,6 +927,7 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
                 bot2_model=args.bot2_model,
                 max_tokens=args.max_tokens,
                 timeout=args.timeout,
+                skill_context=skill_context,
             )
         elif args.live_dual:
             bot1_result, bot2_session_id, report_path = live_bot1_result(
@@ -877,6 +936,7 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
                 bot1_model=args.bot1_model,
                 max_tokens=args.max_tokens,
                 timeout=args.timeout,
+                skill_context=skill_context_for_role(skill_context, "bot1"),
             )
         else:
             bot1_result = args.bot1_result or dry_bot1_result(task, acceptance, route)
@@ -894,6 +954,7 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
                 "result_chars": len(bot1_result),
                 "report_path": report_path,
                 "review_cycle_count": len(verdict.get("review_cycles") or []),
+                "skills": skill_context_for_role(skill_context, "bot1"),
             },
             store_path=args.process_store,
         )
@@ -906,7 +967,14 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
             store_path=args.supervisor_store,
         )
         if route_requires_tester(route):
-            add_assignment(pid, "tester", "verification", "completed", {"evidence_chars": len(evidence)}, store_path=args.process_store)
+            add_assignment(
+                pid,
+                "tester",
+                "verification",
+                "completed",
+                {"evidence_chars": len(evidence), "skills": skill_context_for_role(skill_context, "tester")},
+                store_path=args.process_store,
+            )
             add_role_run(
                 supervisor_task_id,
                 "tester",
@@ -931,7 +999,18 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
 
     if needs_bot2:
         link_bot2(supervisor_task_id, bot2_session_id, verdict, store_path=args.supervisor_store)
-        add_assignment(pid, "bot2", "quality_gate", "completed", {"session_id": bot2_session_id, "verdict": verdict}, store_path=args.process_store)
+        add_assignment(
+            pid,
+            "bot2",
+            "quality_gate",
+            "completed",
+            {
+                "session_id": bot2_session_id,
+                "verdict": verdict,
+                "skills": skill_context_for_role(skill_context, "bot2"),
+            },
+            store_path=args.process_store,
+        )
         add_role_run(
             supervisor_task_id,
             "bot2",
@@ -1110,6 +1189,7 @@ def process_summary(
     assignments = list(data.get("assignments") or [])
     events = list(data.get("events") or [])
     route = data.get("router") or {}
+    skill_context = route.get("skill_context") or {}
     bot2_assignment = latest_assignment(assignments, "bot2")
     bot2_event = latest_event(events, "bot2_verdict")
     human_event = latest_event(events, "human_notification")
@@ -1178,6 +1258,22 @@ def process_summary(
             "review_required": bool(route.get("review_required")),
             "human_gate_required": bool(route.get("human_gate_required")),
             "classification_audit": route.get("classification_audit", {}),
+        },
+        "skills": {
+            "status": skill_context.get("status", ""),
+            "selection_policy": skill_context.get("selection_policy", ""),
+            "task_tags": skill_context.get("task_tags", []),
+            "selected": [item.get("name", "") for item in skill_context.get("selected_skills", [])],
+            "gated": [item.get("name", "") for item in skill_context.get("gated_skills", [])],
+            "roles": {
+                role: [item.get("name", "") for item in skills]
+                for role, skills in (skill_context.get("roles") or {}).items()
+            },
+            "gated_roles": {
+                role: [item.get("name", "") for item in skills]
+                for role, skills in (skill_context.get("gated_roles") or {}).items()
+            },
+            "runtime_contract": skill_context.get("runtime_contract", {}),
         },
         "bot2": {
             "required": bot2_required,
@@ -1323,6 +1419,7 @@ def process_transcript(
         "supervisor_task_id": details.get("supervisor_task_id", ""),
         "status": details.get("status", ""),
         "route": details.get("router", {}),
+        "skill_context": (details.get("router") or {}).get("skill_context", {}),
         "conversation": [
             {
                 "actor": "router",
