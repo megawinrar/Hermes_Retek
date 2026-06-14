@@ -350,6 +350,19 @@ def live_dual_result(
                 verdict["repair_attempted"] = True
                 verdict["repair_status"] = "failed_closed"
 
+        loop_exhausted = verdict.get("status") == "REQUEST_CHANGES" and round_no == MAX_BOT_REVIEW_CYCLES
+        if loop_exhausted:
+            verdict["loop_status"] = "max_review_cycles_reached"
+            risks = list(verdict.get("risks") or [])
+            if "max_review_cycles_reached" not in risks:
+                risks.append("max_review_cycles_reached")
+            verdict["risks"] = risks
+            required_fixes = list(verdict.get("required_fixes") or [])
+            escalation_fix = "Escalate to a human decision after repeated Bot#1/Bot#2 correction cycles."
+            if escalation_fix not in required_fixes:
+                required_fixes.append(escalation_fix)
+            verdict["required_fixes"] = required_fixes
+
         cycle = {
             "round": round_no,
             "bot1_chars": len(bot1),
@@ -358,6 +371,8 @@ def live_dual_result(
             "bot2_summary": verdict.get("summary", ""),
             "required_fixes": verdict.get("required_fixes", []),
             "risks": verdict.get("risks", []),
+            "loop_status": verdict.get("loop_status", ""),
+            "repair_loop_exhausted": loop_exhausted,
             "fix_closure_checklist": fix_closure_checklist,
             "bot2_repair_attempted": bool(verdict.get("repair_attempted")),
             "bot2_repair_status": verdict.get("repair_status", ""),
@@ -367,12 +382,8 @@ def live_dual_result(
             break
         if verdict.get("status") != "REQUEST_CHANGES":
             break
-        if round_no == MAX_BOT_REVIEW_CYCLES:
-            verdict["loop_status"] = "max_review_cycles_reached"
-            verdict["risks"] = list(verdict.get("risks") or []) + ["max_review_cycles_reached"]
-            verdict["required_fixes"] = list(verdict.get("required_fixes") or []) + [
-                "Escalate to a human decision after repeated Bot#1/Bot#2 correction cycles.",
-            ]
+        if loop_exhausted:
+            break
 
     verdict["review_cycles"] = review_cycles
     final_fix_closure = next((cycle.get("fix_closure_checklist") for cycle in reversed(review_cycles) if cycle.get("fix_closure_checklist")), [])
