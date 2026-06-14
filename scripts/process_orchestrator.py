@@ -124,6 +124,11 @@ def capped_llm_tokens(requested: int, *, env_name: str, default_cap: int = 0) ->
     return max(1, min(requested, cap))
 
 
+def llm_http_timing(response: dict[str, Any]) -> dict[str, Any]:
+    timing = response.get("_hermes_http_timing_ms") if isinstance(response, dict) else {}
+    return dict(timing) if isinstance(timing, dict) else {}
+
+
 def process_id() -> str:
     return f"proc-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
@@ -586,6 +591,7 @@ def route_audit_from_args(args: argparse.Namespace, task: str, route: dict[str, 
     audit["source"] = "bot2_live_route_audit"
     audit["raw_chars"] = len(audit_raw)
     audit["usage"] = audit_response.get("usage", {})
+    audit["http_timing_ms"] = llm_http_timing(audit_response)
     audit["latency_ms"] = elapsed_ms(started_at)
     audit["model"] = args.bot2_model
     if use_cache:
@@ -627,7 +633,11 @@ def live_bot1_result(
         "Bot#1",
         bot1_model,
         bot1,
-        {"usage": bot1_raw.get("usage", {}), "latency_ms": elapsed_ms(started_at)},
+        {
+            "usage": bot1_raw.get("usage", {}),
+            "latency_ms": elapsed_ms(started_at),
+            "http_timing_ms": llm_http_timing(bot1_raw),
+        },
     )
     report = lab.write_report(
         run_id_value=rid,
@@ -698,13 +708,18 @@ def live_dual_result(
             bot1_speaker,
             bot1_model,
             bot1,
-            {"usage": bot1_raw.get("usage", {}), "latency_ms": bot1_latency_ms},
+            {
+                "usage": bot1_raw.get("usage", {}),
+                "latency_ms": bot1_latency_ms,
+                "http_timing_ms": llm_http_timing(bot1_raw),
+            },
         )
 
         self_check = ""
         fix_closure_checklist: list[dict[str, str]] = []
         self_check_latency_ms = 0
         self_check_usage: dict[str, Any] = {}
+        self_check_http_timing: dict[str, Any] = {}
         if round_no > 1:
             self_check_started_at = time.perf_counter()
             self_check, self_check_raw = lab.call_chat(
@@ -724,12 +739,13 @@ def live_dual_result(
             )
             self_check_latency_ms = elapsed_ms(self_check_started_at)
             self_check_usage = self_check_raw.get("usage", {})
+            self_check_http_timing = llm_http_timing(self_check_raw)
             lab.add_message(
                 rid,
                 f"Bot#1-self-check-{round_no}",
                 bot1_model,
                 self_check,
-                {"usage": self_check_usage, "latency_ms": self_check_latency_ms},
+                {"usage": self_check_usage, "latency_ms": self_check_latency_ms, "http_timing_ms": self_check_http_timing},
             )
             bot1 = self_check
             fix_closure_checklist = [
@@ -757,12 +773,17 @@ def live_dual_result(
         )
         bot2_latency_ms = elapsed_ms(bot2_started_at)
         bot2_repair_usage: dict[str, Any] = {}
+        bot2_repair_http_timing: dict[str, Any] = {}
         lab.add_message(
             rid,
             f"Bot#2-{round_no}",
             bot2_model,
             bot2,
-            {"usage": bot2_raw.get("usage", {}), "latency_ms": bot2_latency_ms},
+            {
+                "usage": bot2_raw.get("usage", {}),
+                "latency_ms": bot2_latency_ms,
+                "http_timing_ms": llm_http_timing(bot2_raw),
+            },
         )
         verdict = parse_verdict(bot2)
         bot2_repair_latency_ms = 0
@@ -778,12 +799,17 @@ def live_dual_result(
             )
             bot2_repair_latency_ms = elapsed_ms(bot2_repair_started_at)
             bot2_repair_usage = bot2_repair_raw.get("usage", {})
+            bot2_repair_http_timing = llm_http_timing(bot2_repair_raw)
             lab.add_message(
                 rid,
                 f"Bot#2-repair-{round_no}",
                 bot2_model,
                 bot2_repair,
-                {"usage": bot2_repair_usage, "latency_ms": bot2_repair_latency_ms},
+                {
+                    "usage": bot2_repair_usage,
+                    "latency_ms": bot2_repair_latency_ms,
+                    "http_timing_ms": bot2_repair_http_timing,
+                },
             )
             repaired_verdict = parse_verdict(bot2_repair)
             repaired_verdict["repair_attempted"] = True
@@ -827,6 +853,12 @@ def live_dual_result(
                 "bot1_self_check": self_check_usage,
                 "bot2": bot2_raw.get("usage", {}),
                 "bot2_repair": bot2_repair_usage,
+            },
+            "http_timing_ms": {
+                "bot1": llm_http_timing(bot1_raw),
+                "bot1_self_check": self_check_http_timing,
+                "bot2": llm_http_timing(bot2_raw),
+                "bot2_repair": bot2_repair_http_timing,
             },
             "loop_status": verdict.get("loop_status", ""),
             "repair_loop_exhausted": loop_exhausted,
@@ -904,7 +936,11 @@ def live_bot1_revision_result(
         f"Bot#1-human-revision-{round_no}",
         bot1_model,
         bot1,
-        {"usage": bot1_raw.get("usage", {}), "latency_ms": bot1_latency_ms},
+        {
+            "usage": bot1_raw.get("usage", {}),
+            "latency_ms": bot1_latency_ms,
+            "http_timing_ms": llm_http_timing(bot1_raw),
+        },
     )
 
     self_check_started_at = time.perf_counter()
@@ -929,7 +965,11 @@ def live_bot1_revision_result(
         f"Bot#1-human-self-check-{round_no}",
         bot1_model,
         self_check,
-        {"usage": self_check_raw.get("usage", {}), "latency_ms": self_check_latency_ms},
+        {
+            "usage": self_check_raw.get("usage", {}),
+            "latency_ms": self_check_latency_ms,
+            "http_timing_ms": llm_http_timing(self_check_raw),
+        },
     )
     bot1 = self_check
     fix_closure_checklist = [
@@ -961,12 +1001,17 @@ def live_bot1_revision_result(
         f"Bot#2-human-review-{round_no}",
         bot2_model,
         bot2,
-        {"usage": bot2_raw.get("usage", {}), "latency_ms": bot2_latency_ms},
+        {
+            "usage": bot2_raw.get("usage", {}),
+            "latency_ms": bot2_latency_ms,
+            "http_timing_ms": llm_http_timing(bot2_raw),
+        },
     )
 
     verdict = parse_verdict(bot2)
     bot2_repair_latency_ms = 0
     bot2_repair_usage: dict[str, Any] = {}
+    bot2_repair_http_timing: dict[str, Any] = {}
     if verdict.get("status") == INVALID_BOT2_STATUS:
         bot2_repair_started_at = time.perf_counter()
         bot2_repair, bot2_repair_raw = lab.call_chat(
@@ -979,12 +1024,17 @@ def live_bot1_revision_result(
         )
         bot2_repair_latency_ms = elapsed_ms(bot2_repair_started_at)
         bot2_repair_usage = bot2_repair_raw.get("usage", {})
+        bot2_repair_http_timing = llm_http_timing(bot2_repair_raw)
         lab.add_message(
             rid,
             f"Bot#2-human-repair-{round_no}",
             bot2_model,
             bot2_repair,
-            {"usage": bot2_repair_usage, "latency_ms": bot2_repair_latency_ms},
+            {
+                "usage": bot2_repair_usage,
+                "latency_ms": bot2_repair_latency_ms,
+                "http_timing_ms": bot2_repair_http_timing,
+            },
         )
         repaired_verdict = parse_verdict(bot2_repair)
         repaired_verdict["repair_attempted"] = True
@@ -1016,6 +1066,12 @@ def live_bot1_revision_result(
             "bot1_self_check": self_check_raw.get("usage", {}),
             "bot2": bot2_raw.get("usage", {}),
             "bot2_repair": bot2_repair_usage,
+        },
+        "http_timing_ms": {
+            "bot1": llm_http_timing(bot1_raw),
+            "bot1_self_check": llm_http_timing(self_check_raw),
+            "bot2": llm_http_timing(bot2_raw),
+            "bot2_repair": bot2_repair_http_timing,
         },
         "fix_closure_checklist": fix_closure_checklist,
         "bot2_repair_attempted": bool(verdict.get("repair_attempted")),
@@ -1057,11 +1113,27 @@ def build_process_performance(
     review_cycles = verdict.get("review_cycles") or []
     live_review_latency_ms = 0
     live_review_calls = 0
+    live_review_http_timing = {
+        "request_count": 0,
+        "total": 0,
+        "time_to_headers": 0,
+        "read_body": 0,
+    }
     for cycle in review_cycles:
         latencies = cycle.get("latency_ms") or {}
         for value in latencies.values():
             if isinstance(value, int):
                 live_review_latency_ms += value
+        http_timings = cycle.get("http_timing_ms") or {}
+        if isinstance(http_timings, dict):
+            for timing in http_timings.values():
+                if not isinstance(timing, dict) or not timing:
+                    continue
+                live_review_http_timing["request_count"] += 1
+                for key in ["total", "time_to_headers", "read_body"]:
+                    value = timing.get(key)
+                    if isinstance(value, int):
+                        live_review_http_timing[key] += value
         live_review_calls += 2
         if cycle.get("bot1_self_check"):
             live_review_calls += 1
@@ -1082,6 +1154,7 @@ def build_process_performance(
             "cycle_count": len(review_cycles),
             "llm_call_count": live_review_calls,
             "latency_ms": live_review_latency_ms,
+            "http_timing_ms": live_review_http_timing,
         },
     }
 

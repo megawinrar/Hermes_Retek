@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import textwrap
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -233,19 +234,26 @@ def call_chat_payload(*, base_url: str, api_key: str, payload: dict[str, Any], t
     attempts.append(alt_no_temp)
 
     errors: list[str] = []
-    for body in attempts:
+    for attempt_index, body in enumerate(attempts, start=1):
+        request_body = json.dumps(body, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             f"{base_url}/chat/completions",
-            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            data=request_body,
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             method="POST",
         )
+        started_at = time.perf_counter()
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
+                headers_ms = int((time.perf_counter() - started_at) * 1000)
+                read_started_at = time.perf_counter()
                 raw = response.read().decode("utf-8", errors="replace")
+                read_body_ms = int((time.perf_counter() - read_started_at) * 1000)
+                total_ms = int((time.perf_counter() - started_at) * 1000)
+                http_status = getattr(response, "status", 0) or getattr(response, "code", 0) or 0
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
             errors.append(f"http_{exc.code}: {raw[:500]}")
@@ -267,6 +275,19 @@ def call_chat_payload(*, base_url: str, api_key: str, payload: dict[str, Any], t
             continue
         content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
         if content:
+            data["_hermes_http_timing_ms"] = {
+                "method": "POST",
+                "attempt_index": attempt_index,
+                "attempt_count": len(attempts),
+                "time_to_headers": headers_ms,
+                "read_body": read_body_ms,
+                "total": total_ms,
+                "http_status": int(http_status),
+                "request_bytes": len(request_body),
+                "response_bytes": len(raw.encode("utf-8")),
+                "payload_shape": "max_completion_tokens" if "max_completion_tokens" in body else "max_tokens",
+                "temperature_sent": "temperature" in body,
+            }
             return content, data
         errors.append(f"empty_content: {json.dumps(data, ensure_ascii=False)[:500]}")
     raise RuntimeError(redact_text("Bothub chat completion failed: " + " | ".join(errors)))

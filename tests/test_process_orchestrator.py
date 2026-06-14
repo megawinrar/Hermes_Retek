@@ -302,6 +302,34 @@ def test_live_route_audit_runs_for_high_risk_route_and_records_latency(monkeypat
     assert details["summary"]["performance"]["route_audit"]["status"] == "CONFIRM"
 
 
+def test_process_performance_aggregates_llm_http_timing() -> None:
+    performance = process_orchestrator.build_process_performance(
+        duration_ms=1234,
+        route_audit={},
+        verdict={
+            "review_cycles": [
+                {
+                    "latency_ms": {"bot1": 1000, "bot2": 2000, "bot2_repair": 0},
+                    "http_timing_ms": {
+                        "bot1": {"total": 900, "time_to_headers": 880, "read_body": 20},
+                        "bot2": {"total": 1900, "time_to_headers": 1880, "read_body": 20},
+                        "bot2_repair": {},
+                    },
+                }
+            ]
+        },
+    )
+
+    assert performance["live_review"]["latency_ms"] == 3000
+    assert performance["live_review"]["llm_call_count"] == 2
+    assert performance["live_review"]["http_timing_ms"] == {
+        "request_count": 2,
+        "total": 2800,
+        "time_to_headers": 2760,
+        "read_body": 40,
+    }
+
+
 def test_live_route_audit_cache_reuses_previous_bot2_result(monkeypatch, tmp_path: Path) -> None:
     import dual_bot_lab
 
