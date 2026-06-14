@@ -71,6 +71,18 @@ def test_bot2_repair_prompt_keeps_repaired_verdict_concise() -> None:
     assert "Bot#2 concise defect-review rules" in combined
 
 
+def test_semantic_budget_profiles_scale_meaning_by_level() -> None:
+    l1 = dual_bot_lab.semantic_budget_for_route({"task_level": "L1", "risk_level": "low"}, "bot1")
+    l4 = dual_bot_lab.semantic_budget_for_route({"task_level": "L4", "human_gate_required": True}, "bot2")
+
+    assert l1["policy"] == "meaning-first compression"
+    assert l1["depth"] == "compact_task_answer"
+    assert "multi-phase plan" in l1["omit"]
+    assert l4["depth"] == "production_or_human_gate"
+    assert l4["issue_budget"] == 3
+    assert "unsafe action" in l4["must_focus"]
+
+
 def test_live_dual_result_repairs_invalid_bot2_json_once(monkeypatch, tmp_path: Path) -> None:
     calls: list[list[dict[str, str]]] = []
     messages: list[tuple[str, str]] = []
@@ -122,9 +134,13 @@ def test_live_dual_result_repairs_invalid_bot2_json_once(monkeypatch, tmp_path: 
     assert verdict["summary"] == "repair ok"
     assert verdict["repair_attempted"] is True
     assert verdict["repair_status"] == "repaired"
+    assert verdict["semantic_budget"]["bot2"]["policy"] == "meaning-first compression"
+    assert verdict["review_cycles"][0]["semantic_budget"]["bot2"]["issue_budget"] == 3
     assert verdict["review_cycles"][0]["bot2_repair_attempted"] is True
     assert verdict["review_cycles"][0]["bot2_repair_status"] == "repaired"
     assert len(calls) == 3
+    assert "Semantic budget" in calls[0][1]["content"]
+    assert "Semantic budget" in calls[1][1]["content"]
     assert "Return ONLY valid JSON matching this schema" in calls[2][1]["content"]
     assert [speaker for speaker, _content in messages] == ["Bot#1", "Bot#2-1", "Bot#2-repair-1"]
 

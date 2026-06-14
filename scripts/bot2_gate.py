@@ -19,7 +19,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from dual_bot_lab import BOT2_VERDICT_CONCISION_RULES, BOT2_VERDICT_JSON_SCHEMA, bot2_repair_messages
+from dual_bot_lab import (
+    BOT2_VERDICT_CONCISION_RULES,
+    BOT2_VERDICT_JSON_SCHEMA,
+    bot2_repair_messages,
+    format_semantic_budget,
+    semantic_budget_for_route,
+)
 from human_notification import redact_payload, redact_text
 from supervisor_common import INVALID_BOT2_STATUS, parse_bot2_verdict
 
@@ -263,6 +269,9 @@ Bot#1 result:
 
 Evidence supplied:
 {evidence}
+
+Semantic budget:
+{format_semantic_budget(semantic_budget_for_route({"task_level": "L3", "risk_level": "high"}, "bot2"))}
 
 Return ONLY valid JSON matching this schema:
 {BOT2_VERDICT_JSON_SCHEMA}

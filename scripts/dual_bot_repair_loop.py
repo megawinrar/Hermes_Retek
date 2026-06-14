@@ -116,12 +116,19 @@ def repair_bot2_verdict(
     bot2_model: str,
     max_tokens: int,
     timeout: int,
+    semantic_budget: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any], dict[str, Any]]:
     repaired_raw, repaired_usage = lab.call_chat(
         base_url=cfg["base_url"],
         api_key=cfg["api_key"],
         model=bot2_model,
-        messages=lab.bot2_repair_messages(task, acceptance, bot1_result, invalid_output),
+        messages=lab.bot2_repair_messages(
+            task,
+            acceptance,
+            bot1_result,
+            invalid_output,
+            semantic_budget=semantic_budget,
+        ),
         max_tokens=max_tokens,
         timeout=timeout,
     )
@@ -141,8 +148,16 @@ def bot1_revision_messages(
     previous_answer: str,
     bot2_verdict: dict[str, Any],
     round_no: int,
+    semantic_budget: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
-    return lab.bot1_revision_messages(task, acceptance, previous_answer, bot2_verdict, round_no)
+    return lab.bot1_revision_messages(
+        task,
+        acceptance,
+        previous_answer,
+        bot2_verdict,
+        round_no,
+        semantic_budget=semantic_budget,
+    )
 
 
 def bot1_self_check_messages(
@@ -152,8 +167,16 @@ def bot1_self_check_messages(
     draft_answer: str,
     bot2_verdict: dict[str, Any],
     round_no: int,
+    semantic_budget: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
-    return lab.bot1_self_check_messages(task, acceptance, draft_answer, bot2_verdict, round_no)
+    return lab.bot1_self_check_messages(
+        task,
+        acceptance,
+        draft_answer,
+        bot2_verdict,
+        round_no,
+        semantic_budget=semantic_budget,
+    )
 
 
 def write_report(
@@ -257,6 +280,13 @@ def run_case(
     rid = lab.run_id()
     lab.add_run(rid, case["task"], case["acceptance"], bot1_model, bot2_model)
     route = classify_task(case["task"])
+    semantic_budgets = {
+        "bot1": lab.semantic_budget_for_route(route, "bot1"),
+        "bot1_revision": lab.semantic_budget_for_route(route, "bot1_revision"),
+        "bot1_self_check": lab.semantic_budget_for_route(route, "bot1_self_check"),
+        "bot2": lab.semantic_budget_for_route(route, "bot2"),
+        "bot2_repair": lab.semantic_budget_for_route(route, "bot2"),
+    }
     print_block(
         f"ЗАДАЧА УРОВЕНЬ {case['level']}: {case['name']}",
         {
@@ -269,7 +299,11 @@ def run_case(
     )
     print_block("КЛАССИФИКАЦИЯ SUPERVISOR", route, pause=pause)
 
-    bot1_messages = lab.bot1_messages(case["task"], case["acceptance"])
+    bot1_messages = lab.bot1_messages(
+        case["task"],
+        case["acceptance"],
+        semantic_budget=semantic_budgets["bot1"],
+    )
     current_answer = ""
     turns: list[dict[str, Any]] = []
 
@@ -284,6 +318,7 @@ def run_case(
                 previous_answer=current_answer,
                 bot2_verdict=previous_verdict,
                 round_no=round_no - 1,
+                semantic_budget=semantic_budgets["bot1_revision"],
             )
         print_block(f"BOT#1 РАУНД {round_no}: запрос к модели", f"model={bot1_model}", pause=0)
         current_answer, bot1_raw = lab.call_chat(
@@ -311,6 +346,7 @@ def run_case(
                     draft_answer=current_answer,
                     bot2_verdict=previous_verdict,
                     round_no=round_no,
+                    semantic_budget=semantic_budgets["bot1_self_check"],
                 ),
                 max_tokens=max_tokens,
                 timeout=timeout,
@@ -330,7 +366,12 @@ def run_case(
             base_url=cfg["base_url"],
             api_key=cfg["api_key"],
             model=bot2_model,
-            messages=lab.bot2_messages(case["task"], case["acceptance"], current_answer),
+            messages=lab.bot2_messages(
+                case["task"],
+                case["acceptance"],
+                current_answer,
+                semantic_budget=semantic_budgets["bot2"],
+            ),
             max_tokens=max_tokens,
             timeout=timeout,
         )
@@ -347,6 +388,7 @@ def run_case(
                 bot2_model=bot2_model,
                 max_tokens=max_tokens,
                 timeout=timeout,
+                semantic_budget=semantic_budgets["bot2_repair"],
             )
             lab.add_message(
                 rid,

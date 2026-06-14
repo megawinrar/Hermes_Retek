@@ -83,6 +83,107 @@ BOT2_VERDICT_CONCISION_RULES = """Bot#2 concise defect-review rules:
 - For APPROVE/APPROVE_WITH_EVIDENCE, use empty risks and required_fixes unless a concrete residual risk remains.
 - For REQUEST_CHANGES/REJECT/INSUFFICIENT_EVIDENCE/etc., include at least one required_fixes item.
 """
+SEMANTIC_LEVEL_PROFILES: dict[str, dict[str, Any]] = {
+    "L0": {
+        "depth": "no_llm_or_micro_answer",
+        "bot1_must_include": ["direct answer only if Bot#1 is explicitly invoked"],
+        "bot1_omit": ["architecture", "long reasoning", "implementation plan"],
+        "bot2_issue_budget": 0,
+    },
+    "L1": {
+        "depth": "compact_task_answer",
+        "bot1_must_include": ["answer", "minimal evidence", "obvious risk if any"],
+        "bot1_omit": ["background tutorial", "multi-phase plan", "unrequested alternatives"],
+        "bot2_issue_budget": 1,
+    },
+    "L2": {
+        "depth": "focused_decision_or_analysis",
+        "bot1_must_include": ["decision logic", "calculation/check where relevant", "data risks"],
+        "bot1_omit": ["production rollout detail unless requested", "generic best practices"],
+        "bot2_issue_budget": 2,
+    },
+    "L3": {
+        "depth": "implementation_or_migration_plan",
+        "bot1_must_include": ["phases", "tests", "rollback", "metrics", "go/no-go"],
+        "bot1_omit": ["tutorial background", "duplicated sections", "speculative nice-to-have work"],
+        "bot2_issue_budget": 3,
+    },
+    "L4": {
+        "depth": "production_or_human_gate",
+        "bot1_must_include": ["safe alternative", "human approval semantics", "rollback", "go/no-go", "break-glass limits"],
+        "bot1_omit": ["unsafe bypass", "silent deploy", "approval ambiguity"],
+        "bot2_issue_budget": 3,
+    },
+}
+
+
+def semantic_budget_for_route(route: dict[str, Any] | None, role: str) -> dict[str, Any]:
+    route = route or {}
+    level = str(route.get("task_level") or "L3").upper()
+    if bool(route.get("human_gate_required")):
+        level = "L4"
+    if level not in SEMANTIC_LEVEL_PROFILES:
+        level = "L3"
+    profile = SEMANTIC_LEVEL_PROFILES[level]
+    base = {
+        "policy": "meaning-first compression",
+        "level": level,
+        "role": role,
+        "depth": profile["depth"],
+        "task_type": route.get("task_type", ""),
+        "risk_level": route.get("risk_level", ""),
+        "forbidden": [
+            "Do not pad with generic background.",
+            "Do not duplicate the same idea in multiple sections.",
+            "Do not spend output on unrequested alternatives.",
+        ],
+    }
+    if role == "bot2":
+        base.update(
+            {
+                "objective": "Find only blocking semantic defects against acceptance criteria and evidence.",
+                "issue_budget": profile["bot2_issue_budget"],
+                "must_focus": [
+                    "acceptance miss",
+                    "contradiction",
+                    "unsafe action",
+                    "missing evidence",
+                    "invalid method or test theater",
+                ],
+                "must_ignore": [
+                    "style-only objections",
+                    "future Supervisor transcript absence",
+                    "rewriting Bot#1's full solution",
+                ],
+            }
+        )
+    elif role in {"bot1_revision", "bot1_self_check"}:
+        base.update(
+            {
+                "objective": "Close only the Supervisor/Bot#2 fix package without expanding scope.",
+                "must_include": [
+                    "explicit closure of every required_fix",
+                    "removal of stale contradictions",
+                    "evidence that the fix is closed",
+                ],
+                "omit": ["new architecture unless required by a fix", "debate with Bot#2"],
+            }
+        )
+    else:
+        base.update(
+            {
+                "objective": "Answer at the minimum depth that satisfies acceptance criteria.",
+                "must_include": profile["bot1_must_include"],
+                "omit": profile["bot1_omit"],
+            }
+        )
+    return base
+
+
+def format_semantic_budget(semantic_budget: dict[str, Any] | None) -> str:
+    if not semantic_budget:
+        return "No semantic budget supplied; use concise default behavior and avoid generic filler."
+    return json.dumps(semantic_budget, ensure_ascii=False, indent=2, sort_keys=True)
 
 
 def format_skill_context(skill_context: dict[str, Any] | None) -> str:
@@ -340,7 +441,13 @@ def call_chat_payload(*, base_url: str, api_key: str, payload: dict[str, Any], t
     raise RuntimeError(redact_text("Bothub chat completion failed: " + " | ".join(errors)))
 
 
-def bot1_messages(task: str, acceptance: str, *, skill_context: dict[str, Any] | None = None) -> list[dict[str, str]]:
+def bot1_messages(
+    task: str,
+    acceptance: str,
+    *,
+    skill_context: dict[str, Any] | None = None,
+    semantic_budget: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
     return [
         {
             "role": "system",
@@ -362,6 +469,9 @@ Acceptance criteria:
 Runtime skill context:
 {format_skill_context(skill_context)}
 
+Semantic budget:
+{format_semantic_budget(semantic_budget)}
+
 Return Markdown with exactly these sections:
 ## Bot#1 Answer
 ## Public Reasoning
@@ -378,6 +488,7 @@ def bot2_messages(
     bot1_result: str,
     *,
     skill_context: dict[str, Any] | None = None,
+    semantic_budget: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     return [
         {
@@ -405,6 +516,9 @@ Bot#1 result:
 
 Runtime skill context for Bot#2:
 {format_skill_context(skill_context)}
+
+Semantic budget:
+{format_semantic_budget(semantic_budget)}
 
 Supervisor context:
 {SUPERVISOR_TRANSCRIPT_CONTEXT}
@@ -468,6 +582,7 @@ def bot1_revision_messages(
     round_no: int,
     *,
     skill_context: dict[str, Any] | None = None,
+    semantic_budget: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     fixes = bot2_verdict.get("required_fixes") or []
     risks = bot2_verdict.get("risks") or []
@@ -492,6 +607,9 @@ Acceptance criteria:
 
 Runtime skill context:
 {format_skill_context(skill_context)}
+
+Semantic budget:
+{format_semantic_budget(semantic_budget)}
 
 Previous Bot#1 answer:
 {previous_answer}
@@ -524,6 +642,7 @@ def bot1_self_check_messages(
     round_no: int,
     *,
     skill_context: dict[str, Any] | None = None,
+    semantic_budget: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     fixes = bot2_verdict.get("required_fixes") or []
     risks = bot2_verdict.get("risks") or []
@@ -551,6 +670,9 @@ Acceptance criteria:
 Runtime skill context:
 {format_skill_context(skill_context)}
 
+Semantic budget:
+{format_semantic_budget(semantic_budget)}
+
 Bot#2 required fixes for round {round_no}:
 {json.dumps(fixes, ensure_ascii=False, indent=2)}
 
@@ -576,7 +698,14 @@ Return Markdown with exactly these sections:
     ]
 
 
-def bot2_repair_messages(task: str, acceptance: str, bot1_result: str, invalid_output: str) -> list[dict[str, str]]:
+def bot2_repair_messages(
+    task: str,
+    acceptance: str,
+    bot1_result: str,
+    invalid_output: str,
+    *,
+    semantic_budget: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
     return [
         {
             "role": "system",
@@ -598,6 +727,9 @@ Acceptance criteria:
 
 Bot#1 result:
 {bot1_result}
+
+Semantic budget:
+{format_semantic_budget(semantic_budget)}
 
 Bot#2 invalid output to repair:
 {invalid_output}

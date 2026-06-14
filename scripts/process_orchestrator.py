@@ -702,6 +702,7 @@ def live_bot1_result(
 
     cfg = lab.bothub_config()
     bot1_max_tokens = token_budget_for_role(max_tokens, role="bot1", route=route)
+    semantic_budget = lab.semantic_budget_for_route(route, "bot1")
     rid = lab.run_id()
     lab.add_run(rid, task, acceptance, bot1_model, "")
     started_at = time.perf_counter()
@@ -709,7 +710,12 @@ def live_bot1_result(
         base_url=cfg["base_url"],
         api_key=cfg["api_key"],
         model=bot1_model,
-        messages=lab.bot1_messages(task, acceptance, skill_context=skill_context or {}),
+        messages=lab.bot1_messages(
+            task,
+            acceptance,
+            skill_context=skill_context or {},
+            semantic_budget=semantic_budget,
+        ),
         max_tokens=bot1_max_tokens,
         timeout=timeout,
     )
@@ -723,6 +729,7 @@ def live_bot1_result(
             "latency_ms": elapsed_ms(started_at),
             "http_timing_ms": llm_http_timing(bot1_raw),
             "completion_budget": llm_completion_budget(bot1_raw, max_tokens=bot1_max_tokens),
+            "semantic_budget": semantic_budget,
             "token_policy": token_policy_snapshot(
                 requested=max_tokens,
                 route=route,
@@ -765,6 +772,13 @@ def live_dual_result(
         "bot2_repair": token_budget_for_role(max_tokens, role="bot2_repair", route=route),
     }
     token_policy = token_policy_snapshot(requested=max_tokens, route=route, budgets=token_budgets)
+    semantic_budgets = {
+        "bot1": lab.semantic_budget_for_route(route, "bot1"),
+        "bot1_revision": lab.semantic_budget_for_route(route, "bot1_revision"),
+        "bot1_self_check": lab.semantic_budget_for_route(route, "bot1_self_check"),
+        "bot2": lab.semantic_budget_for_route(route, "bot2"),
+        "bot2_repair": lab.semantic_budget_for_route(route, "bot2"),
+    }
     rid = lab.run_id()
     lab.add_run(rid, task, acceptance, bot1_model, bot2_model)
     review_cycles: list[dict[str, Any]] = []
@@ -779,6 +793,7 @@ def live_dual_result(
                 task,
                 acceptance,
                 skill_context=skill_context_for_role(skill_context or {}, "bot1"),
+                semantic_budget=semantic_budgets["bot1"],
             )
             bot1_speaker = "Bot#1"
         else:
@@ -790,6 +805,7 @@ def live_dual_result(
                 verdict,
                 round_no - 1,
                 skill_context=skill_context_for_role(skill_context or {}, "bot1"),
+                semantic_budget=semantic_budgets["bot1_revision"],
             )
             bot1_speaker = f"Bot#1-revision-{round_no}"
         bot1_started_at = time.perf_counter()
@@ -832,6 +848,7 @@ def live_dual_result(
                     verdict,
                     round_no,
                     skill_context=skill_context_for_role(skill_context or {}, "bot1"),
+                    semantic_budget=semantic_budgets["bot1_self_check"],
                 ),
                 max_tokens=token_budgets["bot1_self_check"],
                 timeout=timeout,
@@ -870,6 +887,7 @@ def live_dual_result(
                 acceptance,
                 bot1,
                 skill_context=skill_context_for_role(skill_context or {}, "bot2"),
+                semantic_budget=semantic_budgets["bot2"],
             ),
             max_tokens=token_budgets["bot2_verdict"],
             timeout=timeout,
@@ -896,7 +914,13 @@ def live_dual_result(
                 base_url=cfg["base_url"],
                 api_key=cfg["api_key"],
                 model=bot2_model,
-                messages=lab.bot2_repair_messages(task, acceptance, bot1, bot2),
+                messages=lab.bot2_repair_messages(
+                    task,
+                    acceptance,
+                    bot1,
+                    bot2,
+                    semantic_budget=semantic_budgets["bot2_repair"],
+                ),
                 max_tokens=token_budgets["bot2_repair"],
                 timeout=timeout,
             )
@@ -978,6 +1002,7 @@ def live_dual_result(
                 ),
             },
             "token_policy": token_policy,
+            "semantic_budget": semantic_budgets,
             "loop_status": verdict.get("loop_status", ""),
             "repair_loop_exhausted": loop_exhausted,
             "fix_closure_checklist": fix_closure_checklist,
@@ -994,6 +1019,7 @@ def live_dual_result(
 
     verdict["review_cycles"] = review_cycles
     verdict["token_policy"] = token_policy
+    verdict["semantic_budget"] = semantic_budgets
     final_fix_closure = next((cycle.get("fix_closure_checklist") for cycle in reversed(review_cycles) if cycle.get("fix_closure_checklist")), [])
     verdict["fix_closure_checklist"] = final_fix_closure
     report = lab.write_report(
@@ -1032,6 +1058,12 @@ def live_bot1_revision_result(
         "bot2_repair": token_budget_for_role(max_tokens, role="bot2_repair", route=route),
     }
     token_policy = token_policy_snapshot(requested=max_tokens, route=route, budgets=token_budgets)
+    semantic_budgets = {
+        "bot1_revision": lab.semantic_budget_for_route(route, "bot1_revision"),
+        "bot1_self_check": lab.semantic_budget_for_route(route, "bot1_self_check"),
+        "bot2": lab.semantic_budget_for_route(route, "bot2"),
+        "bot2_repair": lab.semantic_budget_for_route(route, "bot2"),
+    }
     rid = lab.run_id()
     lab.add_run(rid, task, acceptance, bot1_model, bot2_model)
     previous_cycles = list(prior_verdict.get("review_cycles") or [])
@@ -1050,6 +1082,7 @@ def live_bot1_revision_result(
             prior_verdict,
             round_no,
             skill_context=skill_context_for_role(skill_context or {}, "bot1"),
+            semantic_budget=semantic_budgets["bot1_revision"],
         ),
         max_tokens=token_budgets["bot1_revision"],
         timeout=timeout,
@@ -1079,6 +1112,7 @@ def live_bot1_revision_result(
             prior_verdict,
             round_no,
             skill_context=skill_context_for_role(skill_context or {}, "bot1"),
+            semantic_budget=semantic_budgets["bot1_self_check"],
         ),
         max_tokens=token_budgets["bot1_self_check"],
         timeout=timeout,
@@ -1115,6 +1149,7 @@ def live_bot1_revision_result(
             acceptance,
             bot1,
             skill_context=skill_context_for_role(skill_context or {}, "bot2"),
+            semantic_budget=semantic_budgets["bot2"],
         ),
         max_tokens=token_budgets["bot2_verdict"],
         timeout=timeout,
@@ -1142,7 +1177,13 @@ def live_bot1_revision_result(
             base_url=cfg["base_url"],
             api_key=cfg["api_key"],
             model=bot2_model,
-            messages=lab.bot2_repair_messages(task, acceptance, bot1, bot2),
+            messages=lab.bot2_repair_messages(
+                task,
+                acceptance,
+                bot1,
+                bot2,
+                semantic_budget=semantic_budgets["bot2_repair"],
+            ),
             max_tokens=token_budgets["bot2_repair"],
             timeout=timeout,
         )
@@ -1208,12 +1249,14 @@ def live_bot1_revision_result(
             ),
         },
         "token_policy": token_policy,
+        "semantic_budget": semantic_budgets,
         "fix_closure_checklist": fix_closure_checklist,
         "bot2_repair_attempted": bool(verdict.get("repair_attempted")),
         "bot2_repair_status": verdict.get("repair_status", ""),
     }
     verdict["review_cycles"] = previous_cycles + [cycle]
     verdict["token_policy"] = token_policy
+    verdict["semantic_budget"] = semantic_budgets
     verdict["fix_closure_checklist"] = fix_closure_checklist
     report = lab.write_report(
         run_id_value=rid,
