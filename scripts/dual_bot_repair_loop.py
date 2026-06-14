@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
-import textwrap
 import time
 import uuid
 from datetime import datetime, timezone
@@ -19,7 +17,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import dual_bot_lab as lab  # noqa: E402
 from human_notification import redact_text  # noqa: E402
-from supervisor_common import APPROVED_STATUSES, INVALID_BOT2_STATUS, parse_bot2_verdict  # noqa: E402
+from supervisor_common import APPROVED_STATUSES, INVALID_BOT2_STATUS, extract_bot2_verdict  # noqa: E402
 from task_router import classify_task  # noqa: E402
 
 
@@ -105,16 +103,7 @@ def concise(text: str, limit: int) -> str:
 
 
 def extract_verdict(raw: str) -> dict[str, Any]:
-    direct = parse_bot2_verdict(raw)
-    if direct.get("status") != INVALID_BOT2_STATUS:
-        return direct
-    fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", raw, flags=re.S)
-    brace_candidates = re.findall(r"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})", raw, flags=re.S)
-    for candidate in fenced + brace_candidates:
-        parsed = parse_bot2_verdict(candidate)
-        if parsed.get("status") != INVALID_BOT2_STATUS:
-            return parsed
-    return direct
+    return extract_bot2_verdict(raw)
 
 
 def repair_bot2_verdict(
@@ -153,48 +142,7 @@ def bot1_revision_messages(
     bot2_verdict: dict[str, Any],
     round_no: int,
 ) -> list[dict[str, str]]:
-    fixes = bot2_verdict.get("required_fixes") or []
-    risks = bot2_verdict.get("risks") or []
-    return [
-        {
-            "role": "system",
-            "content": (
-                "You are Hermes Bot#1, the implementer. Produce a corrected full answer. "
-                "Use only the Supervisor package below: Bot#2 summary, required fixes, and risks. "
-                "Do not argue with Bot#2 unless a fix is impossible; if impossible, state the blocker. "
-                f"{lab.RETEK_CONTEXT}"
-            ),
-        },
-        {
-            "role": "user",
-            "content": f"""
-Task:
-{task}
-
-Acceptance criteria:
-{acceptance}
-
-Previous Bot#1 answer:
-{previous_answer}
-
-Supervisor correction package from Bot#2, round {round_no}:
-Summary:
-{bot2_verdict.get("summary", "")}
-
-Required fixes:
-{json.dumps(fixes, ensure_ascii=False, indent=2)}
-
-Risks:
-{json.dumps(risks, ensure_ascii=False, indent=2)}
-
-Return Markdown with exactly these sections:
-## Bot#1 Revised Answer
-## What I Changed From Bot#2 Feedback
-## Evidence
-## Remaining Risks
-""".strip(),
-        },
-    ]
+    return lab.bot1_revision_messages(task, acceptance, previous_answer, bot2_verdict, round_no)
 
 
 def bot1_self_check_messages(
@@ -205,52 +153,7 @@ def bot1_self_check_messages(
     bot2_verdict: dict[str, Any],
     round_no: int,
 ) -> list[dict[str, str]]:
-    fixes = bot2_verdict.get("required_fixes") or []
-    risks = bot2_verdict.get("risks") or []
-    return [
-        {
-            "role": "system",
-            "content": (
-                "You are Hermes Bot#1 self-consistency gate. Rewrite the draft into the final answer "
-                "only after checking every required fix and removing stale contradictions. "
-                "If any required fix is still not closed, fix the answer before returning it. "
-                "For zero-loss/RPO=0 tasks, any rollback phrase that allows data loss is a blocking contradiction. "
-                "For Retek naming, do not use misspellings such as retik or Retik. "
-                f"{lab.RETEK_CONTEXT}"
-            ),
-        },
-        {
-            "role": "user",
-            "content": f"""
-Task:
-{task}
-
-Acceptance criteria:
-{acceptance}
-
-Bot#2 required fixes for round {round_no}:
-{json.dumps(fixes, ensure_ascii=False, indent=2)}
-
-Bot#2 risks:
-{json.dumps(risks, ensure_ascii=False, indent=2)}
-
-Bot#1 draft answer to self-check:
-{draft_answer}
-
-Before returning, verify:
-- every required fix is explicitly closed in the answer;
-- no older contradictory statement remains elsewhere in the answer;
-- naming is consistent with Retek/Ретек and does not contain retik/Retik;
-- if the task requires no data loss, rollback/cutover states RPO=0 and never allows losing new records.
-
-Return Markdown with exactly these sections:
-## Bot#1 Self-Checked Answer
-## Self-Consistency Checklist
-## Evidence
-## Remaining Risks
-""".strip(),
-        },
-    ]
+    return lab.bot1_self_check_messages(task, acceptance, draft_answer, bot2_verdict, round_no)
 
 
 def write_report(
