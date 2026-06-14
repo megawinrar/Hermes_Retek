@@ -33,7 +33,7 @@ STORE_PATH = Path(
         "/var/lib/docker/volumes/hermes-data/_data/dual_bot_lab_store.db",
     )
 )
-REPORT_DIR = PROJECT_DIR / "reports"
+REPORT_DIR = Path(os.environ.get("DUAL_BOT_REPORT_DIR", PROJECT_DIR / "reports"))
 DEFAULT_BASE_URL = "https://openai.bothub.chat/v1"
 DEFAULT_BOT1_MODEL = os.environ.get("BOT1_MODEL", "deepseek-v4-flash")
 DEFAULT_BOT2_MODEL = os.environ.get("BOT2_MODEL", "gpt-5.3-codex")

@@ -30,7 +30,17 @@ runtime_skill_library:
   selector: scripts/skill_index.py
   orchestrator_hook: route.skill_context
   selection_policy: lazy_by_task_level_role_and_tags
-  telegram_entrypoint: scripts/process_orchestrator.py run
+  telegram_entrypoint: custom/tools/hermes_process_tool.py
+  orchestrator_cli: scripts/process_orchestrator.py run
+  container_tool:
+    name: hermes_process
+    toolset: terminal
+    mount_path: /opt/hermes/tools/hermes_process_tool.py
+    host_project_mount: /opt/hermes-assistant:/opt/hermes-assistant:ro
+    process_store: /opt/data/process_orchestrator_store.db
+    supervisor_store: /opt/data/supervisor_store.db
+    dual_bot_store: /opt/data/dual_bot_lab_store.db
+    dual_bot_report_dir: /opt/data/reports
   prompt_contract:
     load_only_selected_skill_paths: true
     do_not_load_full_skills_tree: true

@@ -52,6 +52,9 @@ sudo cp -a /opt/hermes-assistant/scripts/bot2_gate.py /tmp/bot2_gate.py.before_$
 sudo cp -a /opt/hermes-assistant/scripts/tool_gateway.py /tmp/tool_gateway.py.before_$TS.bak 2>/dev/null || true
 sudo cp -a /opt/hermes-assistant/scripts/process_orchestrator.py /tmp/process_orchestrator.py.before_$TS.bak 2>/dev/null || true
 sudo cp -a /opt/hermes-assistant/scripts/supervisor_common.py /tmp/supervisor_common.py.before_$TS.bak 2>/dev/null || true
+sudo cp -a /opt/hermes-assistant/scripts/dual_bot_lab.py /tmp/dual_bot_lab.py.before_$TS.bak 2>/dev/null || true
+sudo cp -a /opt/hermes-assistant/custom/tools/hermes_process_tool.py /tmp/hermes_process_tool.py.before_$TS.bak 2>/dev/null || true
+sudo cp -a /opt/hermes-assistant/docker-compose.yml /tmp/docker-compose.yml.before_$TS.bak 2>/dev/null || true
 ```
 
 If SQLite stores already exist, copy them before first schema-opening command:
@@ -71,8 +74,25 @@ Copy only reviewed files from the PR branch:
 - `scripts/process_orchestrator.py`
 - `scripts/human_notification.py`
 - `scripts/dual_bot_lab.py`
+- `custom/tools/hermes_process_tool.py`
 - `configs/runtime_integration.yaml`
 - `AGENTS.md` if the reviewed branch differs from the live copy
+
+Add these read-only mounts to the `hermes` service if missing:
+
+```yaml
+- /opt/hermes-assistant/custom/tools/hermes_process_tool.py:/opt/hermes/tools/hermes_process_tool.py:ro
+- /opt/hermes-assistant:/opt/hermes-assistant:ro
+```
+
+The tool keeps runtime writes in the existing `hermes-data` volume:
+
+```text
+/opt/data/process_orchestrator_store.db
+/opt/data/supervisor_store.db
+/opt/data/dual_bot_lab_store.db
+/opt/data/reports/
+```
 
 ## Smoke Tests
 
@@ -81,6 +101,7 @@ Run compile checks first:
 ```bash
 cd /opt/hermes-assistant
 sudo python3 -m py_compile scripts/bot2_gate.py scripts/tool_gateway.py scripts/supervisor_common.py scripts/process_orchestrator.py
+sudo python3 -m py_compile custom/tools/hermes_process_tool.py scripts/dual_bot_lab.py
 ```
 
 Check Bot#2 fail-closed path without Telegram:
@@ -131,6 +152,25 @@ Expected:
 - `summary.notification.mode` is `dry_run`;
 - JSONL event output is redacted.
 
+Check the Hermes container sees the registered Telegram bridge after restart:
+
+```bash
+docker exec hermes-agent /bin/sh -lc 'python3 - <<PY
+import model_tools
+names = model_tools.get_all_tool_names()
+defs = model_tools.get_tool_definitions(enabled_toolsets=["terminal"], quiet_mode=True)
+print("registered", "hermes_process" in names)
+print("schema", any(item.get("function", {}).get("name") == "hermes_process" for item in defs))
+PY'
+```
+
+Expected:
+
+```text
+registered True
+schema True
+```
+
 ## Container Restart Policy
 
 Restart `hermes-agent` only when a mounted file needs container visibility.
@@ -164,6 +204,9 @@ sudo cp -a /tmp/bot2_gate.py.before_$TS.bak /opt/hermes-assistant/scripts/bot2_g
 sudo cp -a /tmp/tool_gateway.py.before_$TS.bak /opt/hermes-assistant/scripts/tool_gateway.py
 sudo cp -a /tmp/process_orchestrator.py.before_$TS.bak /opt/hermes-assistant/scripts/process_orchestrator.py
 sudo cp -a /tmp/supervisor_common.py.before_$TS.bak /opt/hermes-assistant/scripts/supervisor_common.py
+sudo cp -a /tmp/dual_bot_lab.py.before_$TS.bak /opt/hermes-assistant/scripts/dual_bot_lab.py
+sudo cp -a /tmp/hermes_process_tool.py.before_$TS.bak /opt/hermes-assistant/custom/tools/hermes_process_tool.py
+sudo cp -a /tmp/docker-compose.yml.before_$TS.bak /opt/hermes-assistant/docker-compose.yml
 ```
 
 If a schema smoke test created bad state, restore SQLite backups before
@@ -176,5 +219,7 @@ restarting the operational flow.
 - Bot#2 gate returns strict JSON or fail-closed JSON.
 - Tool gateway blocks dangerous commands without linked approval.
 - Dashboard `show` and `events` work on a smoke process.
+- `hermes_process` is registered in the `terminal` toolset inside the running
+  `hermes-agent` container.
 - No secrets appear in stdout, reports, process events, or notification payloads.
 - Rollback files are present until the next successful release window.

@@ -34,6 +34,8 @@ Runtime-контракт:
 3. Bot#1, Tester и Bot#2 получают только свои role-specific skill paths/tags.
 4. DevOps/GitHub write skills остаются `gated_skills` до human approval.
 5. Любые skill scripts и внешние write-actions проходят через `tool_gateway.py`.
+6. Telegram-задачи запускай через Hermes tool `hermes_process`, который
+   вызывает `scripts/process_orchestrator.py` и сохраняет process/audit логи.
 
 ### Workflow (этапы для сложных задач)
 
@@ -73,6 +75,7 @@ Host -> Hermes_Retek scripts/configs -> Supervisor, Bot#2 gate, audit, deploy ga
 | Поведение и правила агента | `AGENTS.md`, `skills/`, `prompts/`, `memories/` |
 | Новый навык Hermes | `skills/<skill>/SKILL.md` |
 | CRM/read-only инструмент | `custom/tools/` на сервере |
+| Telegram bridge к Supervisor | `custom/tools/hermes_process_tool.py` |
 | LLM gateway, бюджет, fallback | `custom/yandex-proxy/` на сервере |
 | Router, Bot#2, human gate, audit | `scripts/`, `configs/`, `docs/` |
 | Core agent loop | `hermes-core/`, только как отдельный upstream-aware patch |
