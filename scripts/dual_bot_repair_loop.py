@@ -117,6 +117,34 @@ def extract_verdict(raw: str) -> dict[str, Any]:
     return direct
 
 
+def repair_bot2_verdict(
+    *,
+    cfg: dict[str, str],
+    task: str,
+    acceptance: str,
+    bot1_result: str,
+    invalid_output: str,
+    bot2_model: str,
+    max_tokens: int,
+    timeout: int,
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    repaired_raw, repaired_usage = lab.call_chat(
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        model=bot2_model,
+        messages=lab.bot2_repair_messages(task, acceptance, bot1_result, invalid_output),
+        max_tokens=max_tokens,
+        timeout=timeout,
+    )
+    repaired = extract_verdict(repaired_raw)
+    repaired["repair_attempted"] = True
+    if repaired.get("status") != INVALID_BOT2_STATUS:
+        repaired["repair_status"] = "repaired"
+    else:
+        repaired["repair_status"] = "failed_closed"
+    return repaired_raw, repaired, repaired_usage
+
+
 def bot1_revision_messages(
     *,
     task: str,
@@ -307,6 +335,27 @@ def run_case(
         )
         verdict = extract_verdict(bot2_raw)
         lab.add_message(rid, f"Bot#2 round {round_no}", bot2_model, bot2_raw, {"usage": bot2_usage.get("usage", {})})
+        if verdict.get("status") == INVALID_BOT2_STATUS:
+            print_block(f"BOT#2 JSON REPAIR РАУНД {round_no}: строгий повтор", f"model={bot2_model}", pause=0)
+            bot2_repair_raw, repaired_verdict, bot2_repair_usage = repair_bot2_verdict(
+                cfg=cfg,
+                task=case["task"],
+                acceptance=case["acceptance"],
+                bot1_result=current_answer,
+                invalid_output=bot2_raw,
+                bot2_model=bot2_model,
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+            lab.add_message(
+                rid,
+                f"Bot#2 JSON repair round {round_no}",
+                bot2_model,
+                bot2_repair_raw,
+                {"usage": bot2_repair_usage.get("usage", {})},
+            )
+            bot2_raw = f"{bot2_raw}\n\n## Bot#2 JSON Repair\n\n{bot2_repair_raw}"
+            verdict = repaired_verdict
         print_block(
             f"ОТВЕТ BOT#2 РАУНД {round_no}",
             {
@@ -315,6 +364,8 @@ def run_case(
                 "required_fixes": verdict.get("required_fixes", []),
                 "risks": verdict.get("risks", []),
                 "confidence": verdict.get("confidence"),
+                "repair_attempted": bool(verdict.get("repair_attempted")),
+                "repair_status": verdict.get("repair_status", ""),
             },
             pause=pause,
         )
@@ -359,7 +410,7 @@ def run_case(
 def cmd_run(args: argparse.Namespace) -> None:
     cfg = lab.bothub_config()
     sid = suite_id()
-    selected = CASES[: args.levels]
+    selected = [case for case in CASES if case["level"] == str(args.only_level)] if args.only_level else CASES[: args.levels]
     results: list[dict[str, Any]] = []
     print_block(
         "DUAL BOT REPAIR LOOP START",
@@ -368,6 +419,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             "bot1_model": args.bot1_model,
             "bot2_model": args.bot2_model,
             "levels": args.levels,
+            "only_level": args.only_level,
             "max_rounds": args.max_rounds,
             "pause_seconds": args.pause,
         },
@@ -422,6 +474,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bot1-model", default=lab.DEFAULT_BOT1_MODEL)
     parser.add_argument("--bot2-model", default=lab.DEFAULT_BOT2_MODEL)
     parser.add_argument("--levels", type=int, default=len(CASES), choices=range(1, len(CASES) + 1))
+    parser.add_argument("--only-level", type=int, choices=range(1, len(CASES) + 1), help="Run only one graded level")
     parser.add_argument("--max-rounds", type=int, default=3)
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--max-tokens", type=int, default=1400)

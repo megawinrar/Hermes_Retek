@@ -104,3 +104,52 @@ def test_run_case_counts_request_changes(monkeypatch, tmp_path: Path) -> None:
     assert result["correction_count"] == 1
     assert len(result["turns"]) == 2
     assert any("Previous Bot#1 answer" in call for call in calls)
+
+
+def test_run_case_repairs_invalid_bot2_json(monkeypatch, tmp_path: Path) -> None:
+    calls: list[str] = []
+    speakers: list[str] = []
+
+    def fake_call_chat(**kwargs):
+        messages = kwargs["messages"]
+        joined = "\n".join(item["content"] for item in messages)
+        calls.append(joined)
+        if "Return ONLY valid JSON matching this schema" in joined:
+            return (
+                '{"status":"APPROVE_WITH_EVIDENCE","approved_action":"execute",'
+                '"summary":"repaired verdict ok","evidence_checked":["bot1"],'
+                '"risks":[],"required_fixes":[],"confidence":0.91}',
+                {"usage": {"total_tokens": 15}},
+            )
+        if "Bot#1 result:" in joined:
+            return "not valid json", {"usage": {"total_tokens": 12}}
+        return "migration plan", {"usage": {"total_tokens": 10}}
+
+    def fake_add_message(_run_id: str, speaker: str, *_args, **_kwargs) -> None:
+        speakers.append(speaker)
+
+    monkeypatch.setattr(repair_loop.lab, "call_chat", fake_call_chat)
+    monkeypatch.setattr(repair_loop.lab, "add_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(repair_loop.lab, "add_message", fake_add_message)
+    monkeypatch.setattr(repair_loop.lab, "run_id", lambda: "dual-test")
+    monkeypatch.setattr(repair_loop, "print_block", lambda *args, **kwargs: None)
+    monkeypatch.setattr(repair_loop.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(repair_loop.lab, "REPORT_DIR", tmp_path)
+
+    result = repair_loop.run_case(
+        repair_loop.CASES[2],
+        cfg={"base_url": "https://example.test/v1", "api_key": "test"},
+        bot1_model="deepseek-v4-flash",
+        bot2_model="gpt-5.3-codex",
+        max_rounds=3,
+        max_tokens=100,
+        timeout=10,
+        pause=0,
+        preview_chars=500,
+    )
+
+    assert result["final_status"] == "APPROVE_WITH_EVIDENCE"
+    assert result["turns"][0]["verdict"]["repair_attempted"] is True
+    assert result["turns"][0]["verdict"]["repair_status"] == "repaired"
+    assert any("Return ONLY valid JSON matching this schema" in call for call in calls)
+    assert speakers == ["Bot#1 round 1", "Bot#2 round 1", "Bot#2 JSON repair round 1"]
