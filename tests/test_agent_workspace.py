@@ -44,7 +44,11 @@ def test_create_workspace_permissions_and_metadata(tmp_path: Path) -> None:
     assert metadata["process_id"] == "proc-1"
     assert metadata["agent_id"] == "agent_A"
     assert metadata["mode"] == "isolated_copy_on_write"
+    assert metadata["status"] == "created"
+    assert metadata["merge_owner"] == "supervisor"
+    assert metadata["auto_merge"] is False
     assert metadata["created_at"]
+    assert metadata["updated_at"]
 
 
 def test_workspace_status_reports_existing_and_missing(tmp_path: Path) -> None:
@@ -73,6 +77,49 @@ def test_list_workspaces_returns_metadata_and_ignores_unsafe_names(tmp_path: Pat
         ("proc-1", "agent_B"),
     ]
     assert all(item["exists"] is True for item in listing["workspaces"])
+
+
+def test_workspace_lifecycle_status_accept_and_discard_are_supervisor_gated(tmp_path: Path) -> None:
+    agent_workspace.create_workspace("proc-1", "bot1", root=tmp_path)
+
+    running = agent_workspace.set_workspace_status("proc-1", "bot1", "running", root=tmp_path, reason="Bot1 started")
+    assert running["metadata"]["status"] == "running"
+    assert running["metadata"]["status_reason"] == "Bot1 started"
+    assert running["metadata"]["auto_merge"] is False
+
+    with pytest.raises(ValueError, match="supervisor approval"):
+        agent_workspace.accept_workspace("proc-1", "bot1", root=tmp_path, bot2_status="APPROVE")
+    with pytest.raises(ValueError, match="Bot2 approval"):
+        agent_workspace.accept_workspace("proc-1", "bot1", root=tmp_path, supervisor_approved=True, bot2_status="REQUEST_CHANGES")
+
+    accepted = agent_workspace.accept_workspace(
+        "proc-1",
+        "bot1",
+        root=tmp_path,
+        supervisor_approved=True,
+        bot2_status="APPROVE_WITH_EVIDENCE",
+        reason="Evidence checked",
+    )
+    assert accepted["metadata"]["status"] == "accepted"
+    assert accepted["metadata"]["decision"]["action"] == "accept"
+    assert accepted["metadata"]["decision"]["merge_owner"] == "supervisor"
+    assert accepted["metadata"]["decision"]["auto_merge"] is False
+
+    discarded = agent_workspace.discard_workspace("proc-1", "bot1", root=tmp_path, reason="Superseded by safer patch")
+    assert discarded["metadata"]["status"] == "discarded"
+    assert discarded["metadata"]["decision"]["action"] == "discard"
+    assert discarded["metadata"]["decision"]["cleanup_allowed"] is True
+
+
+def test_workspace_lifecycle_metadata_redacts_secret_like_values(tmp_path: Path) -> None:
+    secret = "tok_" + "J" * 32
+    agent_workspace.create_workspace("proc-1", "bot1", root=tmp_path)
+
+    status = agent_workspace.set_workspace_status("proc-1", "bot1", "completed", root=tmp_path, reason=f"used {secret}")
+
+    raw = Path(status["metadata_path"]).read_text(encoding="utf-8")
+    assert secret not in raw
+    assert "[REDACTED]" in raw
 
 
 def test_cleanup_workspace_removes_only_target_workspace(tmp_path: Path) -> None:
@@ -162,3 +209,56 @@ def test_cli_status_and_list_print_json(tmp_path: Path) -> None:
 
     assert json.loads(status.stdout)["metadata"]["agent_id"] == "agent_A"
     assert json.loads(listing.stdout)["workspaces"][0]["process_id"] == "proc-1"
+
+
+def test_cli_accept_and_discard_update_lifecycle_without_cleanup(tmp_path: Path) -> None:
+    subprocess.run(
+        [sys.executable, str(SCRIPTS / "agent_workspace.py"), "create", "proc-1", "agent_A", "--root", str(tmp_path)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    accepted = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS / "agent_workspace.py"),
+            "accept",
+            "proc-1",
+            "agent_A",
+            "--root",
+            str(tmp_path),
+            "--supervisor-approved",
+            "--bot2-status",
+            "APPROVE",
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    accepted_payload = json.loads(accepted.stdout)
+    assert accepted_payload["metadata"]["status"] == "accepted"
+    assert accepted_payload["metadata"]["decision"]["auto_merge"] is False
+
+    discarded = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS / "agent_workspace.py"),
+            "discard",
+            "proc-1",
+            "agent_A",
+            "--root",
+            str(tmp_path),
+            "--reason",
+            "not needed",
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    discarded_payload = json.loads(discarded.stdout)
+    assert discarded_payload["metadata"]["status"] == "discarded"
+    assert Path(discarded_payload["path"]).exists()

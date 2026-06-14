@@ -13,9 +13,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from secret_patterns import redact_payload
+except ImportError:  # pragma: no cover - package-style import fallback
+    from scripts.secret_patterns import redact_payload
+
 
 DEFAULT_WORKSPACE_ROOT = "/opt/data/agent_workspaces"
 WORKSPACE_MODE = "isolated_copy_on_write"
+WORKSPACE_STATUSES = {"created", "running", "completed", "review_requested", "accepted", "discarded"}
+BOT2_ACCEPT_STATUSES = {"APPROVE", "APPROVE_WITH_EVIDENCE"}
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -63,13 +70,36 @@ def _is_relative_to(path: Path, root: Path) -> bool:
     return True
 
 
-def _metadata(process_id: str, agent_id: str) -> dict[str, str]:
+def _metadata(process_id: str, agent_id: str) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return {
         "process_id": process_id,
         "agent_id": agent_id,
-        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "created_at": now,
+        "updated_at": now,
         "mode": WORKSPACE_MODE,
+        "status": "created",
+        "merge_owner": "supervisor",
+        "auto_merge": False,
     }
+
+
+def _metadata_path(path: Path) -> Path:
+    return path / "metadata.json"
+
+
+def _write_metadata(path: Path, metadata: dict[str, Any]) -> None:
+    metadata_path = _metadata_path(path)
+    safe_metadata = redact_payload(metadata)
+    metadata_path.write_text(json.dumps(safe_metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(metadata_path, stat.S_IRUSR | stat.S_IWUSR)
+
+
+def _read_metadata(path: Path) -> dict[str, Any]:
+    metadata_path = _metadata_path(path)
+    if not metadata_path.exists():
+        return {}
+    return json.loads(metadata_path.read_text(encoding="utf-8"))
 
 
 def create_workspace(
@@ -100,9 +130,8 @@ def create_workspace(
         raise ValueError("workspace path resolved outside root")
 
     metadata = _metadata(safe_process, safe_agent)
-    metadata_path = path / "metadata.json"
-    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.chmod(metadata_path, stat.S_IRUSR | stat.S_IWUSR)
+    metadata_path = _metadata_path(path)
+    _write_metadata(path, metadata)
 
     return {
         "path": str(path),
@@ -130,10 +159,8 @@ def workspace_status(
     if resolved_path == base or not _is_relative_to(resolved_path, base):
         raise ValueError("workspace path resolved outside root")
 
-    metadata_path = path / "metadata.json"
-    metadata: dict[str, Any] = {}
-    if metadata_path.exists():
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata_path = _metadata_path(path)
+    metadata = _read_metadata(path)
     return {
         "path": str(path),
         "exists": True,
@@ -166,6 +193,111 @@ def list_workspaces(root: str | os.PathLike[str] | None = None) -> dict[str, Any
             status["agent_id"] = agent_id
             workspaces.append(status)
     return {"root": str(base), "workspaces": workspaces}
+
+
+def set_workspace_status(
+    process_id: str,
+    agent_id: str,
+    status: str,
+    root: str | os.PathLike[str] | None = None,
+    *,
+    reason: str = "",
+    summary: str = "",
+) -> dict[str, Any]:
+    """Update one workspace status without touching shared project files."""
+    normalized_status = status.strip().lower()
+    if normalized_status not in WORKSPACE_STATUSES:
+        raise ValueError(f"unknown workspace status: {status}")
+
+    current = workspace_status(process_id, agent_id, root)
+    if not current["exists"]:
+        raise ValueError("workspace does not exist")
+
+    path = Path(current["path"])
+    metadata = dict(current.get("metadata") or {})
+    metadata.update(
+        {
+            "process_id": safe_process_id(process_id),
+            "agent_id": safe_agent_id(agent_id),
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "status": normalized_status,
+            "merge_owner": "supervisor",
+            "auto_merge": False,
+        }
+    )
+    if reason:
+        metadata["status_reason"] = reason
+    if summary:
+        metadata["summary"] = summary
+    _write_metadata(path, metadata)
+    return workspace_status(process_id, agent_id, root)
+
+
+def accept_workspace(
+    process_id: str,
+    agent_id: str,
+    root: str | os.PathLike[str] | None = None,
+    *,
+    supervisor_approved: bool = False,
+    bot2_status: str = "",
+    human_approved: bool = False,
+    reason: str = "",
+) -> dict[str, Any]:
+    """Mark a workspace accepted for Supervisor integration; never merge automatically."""
+    normalized_bot2 = bot2_status.strip().upper()
+    if not supervisor_approved:
+        raise ValueError("workspace accept requires supervisor approval")
+    if normalized_bot2 not in BOT2_ACCEPT_STATUSES and not human_approved:
+        raise ValueError("workspace accept requires Bot2 approval or explicit human approval")
+
+    result = set_workspace_status(
+        process_id,
+        agent_id,
+        "accepted",
+        root,
+        reason=reason,
+        summary="Accepted for Supervisor-owned integration.",
+    )
+    metadata = dict(result["metadata"])
+    metadata["decision"] = {
+        "action": "accept",
+        "bot2_status": normalized_bot2,
+        "human_approved": bool(human_approved),
+        "supervisor_approved": True,
+        "merge_owner": "supervisor",
+        "auto_merge": False,
+        "reason": reason,
+    }
+    _write_metadata(Path(result["path"]), metadata)
+    return workspace_status(process_id, agent_id, root)
+
+
+def discard_workspace(
+    process_id: str,
+    agent_id: str,
+    root: str | os.PathLike[str] | None = None,
+    *,
+    reason: str = "",
+) -> dict[str, Any]:
+    """Mark a workspace discarded. Physical cleanup remains an explicit command."""
+    result = set_workspace_status(
+        process_id,
+        agent_id,
+        "discarded",
+        root,
+        reason=reason,
+        summary="Discarded without Supervisor integration.",
+    )
+    metadata = dict(result["metadata"])
+    metadata["decision"] = {
+        "action": "discard",
+        "cleanup_allowed": True,
+        "merge_owner": "supervisor",
+        "auto_merge": False,
+        "reason": reason,
+    }
+    _write_metadata(Path(result["path"]), metadata)
+    return workspace_status(process_id, agent_id, root)
 
 
 def cleanup_workspace(
@@ -226,6 +358,44 @@ def build_parser() -> argparse.ArgumentParser:
     list_cmd = sub.add_parser("list", help="List isolated workspaces")
     list_cmd.add_argument("--root", default=None)
     list_cmd.set_defaults(func=lambda args: list_workspaces(args.root))
+
+    status_update = sub.add_parser("set-status", help="Update isolated workspace lifecycle status")
+    status_update.add_argument("process_id")
+    status_update.add_argument("agent_id")
+    status_update.add_argument("status", choices=sorted(WORKSPACE_STATUSES))
+    status_update.add_argument("--root", default=None)
+    status_update.add_argument("--reason", default="")
+    status_update.add_argument("--summary", default="")
+    status_update.set_defaults(
+        func=lambda args: set_workspace_status(args.process_id, args.agent_id, args.status, args.root, reason=args.reason, summary=args.summary)
+    )
+
+    accept = sub.add_parser("accept", help="Mark a workspace accepted for Supervisor integration")
+    accept.add_argument("process_id")
+    accept.add_argument("agent_id")
+    accept.add_argument("--root", default=None)
+    accept.add_argument("--supervisor-approved", action="store_true")
+    accept.add_argument("--bot2-status", default="")
+    accept.add_argument("--human-approved", action="store_true")
+    accept.add_argument("--reason", default="")
+    accept.set_defaults(
+        func=lambda args: accept_workspace(
+            args.process_id,
+            args.agent_id,
+            args.root,
+            supervisor_approved=args.supervisor_approved,
+            bot2_status=args.bot2_status,
+            human_approved=args.human_approved,
+            reason=args.reason,
+        )
+    )
+
+    discard = sub.add_parser("discard", help="Mark a workspace discarded without merging")
+    discard.add_argument("process_id")
+    discard.add_argument("agent_id")
+    discard.add_argument("--root", default=None)
+    discard.add_argument("--reason", default="")
+    discard.set_defaults(func=lambda args: discard_workspace(args.process_id, args.agent_id, args.root, reason=args.reason))
 
     cleanup = sub.add_parser("cleanup", help="Remove an isolated workspace")
     cleanup.add_argument("process_id")

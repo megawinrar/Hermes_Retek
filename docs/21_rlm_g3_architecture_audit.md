@@ -88,6 +88,24 @@ Avoid:
 - context thinning into ungoverned temp files;
 - discard/cleanup without Supervisor state checks.
 
+## g3 vs Hermes Bot1/Bot2
+
+g3's coach/player loop maps cleanly to Hermes Supervisor/Bot1: the coach keeps
+requirements and progress coherent, while the player implements. Hermes already
+adds a stronger quality boundary: Bot2 is not another player and not the owner
+of state; it is an independent review gate with structured verdicts.
+
+The useful delta from g3 is therefore small:
+
+- keep each worker's files in an isolated workspace;
+- track a workspace lifecycle in metadata;
+- expose simple `list`, `status`, `accept`, and `discard` operations;
+- make `accept` a Supervisor decision, not an automatic merge.
+
+Hermes should not copy g3's full Studio merge behavior. Bot1 can produce work,
+Bot2 can approve or request changes, and Supervisor remains the single writer
+for shared project state.
+
 ## Current Implementation Slice
 
 Implemented now:
@@ -109,7 +127,9 @@ Implemented now:
   - 30/50/70/80 context pressure stages.
 - `scripts/agent_workspace.py`
   - safe isolated workspace paths;
-  - create/cleanup lifecycle foundation.
+  - create/list/status/cleanup lifecycle foundation;
+  - g3-shaped workspace status plus Supervisor-gated `accept`/`discard`;
+  - `accept` records approval metadata but never auto-merges.
 - `scripts/secret_vault.py`
   - secret refs and protected local file storage.
 - `scripts/agent_roles.py`
@@ -163,9 +183,7 @@ Already covered:
 
 Next tests:
 
-- workspace list/status lifecycle;
 - compaction record generation at context thresholds;
 - child-agent subcall linkage;
-- Supervisor cannot accept workspace output without Bot2/human gate;
 - restart can rebuild a compact context pack from SQLite without duplicating
   completed work.
