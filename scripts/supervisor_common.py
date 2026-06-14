@@ -30,6 +30,7 @@ DEFAULT_STORE_PATH = Path(
 )
 DEFAULT_BOT2_GATE = Path(os.environ.get("BOT2_GATE_PATH", "/opt/hermes-assistant/scripts/bot2_gate.py"))
 MAX_BOT_REVIEW_CYCLES = int(os.environ.get("HERMES_MAX_BOT_REVIEW_CYCLES", "3"))
+_INITIALIZED_SUPERVISOR_STORES: set[str] = set()
 
 APPROVED_STATUSES = {"APPROVE", "APPROVE_WITH_EVIDENCE"}
 ESCALATION_STATUSES = {
@@ -96,10 +97,14 @@ def task_id() -> str:
 def connect(store_path: Path | str | None = None) -> sqlite3.Connection:
     path = Path(store_path or DEFAULT_STORE_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
+    store_key = str(path)
+    existed_before = path.exists()
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
-    con.execute("PRAGMA journal_mode=WAL")
-    init_schema(con)
+    if not existed_before or store_key not in _INITIALIZED_SUPERVISOR_STORES:
+        con.execute("PRAGMA journal_mode=WAL")
+        init_schema(con)
+        _INITIALIZED_SUPERVISOR_STORES.add(store_key)
     return con
 
 

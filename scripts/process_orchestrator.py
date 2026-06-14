@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -42,7 +43,7 @@ from supervisor_common import (
     task_details,
     update_task,
 )
-from task_router import apply_classification_audit, classify_task, parse_classification_audit
+from task_router import apply_classification_audit, classify_task as classify_task_uncached, parse_classification_audit
 
 
 PROCESS_STORE_PATH = Path(
@@ -52,6 +53,51 @@ PROCESS_STORE_PATH = Path(
     )
 )
 ROUTE_AUDIT_CACHE_VERSION = "route-audit-v1"
+PROCESS_ROUTE_CACHE_VERSION = "process-route-v1"
+_PROCESS_ROUTE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_ROUTE_AUDIT_MEMORY_CACHE: dict[str, tuple[float, str, int, dict[str, Any]]] = {}
+_INITIALIZED_PROCESS_STORES: set[str] = set()
+
+
+def _runtime_cache_enabled() -> bool:
+    return os.environ.get("HERMES_PROCESS_RAM_CACHE", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _runtime_cache_ttl_seconds() -> int:
+    raw = os.environ.get("HERMES_PROCESS_RAM_CACHE_TTL_SECONDS", "300")
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 300
+
+
+def _runtime_cache_size(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default))
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return default
+
+
+def clear_runtime_caches() -> None:
+    _PROCESS_ROUTE_CACHE.clear()
+    _ROUTE_AUDIT_MEMORY_CACHE.clear()
+    _INITIALIZED_PROCESS_STORES.clear()
+
+
+def runtime_cache_stats() -> dict[str, int]:
+    return {
+        "route_entries": len(_PROCESS_ROUTE_CACHE),
+        "route_audit_entries": len(_ROUTE_AUDIT_MEMORY_CACHE),
+    }
+
+
+def _remember_lru(cache: dict[str, Any], key: str, value: Any, *, max_size: int) -> None:
+    if max_size <= 0:
+        return
+    while len(cache) >= max_size:
+        cache.pop(next(iter(cache)))
+    cache[key] = value
 
 
 def utc_now() -> str:
@@ -66,59 +112,86 @@ def process_id() -> str:
     return f"proc-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
 
+def classify_task(task: str) -> dict[str, Any]:
+    if not _runtime_cache_enabled():
+        return classify_task_uncached(task)
+    normalized = " ".join(task.strip().split()).lower()
+    raw = json.dumps({"task": normalized, "version": PROCESS_ROUTE_CACHE_VERSION}, ensure_ascii=False, sort_keys=True)
+    cache_key = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    cached = _PROCESS_ROUTE_CACHE.get(cache_key)
+    now = time.monotonic()
+    if cached:
+        expires_at, route = cached
+        if now <= expires_at:
+            return copy.deepcopy(route)
+        _PROCESS_ROUTE_CACHE.pop(cache_key, None)
+    route = classify_task_uncached(task)
+    _remember_lru(
+        _PROCESS_ROUTE_CACHE,
+        cache_key,
+        (now + _runtime_cache_ttl_seconds(), copy.deepcopy(route)),
+        max_size=_runtime_cache_size("HERMES_PROCESS_ROUTE_CACHE_SIZE", 512),
+    )
+    return copy.deepcopy(route)
+
+
 def connect(path: Path | str | None = None) -> sqlite3.Connection:
     store = Path(path or PROCESS_STORE_PATH)
     store.parent.mkdir(parents=True, exist_ok=True)
+    store_key = str(store)
+    existed_before = store.exists()
     con = sqlite3.connect(store)
     con.row_factory = sqlite3.Row
-    con.execute("PRAGMA journal_mode=WAL")
-    con.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS process_runs (
-            id TEXT PRIMARY KEY,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            task TEXT NOT NULL,
-            acceptance TEXT NOT NULL,
-            router_json TEXT NOT NULL,
-            supervisor_task_id TEXT NOT NULL,
-            status TEXT NOT NULL,
-            current_phase TEXT NOT NULL
-        );
+    if not existed_before or store_key not in _INITIALIZED_PROCESS_STORES:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS process_runs (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                task TEXT NOT NULL,
+                acceptance TEXT NOT NULL,
+                router_json TEXT NOT NULL,
+                supervisor_task_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                current_phase TEXT NOT NULL
+            );
 
-        CREATE TABLE IF NOT EXISTS process_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            process_id TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            payload_json TEXT NOT NULL,
-            FOREIGN KEY(process_id) REFERENCES process_runs(id)
-        );
+            CREATE TABLE IF NOT EXISTS process_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                process_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY(process_id) REFERENCES process_runs(id)
+            );
 
-        CREATE TABLE IF NOT EXISTS process_assignments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            process_id TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            worker TEXT NOT NULL,
-            phase TEXT NOT NULL,
-            status TEXT NOT NULL,
-            output_json TEXT NOT NULL,
-            FOREIGN KEY(process_id) REFERENCES process_runs(id)
-        );
+            CREATE TABLE IF NOT EXISTS process_assignments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                process_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                worker TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                status TEXT NOT NULL,
+                output_json TEXT NOT NULL,
+                FOREIGN KEY(process_id) REFERENCES process_runs(id)
+            );
 
-        CREATE TABLE IF NOT EXISTS route_audit_cache (
-            cache_key TEXT PRIMARY KEY,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            model TEXT NOT NULL,
-            route_level TEXT NOT NULL,
-            route_risk TEXT NOT NULL,
-            audit_json TEXT NOT NULL,
-            hits INTEGER NOT NULL DEFAULT 0
-        );
-        """
-    )
-    con.commit()
+            CREATE TABLE IF NOT EXISTS route_audit_cache (
+                cache_key TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                model TEXT NOT NULL,
+                route_level TEXT NOT NULL,
+                route_risk TEXT NOT NULL,
+                audit_json TEXT NOT NULL,
+                hits INTEGER NOT NULL DEFAULT 0
+            );
+            """
+        )
+        con.commit()
+        _INITIALIZED_PROCESS_STORES.add(store_key)
     return con
 
 
@@ -329,11 +402,71 @@ def route_audit_cache_key(task: str, route: dict[str, Any], model: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _route_audit_memory_key(cache_key: str, store_path: Path | str | None = None) -> str:
+    store = str(Path(store_path or PROCESS_STORE_PATH))
+    return f"{store}:{cache_key}"
+
+
+def _cache_audit_payload(audit: dict[str, Any], *, cached_at: str, hits: int) -> dict[str, Any]:
+    payload = copy.deepcopy(audit)
+    original_latency_ms = int(payload.get("latency_ms") or 0)
+    payload["source"] = "bot2_live_route_audit_cache"
+    payload["cache_hit"] = True
+    payload["cached_at"] = cached_at
+    payload["cache_hits"] = hits
+    payload["original_latency_ms"] = original_latency_ms
+    payload["latency_ms"] = 0
+    return payload
+
+
+def _remember_route_audit_memory(
+    *,
+    cache_key: str,
+    store_path: Path | str | None,
+    created_at: str,
+    hits: int,
+    audit: dict[str, Any],
+) -> None:
+    if not _runtime_cache_enabled():
+        return
+    memory_key = _route_audit_memory_key(cache_key, store_path)
+    _remember_lru(
+        _ROUTE_AUDIT_MEMORY_CACHE,
+        memory_key,
+        (time.monotonic() + _runtime_cache_ttl_seconds(), created_at, hits, copy.deepcopy(audit)),
+        max_size=_runtime_cache_size("HERMES_ROUTE_AUDIT_MEMORY_CACHE_SIZE", 256),
+    )
+
+
+def _cached_route_audit_memory(
+    *,
+    cache_key: str,
+    store_path: Path | str | None,
+) -> dict[str, Any]:
+    if not _runtime_cache_enabled():
+        return {}
+    memory_key = _route_audit_memory_key(cache_key, store_path)
+    cached = _ROUTE_AUDIT_MEMORY_CACHE.get(memory_key)
+    if not cached:
+        return {}
+    expires_at, created_at, hits, audit = cached
+    if time.monotonic() > expires_at:
+        _ROUTE_AUDIT_MEMORY_CACHE.pop(memory_key, None)
+        return {}
+    hits += 1
+    _ROUTE_AUDIT_MEMORY_CACHE[memory_key] = (expires_at, created_at, hits, audit)
+    return _cache_audit_payload(audit, cached_at=created_at, hits=hits)
+
+
 def cached_route_audit(
     *,
     cache_key: str,
     store_path: Path | str | None = None,
 ) -> dict[str, Any]:
+    memory_hit = _cached_route_audit_memory(cache_key=cache_key, store_path=store_path)
+    if memory_hit:
+        return memory_hit
+
     with connect(store_path) as con:
         row = con.execute(
             "SELECT created_at, audit_json, hits FROM route_audit_cache WHERE cache_key=?",
@@ -351,14 +484,14 @@ def cached_route_audit(
         audit = json.loads(row["audit_json"])
     except json.JSONDecodeError:
         return {}
-    original_latency_ms = int(audit.get("latency_ms") or 0)
-    audit["source"] = "bot2_live_route_audit_cache"
-    audit["cache_hit"] = True
-    audit["cached_at"] = row["created_at"]
-    audit["cache_hits"] = hits
-    audit["original_latency_ms"] = original_latency_ms
-    audit["latency_ms"] = 0
-    return audit
+    _remember_route_audit_memory(
+        cache_key=cache_key,
+        store_path=store_path,
+        created_at=str(row["created_at"]),
+        hits=hits,
+        audit=audit,
+    )
+    return _cache_audit_payload(audit, cached_at=str(row["created_at"]), hits=hits)
 
 
 def store_route_audit_cache(
@@ -396,6 +529,13 @@ def store_route_audit_cache(
             ),
         )
         con.commit()
+    _remember_route_audit_memory(
+        cache_key=cache_key,
+        store_path=store_path,
+        created_at=now,
+        hits=0,
+        audit=audit,
+    )
 
 
 def route_audit_from_args(args: argparse.Namespace, task: str, route: dict[str, Any]) -> dict[str, Any]:

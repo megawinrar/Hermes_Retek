@@ -89,6 +89,17 @@ def test_process_l1_approve_path_without_bot2(tmp_path: Path) -> None:
     assert bot1_assignment["output"]["skills"]["skills"][0]["path"] == "skills/hermes-developer/SKILL.md"
 
 
+def test_process_route_cache_returns_isolated_copies() -> None:
+    process_orchestrator.clear_runtime_caches()
+
+    first = process_orchestrator.classify_task("status")
+    first["task_level"] = "L4"
+    second = process_orchestrator.classify_task("status")
+
+    assert second["task_level"] == "L0"
+    assert process_orchestrator.runtime_cache_stats()["route_entries"] >= 1
+
+
 def test_process_reject_creates_human_escalation(tmp_path: Path) -> None:
     process_store = tmp_path / "process.db"
     supervisor_store = tmp_path / "supervisor.db"
@@ -294,6 +305,7 @@ def test_live_route_audit_runs_for_high_risk_route_and_records_latency(monkeypat
 def test_live_route_audit_cache_reuses_previous_bot2_result(monkeypatch, tmp_path: Path) -> None:
     import dual_bot_lab
 
+    process_orchestrator.clear_runtime_caches()
     calls = 0
 
     def fake_call_chat(**_kwargs):
@@ -339,6 +351,7 @@ def test_live_route_audit_cache_reuses_previous_bot2_result(monkeypatch, tmp_pat
     assert "original_latency_ms" in second["route"]["classification_audit"]["raw"]
     assert second["performance"]["route_audit"]["cache_hit"] is True
     assert second["performance"]["route_audit"]["latency_ms"] == 0
+    assert process_orchestrator.runtime_cache_stats()["route_audit_entries"] >= 1
 
     details = process_orchestrator.process_details(
         second["process_id"],
