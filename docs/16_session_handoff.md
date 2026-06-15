@@ -955,3 +955,17 @@ effect: dangerous write_file/execute_code/terminal is still not executed, but th
 runtime smoke after restart: block_continue marketplace_process_first_required False False None
 safe restart: restart_completed, forced=false, reason=marketplace_guard_block_continue_hotfix
 ```
+
+Follow-up tool schema fix:
+
+```text
+commit: c517782 fix: expose hermes process in terminal toolset
+reason: live Telegram run still tried write_file -> execute_code -> cronjob after block_continue
+root cause: /opt/hermes/toolsets.py did not include hermes_process in _HERMES_CORE_TOOLS or TOOLSETS["terminal"], so the model did not receive hermes_process in its tool schema
+patch: scripts/patch_hermes_process_toolset.py
+tests: full pytest 339 passed
+server patch: hermes_process_toolset=applied
+safe restart: restart_completed, forced=false, reason=expose_hermes_process_toolset
+runtime schema smoke: Final tool selection contains hermes_process; schema_has_hermes_process True; tool_count 31
+timing/context observation: latest B2B Telegram session had 182 active messages and ~256k chars; problem looked like stale/overlong context plus missing tool exposure, not reduced context
+```
