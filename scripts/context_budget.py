@@ -16,6 +16,9 @@ THRESHOLD_ACTIONS: tuple[tuple[int, str], ...] = (
     (70, "stop_new_discovery"),
     (80, "force_checkpoint"),
 )
+DEFAULT_CIRCUIT_BREAKER_WARN_TOKENS = 60_000
+DEFAULT_CIRCUIT_BREAKER_HARD_TOKENS = 80_000
+DEFAULT_CIRCUIT_BREAKER_MAX_TOKENS = 120_000
 
 
 def estimate_tokens(text: str) -> int:
@@ -79,6 +82,51 @@ def build_context_budget_event(
     if text is not None:
         event["text_chars"] = len(text)
     return event
+
+
+def context_circuit_breaker(
+    used_tokens: int,
+    *,
+    warn_tokens: int = DEFAULT_CIRCUIT_BREAKER_WARN_TOKENS,
+    hard_tokens: int = DEFAULT_CIRCUIT_BREAKER_HARD_TOKENS,
+    max_tokens: int = DEFAULT_CIRCUIT_BREAKER_MAX_TOKENS,
+) -> dict[str, Any]:
+    """Return a pre-LLM context safety decision.
+
+    This is intentionally absolute-token based. Provider metadata is often
+    wrong for OpenAI-compatible gateways, while large Hermes sessions become
+    expensive and fragile well before the advertised model context limit.
+    """
+    used_tokens = _validate_tokens("used_tokens", used_tokens, allow_zero=True)
+    warn_tokens = _validate_tokens("warn_tokens", warn_tokens, allow_zero=False)
+    hard_tokens = _validate_tokens("hard_tokens", hard_tokens, allow_zero=False)
+    max_tokens = _validate_tokens("max_tokens", max_tokens, allow_zero=False)
+    if not (warn_tokens < hard_tokens < max_tokens):
+        raise ValueError("expected warn_tokens < hard_tokens < max_tokens")
+
+    if used_tokens >= max_tokens:
+        stage = "block_llm"
+        actions = ["write_rlm_checkpoint", "force_fresh_session", "do_not_call_provider"]
+    elif used_tokens >= hard_tokens:
+        stage = "force_fresh_session"
+        actions = ["write_rlm_checkpoint", "force_compaction", "start_fresh_worker_session"]
+    elif used_tokens >= warn_tokens:
+        stage = "compress_before_next_turn"
+        actions = ["write_rlm_checkpoint", "compress_or_summarize_before_more_tools"]
+    else:
+        stage = "ok"
+        actions = []
+    return {
+        "event": "context_circuit_breaker",
+        "used_tokens": used_tokens,
+        "warn_tokens": warn_tokens,
+        "hard_tokens": hard_tokens,
+        "max_tokens": max_tokens,
+        "stage": stage,
+        "actions": actions,
+        "should_call_provider": stage != "block_llm",
+        "should_start_fresh_session": stage in {"force_fresh_session", "block_llm"},
+    }
 
 
 def _read_cli_text(args: argparse.Namespace) -> str:

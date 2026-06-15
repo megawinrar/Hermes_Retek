@@ -47,6 +47,26 @@ def test_context_usage_accepts_provider_token_counts():
     assert usage["percent"] == pytest.approx((1234 / 4096) * 100)
 
 
+def test_context_circuit_breaker_absolute_thresholds():
+    assert context_budget.context_circuit_breaker(59_999)["stage"] == "ok"
+    warn = context_budget.context_circuit_breaker(60_000)
+    hard = context_budget.context_circuit_breaker(80_000)
+    blocked = context_budget.context_circuit_breaker(120_000)
+
+    assert warn["stage"] == "compress_before_next_turn"
+    assert warn["should_call_provider"] is True
+    assert hard["stage"] == "force_fresh_session"
+    assert hard["should_start_fresh_session"] is True
+    assert blocked["stage"] == "block_llm"
+    assert blocked["should_call_provider"] is False
+    assert "do_not_call_provider" in blocked["actions"]
+
+
+def test_context_circuit_breaker_validates_threshold_order():
+    with pytest.raises(ValueError, match="warn_tokens < hard_tokens < max_tokens"):
+        context_budget.context_circuit_breaker(100, warn_tokens=80, hard_tokens=60, max_tokens=120)
+
+
 def test_build_context_budget_event_omits_raw_text():
     raw_text = "secret evidence that must not be emitted"
     event = build_context_budget_event(
