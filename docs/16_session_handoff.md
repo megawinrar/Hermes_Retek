@@ -944,3 +944,14 @@ server route smoke: supplier_price_deadline_analysis ['router', 'supervisor', 'b
 server dry process smoke: status return_to_bot1, human_message False
 old orphan B2B Puppeteer Chrome: gone after safe restart
 ```
+
+Follow-up hotfix after live test:
+
+```text
+commit: 6779a19 fix: let marketplace guard continue to process
+reason: live Telegram run hit the marketplace guard, but action=block halted the whole turn before Hermes could switch to hermes_process
+change: marketplace guard now returns action=block_continue
+effect: dangerous write_file/execute_code/terminal is still not executed, but the LLM turn is allowed to continue and call hermes_process next
+runtime smoke after restart: block_continue marketplace_process_first_required False False None
+safe restart: restart_completed, forced=false, reason=marketplace_guard_block_continue_hotfix
+```
