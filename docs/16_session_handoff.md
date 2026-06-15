@@ -550,12 +550,32 @@ Implemented status as of `1e8b0b4`:
 - production `/opt/hermes-assistant` remained on branch `custom`; only file
   overlays and brief `hermes-agent` restarts were performed.
 
+Additional ops status as of `5f32a78`:
+
+- BotHub was paid and verified again from inside `hermes-agent`;
+- `hermes-agent` was restored from temporary Yandex proxy fallback to
+  `OPENAI_BASE_URL=https://openai.bothub.chat/v1` and
+  `OPENAI_MODEL=deepseek-v4-flash`;
+- production `/opt/hermes-assistant` still remained on branch `custom`
+  (`908cd72`);
+- `scripts/hermes_timing_report.py` now emits a "Что чинить первым" section
+  and JSON guardrail metrics for first flush, max api calls, max tool turns,
+  delegate latency, and operational action count;
+- timing report parsing now supports Docker `--timestamps` ISO log prefixes;
+- `scripts/capture_hermes_docker_logs.sh` snapshots `hermes-agent` Docker logs
+  into `/opt/data/logs/gateway.log`, `/opt/data/logs/agent.log`, and
+  `/opt/data/logs/hermes-agent-docker.log`;
+- server cron runs the snapshot every 5 minutes and writes stderr to
+  `/opt/data/logs/hermes-log-capture.log`;
+- local test suite passed: `278 passed`;
+- server focused timing tests passed: `11 passed`.
+
 ## Next Session First Prompt
 
 Use this in the next Codex chat:
 
 ```text
-Продолжи Hermes Retek с docs/16_session_handoff.md. Рабочая ветка ops-safe-restart-speed. GitHub ветка с текущей работой: ops-safe-restart-speed-g3-rlm-20260615. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения. Сначала проверь git status, затем проверь сервер: hermes-agent/hermes-yandex-proxy, /opt/data/rlm_store.db, skill kontur-parser, свежие логи Hermes, и что big-task context policy активна: max_tokens default 6000, normal context pack до 3000, expanded context pack до 5000. Дальше продолжай Kontur workflow: Excel export, RLM lessons, missing deps, и runtime memory diagnostics.
+Продолжи Hermes Retek с docs/16_session_handoff.md. Рабочая ветка ops-safe-restart-speed. GitHub ветка с текущей работой: ops-safe-restart-speed-g3-rlm-20260615. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения. Сначала проверь git status, затем проверь сервер: hermes-agent/hermes-yandex-proxy, что Hermes снова на BotHub (`OPENAI_BASE_URL=https://openai.bothub.chat/v1`, `OPENAI_MODEL=deepseek-v4-flash`), что cron snapshot пишет `/opt/data/logs/gateway.log` и `/opt/data/logs/agent.log`, что `/opt/data/rlm_store.db` жив, skill kontur-parser есть, и big-task context policy активна: max_tokens default 6000, normal context pack до 3000, expanded context pack до 5000. Затем продолжай runtime performance work: early Telegram ack/flush, hard caps на api_calls/tool_turns/delegate_task, missing deps, RLM lessons, and Kontur workflow.
 ```
 
 ## Recommended Next Work
