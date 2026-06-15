@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
 from typing import Any
 
@@ -17,10 +18,42 @@ except ImportError:  # pragma: no cover - package-style import fallback
 
 
 SESSION_STRATEGY = "fresh_session_with_durable_context_pack"
-DEFAULT_CONTEXT_RATIO = 0.30
-DEFAULT_CONTEXT_TOKEN_BUDGET = 300
-MIN_CONTEXT_TOKEN_BUDGET = 120
-MAX_CONTEXT_TOKEN_BUDGET = 800
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(minimum, float(raw))
+    except ValueError:
+        return default
+
+
+BIG_TASK_TYPES = {
+    "code_or_deploy_project",
+    "database_migration_change",
+    "git_write_or_deploy",
+    "supplier_price_deadline_analysis",
+}
+BIG_TASK_KEYWORDS = ("kontur", "контур", "zakupki", "закуп", "excel", "эксель", "deploy", "migration", "миграц")
+DEFAULT_CONTEXT_RATIO = _env_float("HERMES_CONTEXT_PACK_RATIO", 0.50)
+EXPANDED_CONTEXT_RATIO = _env_float("HERMES_CONTEXT_PACK_EXPANDED_RATIO", 0.70)
+DEFAULT_CONTEXT_TOKEN_BUDGET = _env_int("HERMES_CONTEXT_PACK_DEFAULT_TOKENS", 3000, minimum=1)
+MIN_CONTEXT_TOKEN_BUDGET = _env_int("HERMES_CONTEXT_PACK_MIN_TOKENS", 120, minimum=1)
+MAX_CONTEXT_TOKEN_BUDGET = _env_int("HERMES_CONTEXT_PACK_MAX_TOKENS", 3000, minimum=MIN_CONTEXT_TOKEN_BUDGET)
+EXPANDED_MAX_CONTEXT_TOKEN_BUDGET = _env_int("HERMES_CONTEXT_PACK_EXPANDED_MAX_TOKENS", 5000, minimum=MAX_CONTEXT_TOKEN_BUDGET)
+BIG_TASK_CHAR_THRESHOLD = _env_int("HERMES_CONTEXT_PACK_BIG_TASK_CHARS", 4000, minimum=1)
 PREVIEW_CHARS = 900
 
 
@@ -31,11 +64,58 @@ def truncate_text(value: str, *, limit: int = PREVIEW_CHARS) -> str:
     return text[: max(0, limit - 18)].rstrip() + "\n...[truncated]"
 
 
-def startup_context_token_budget(max_tokens: int | None = None, *, ratio: float = DEFAULT_CONTEXT_RATIO) -> int:
+def startup_context_token_budget(
+    max_tokens: int | None = None,
+    *,
+    ratio: float = DEFAULT_CONTEXT_RATIO,
+    max_budget: int = MAX_CONTEXT_TOKEN_BUDGET,
+) -> int:
     if not max_tokens or int(max_tokens) <= 0:
         return DEFAULT_CONTEXT_TOKEN_BUDGET
     budget = int(int(max_tokens) * ratio)
-    return max(MIN_CONTEXT_TOKEN_BUDGET, min(MAX_CONTEXT_TOKEN_BUDGET, budget))
+    return max(MIN_CONTEXT_TOKEN_BUDGET, min(max_budget, budget))
+
+
+def expanded_context_required(
+    *,
+    route: dict[str, Any] | None = None,
+    phase: str = "initial",
+    task: str = "",
+    acceptance: str = "",
+) -> bool:
+    route = route or {}
+    phase_value = str(phase or "initial")
+    task_type = str(route.get("task_type") or "")
+    task_level = str(route.get("task_level") or "").upper()
+    combined = f"{task}\n{acceptance}".lower()
+    if phase_value not in {"", "initial"}:
+        return True
+    if task_level == "L4" or bool(route.get("human_gate_required")):
+        return True
+    if task_type in BIG_TASK_TYPES:
+        return True
+    if bool(route.get("needs_agents")) and bool(route.get("review_required")) and str(route.get("risk_level")) == "high":
+        return True
+    if len(combined) >= BIG_TASK_CHAR_THRESHOLD:
+        return True
+    return any(keyword in combined for keyword in BIG_TASK_KEYWORDS)
+
+
+def startup_context_token_budget_for_route(
+    max_tokens: int | None = None,
+    *,
+    route: dict[str, Any] | None = None,
+    phase: str = "initial",
+    task: str = "",
+    acceptance: str = "",
+) -> int:
+    if expanded_context_required(route=route, phase=phase, task=task, acceptance=acceptance):
+        return startup_context_token_budget(
+            max_tokens,
+            ratio=EXPANDED_CONTEXT_RATIO,
+            max_budget=EXPANDED_MAX_CONTEXT_TOKEN_BUDGET,
+        )
+    return startup_context_token_budget(max_tokens)
 
 
 def attach_role_context_packs(

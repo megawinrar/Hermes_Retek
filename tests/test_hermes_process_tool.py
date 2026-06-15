@@ -36,6 +36,7 @@ def test_build_run_command_defaults_to_live_process() -> None:
     assert "--rlm-enabled" in cmd
     assert cmd[cmd.index("--bot1-model") + 1] == "auto"
     assert cmd[cmd.index("--bot2-model") + 1] == "auto"
+    assert cmd[cmd.index("--max-tokens") + 1] == "6000"
 
 
 def test_build_run_command_can_disable_rlm() -> None:
@@ -91,6 +92,13 @@ def test_build_run_command_passes_bounded_parallel_options() -> None:
     assert cmd[cmd.index("--bothub-requests-per-minute") + 1] == "18"
 
 
+def test_build_run_command_accepts_larger_task_token_budget() -> None:
+    tool = load_tool()
+    cmd = tool.build_command({"action": "run", "task": "Huge task", "max_tokens": 9000})
+
+    assert cmd[cmd.index("--max-tokens") + 1] == "9000"
+
+
 def test_tool_schema_exposes_bounded_parallel_options() -> None:
     tool = load_tool()
     properties = tool.TOOL_SCHEMA["parameters"]["properties"]
@@ -107,6 +115,8 @@ def test_tool_schema_exposes_bounded_parallel_options() -> None:
     assert properties["rlm_enabled"]["type"] == "boolean"
     assert properties["rlm_enabled"]["default"] is True
     assert properties["rlm_store"]["default"] == "/opt/data/rlm_store.db"
+    assert properties["max_tokens"]["default"] == 6000
+    assert properties["max_tokens"]["maximum"] == 20000
 
 
 def test_build_decide_command_validates_choice() -> None:
@@ -134,6 +144,7 @@ def test_build_continue_command_defaults_to_auto_and_notifications() -> None:
     assert cmd[cmd.index("--bot2-model") + 1] == "auto"
     assert cmd[cmd.index("--rlm-store") + 1] == "/opt/data/rlm_store.db"
     assert "--rlm-enabled" in cmd
+    assert cmd[cmd.index("--max-tokens") + 1] == "6000"
     assert "--notify-telegram" in cmd
     assert "--notification-dry-run" not in cmd
 

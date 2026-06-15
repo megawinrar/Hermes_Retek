@@ -31,6 +31,21 @@ except Exception:  # pragma: no cover - local tests run outside hermes-core
     registry = _NoopRegistry()
 
 
+def _env_int(name: str, default: int, *, minimum: int = 0, maximum: int | None = None) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        value = default
+    else:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = default
+    value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
 DEFAULT_PROJECT_DIR = Path(os.environ.get("HERMES_RETEK_PROJECT_DIR", "/opt/hermes-assistant"))
 DEFAULT_ORCHESTRATOR = Path(
     os.environ.get(
@@ -46,6 +61,8 @@ DEFAULT_DUAL_BOT_REPORT_DIR = os.environ.get("DUAL_BOT_REPORT_DIR", "/opt/data/r
 DEFAULT_RLM_STORE = os.environ.get("HERMES_RLM_STORE", os.environ.get("HERMES_RLM_STORE_PATH", "/opt/data/rlm_store.db"))
 DEFAULT_RLM_ENABLED = os.environ.get("HERMES_RLM_ENABLED", "1")
 DEFAULT_EXECUTION_MODE = os.environ.get("HERMES_PROCESS_EXECUTION_MODE", "in_process")
+DEFAULT_MAX_TOKENS = _env_int("HERMES_PROCESS_MAX_TOKENS", 6000, minimum=256, maximum=20000)
+MAX_TOKENS_LIMIT = _env_int("HERMES_PROCESS_MAX_TOKEN_LIMIT", 20000, minimum=DEFAULT_MAX_TOKENS)
 
 JSON_OUTPUT_ACTIONS = {"route", "run", "show", "transcript", "decide", "continue"}
 SUPPORTED_ACTIONS = sorted(JSON_OUTPUT_ACTIONS | {"events"})
@@ -169,7 +186,7 @@ def build_command(args: dict[str, Any]) -> list[str]:
             "--timeout",
             str(_as_int(args.get("timeout"), 240, minimum=30, maximum=900)),
             "--max-tokens",
-            str(_as_int(args.get("max_tokens"), 1400, minimum=256, maximum=6000)),
+            str(_as_int(args.get("max_tokens"), DEFAULT_MAX_TOKENS, minimum=256, maximum=MAX_TOKENS_LIMIT)),
         ]
         if _as_bool(args.get("live_dual"), True):
             cmd.append("--live-dual")
@@ -215,7 +232,7 @@ def build_command(args: dict[str, Any]) -> list[str]:
             "--timeout",
             str(_as_int(args.get("timeout"), 240, minimum=30, maximum=900)),
             "--max-tokens",
-            str(_as_int(args.get("max_tokens"), 1400, minimum=256, maximum=6000)),
+            str(_as_int(args.get("max_tokens"), DEFAULT_MAX_TOKENS, minimum=256, maximum=MAX_TOKENS_LIMIT)),
         ]
         if _as_bool(args.get("notify_telegram"), True):
             result.append("--notify-telegram")
@@ -318,7 +335,7 @@ def _run_namespace(args: dict[str, Any]) -> SimpleNamespace:
         bot1_model=_text(args.get("bot1_model"), "auto"),
         bot2_model=_text(args.get("bot2_model"), "auto"),
         timeout=_as_int(args.get("timeout"), 240, minimum=30, maximum=900),
-        max_tokens=_as_int(args.get("max_tokens"), 1400, minimum=256, maximum=6000),
+        max_tokens=_as_int(args.get("max_tokens"), DEFAULT_MAX_TOKENS, minimum=256, maximum=MAX_TOKENS_LIMIT),
         notify_telegram=_as_bool(args.get("notify_telegram"), True),
         notification_dry_run=_as_bool(args.get("notification_dry_run"), False),
     )
@@ -368,7 +385,7 @@ def run_orchestrator_in_process(args: dict[str, Any]) -> Any:
                 bot1_model=_text(args.get("bot1_model"), "auto"),
                 bot2_model=_text(args.get("bot2_model"), "auto"),
                 timeout=_as_int(args.get("timeout"), 240, minimum=30, maximum=900),
-                max_tokens=_as_int(args.get("max_tokens"), 1400, minimum=256, maximum=6000),
+                max_tokens=_as_int(args.get("max_tokens"), DEFAULT_MAX_TOKENS, minimum=256, maximum=MAX_TOKENS_LIMIT),
                 notify_telegram=_as_bool(args.get("notify_telegram"), True),
                 notification_dry_run=_as_bool(args.get("notification_dry_run"), False),
             )
@@ -599,7 +616,7 @@ TOOL_SCHEMA = {
             "bot1_model": {"type": "string", "default": "auto"},
             "bot2_model": {"type": "string", "default": "auto"},
             "timeout": {"type": "integer", "default": 240, "minimum": 30, "maximum": 900},
-            "max_tokens": {"type": "integer", "default": 1400, "minimum": 256, "maximum": 6000},
+            "max_tokens": {"type": "integer", "default": DEFAULT_MAX_TOKENS, "minimum": 256, "maximum": MAX_TOKENS_LIMIT},
             "max_parallel_agents": {
                 "type": "integer",
                 "minimum": 0,

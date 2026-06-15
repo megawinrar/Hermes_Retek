@@ -72,6 +72,7 @@ FAST_BOT1_MODEL = os.environ.get("HERMES_FAST_BOT1_MODEL", "deepseek-v4-flash")
 STRONG_BOT_MODEL = os.environ.get("HERMES_STRONG_BOT_MODEL", "gpt-5.3-codex")
 AUTO_MODEL_VALUES = {"", "auto", "default", "route", "policy"}
 BOT_ACTIVITY_PREVIEW_CHARS = 800
+DEFAULT_PROCESS_MAX_TOKENS = env_int("HERMES_PROCESS_MAX_TOKENS", 6000, minimum=256)
 BotActivityRecorder = Callable[[dict[str, Any]], None]
 
 
@@ -147,9 +148,9 @@ def capped_llm_tokens(requested: int, *, env_name: str, default_cap: int = 0) ->
 TOKEN_POLICY_PROFILES: dict[str, dict[str, int]] = {
     "L0": {"bot1": 384, "bot1_revision": 512, "bot1_self_check": 512, "bot2_verdict": 384, "bot2_repair": 384},
     "L1": {"bot1": 512, "bot1_revision": 700, "bot1_self_check": 700, "bot2_verdict": 512, "bot2_repair": 384},
-    "L2": {"bot1": 900, "bot1_revision": 1100, "bot1_self_check": 900, "bot2_verdict": 1000, "bot2_repair": 900},
-    "L3": {"bot1": 1400, "bot1_revision": 1400, "bot1_self_check": 1200, "bot2_verdict": 1200, "bot2_repair": 1000},
-    "L4": {"bot1": 0, "bot1_revision": 0, "bot1_self_check": 0, "bot2_verdict": 1000, "bot2_repair": 800},
+    "L2": {"bot1": 1400, "bot1_revision": 1600, "bot1_self_check": 1200, "bot2_verdict": 1600, "bot2_repair": 1200},
+    "L3": {"bot1": 2600, "bot1_revision": 2600, "bot1_self_check": 1800, "bot2_verdict": 2200, "bot2_repair": 1600},
+    "L4": {"bot1": 0, "bot1_revision": 0, "bot1_self_check": 0, "bot2_verdict": 2200, "bot2_repair": 1600},
 }
 ROLE_ENV_TOKEN_CAPS = {
     "bot1": "HERMES_BOT1_MAX_TOKENS",
@@ -677,7 +678,13 @@ def build_startup_context_packs_for_process(
         rlm_store_path=rlm_config.store_path,
         rlm_enabled=rlm_config.enabled,
         workspace_root=workspace_root,
-        token_budget=process_context_pack.startup_context_token_budget(getattr(args, "max_tokens", 0)),
+        token_budget=process_context_pack.startup_context_token_budget_for_route(
+            getattr(args, "max_tokens", 0),
+            route=route,
+            phase=phase,
+            task=task,
+            acceptance=acceptance,
+        ),
     )
 
 
@@ -3298,7 +3305,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--bot1-model", default="auto")
     run.add_argument("--bot2-model", default="auto")
     run.add_argument("--timeout", type=int, default=180)
-    run.add_argument("--max-tokens", type=int, default=1400)
+    run.add_argument("--max-tokens", type=int, default=DEFAULT_PROCESS_MAX_TOKENS)
     run.add_argument("--max-parallel-agents", type=int, default=None, help="Cap bounded discovery agent fan-out for this process")
     run.add_argument("--verification-parallel-agents", type=int, default=None, help="Cap bounded verification fan-out for this process")
     run.add_argument("--agent-timeout-seconds", type=int, default=None, help="Per-agent timeout cap for bounded fan-out")
@@ -3321,7 +3328,7 @@ def build_parser() -> argparse.ArgumentParser:
     continue_cmd.add_argument("--bot1-model", default="auto")
     continue_cmd.add_argument("--bot2-model", default="auto")
     continue_cmd.add_argument("--timeout", type=int, default=180)
-    continue_cmd.add_argument("--max-tokens", type=int, default=1400)
+    continue_cmd.add_argument("--max-tokens", type=int, default=DEFAULT_PROCESS_MAX_TOKENS)
     continue_cmd.add_argument("--notify-telegram", action="store_true", help="Send a new human-gate notification if Bot#2 still requests changes")
     continue_cmd.add_argument("--notification-dry-run", action="store_true", help="Record any repeated human-gate notification without network delivery")
     continue_cmd.set_defaults(func=cmd_continue)

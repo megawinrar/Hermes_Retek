@@ -101,6 +101,22 @@ hermes_retek_token_governor:
       load_project_summary: true
       load_full_history: false
       load_raw_files: false
+      process_default_max_tokens: 6000
+      process_manual_max_tokens_cap: 20000
+      context_pack_ratio: 0.50
+      context_pack_max_tokens: 3000
+      expanded_context_pack_ratio: 0.70
+      expanded_context_pack_max_tokens: 5000
+      expanded_context_for:
+        - L4
+        - human_continue
+        - high_risk_review_with_agents
+        - supplier_price_deadline_analysis
+        - code_or_deploy_project
+        - database_migration_change
+        - git_write_or_deploy
+        - huge_task_over_4000_chars
+      principle: structured_context_pack_not_raw_full_history
     by_task_type:
       translation:
         memory_top_k: 0

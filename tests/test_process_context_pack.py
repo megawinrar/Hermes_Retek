@@ -96,11 +96,48 @@ def test_build_role_context_pack_includes_route_workspace_rlm_and_redacts_sensit
     assert cookie not in event_raw
 
 
-def test_startup_context_token_budget_uses_thirty_percent_with_bounds() -> None:
+def test_startup_context_token_budget_uses_large_default_with_bounds() -> None:
     assert process_context_pack.startup_context_token_budget(100) == 120
-    assert process_context_pack.startup_context_token_budget(1000) == 300
-    assert process_context_pack.startup_context_token_budget(10000) == 800
-    assert process_context_pack.startup_context_token_budget(0) == 300
+    assert process_context_pack.startup_context_token_budget(1000) == 500
+    assert process_context_pack.startup_context_token_budget(3000) == 1500
+    assert process_context_pack.startup_context_token_budget(10000) == 3000
+    assert process_context_pack.startup_context_token_budget(0) == 3000
+
+
+def test_expanded_context_budget_for_complex_retry_and_kontur_tasks() -> None:
+    normal = process_context_pack.startup_context_token_budget_for_route(
+        3000,
+        route={"task_level": "L2", "task_type": "standard_task", "risk_level": "medium"},
+        phase="initial",
+        task="short status",
+    )
+    l4 = process_context_pack.startup_context_token_budget_for_route(
+        3000,
+        route={"task_level": "L4", "task_type": "code_or_deploy_project", "risk_level": "high"},
+        phase="initial",
+        task="Refactor and deploy",
+    )
+    retry = process_context_pack.startup_context_token_budget_for_route(
+        3000,
+        route={"task_level": "L2", "task_type": "standard_task", "risk_level": "medium"},
+        phase="human_continue",
+        task="Fix Bot2 findings",
+    )
+    kontur = process_context_pack.startup_context_token_budget_for_route(
+        3000,
+        route={"task_level": "L2", "task_type": "supplier_price_deadline_analysis", "risk_level": "high"},
+        phase="initial",
+        task="Continue Kontur export",
+    )
+
+    assert normal == 1500
+    assert l4 == 2100
+    assert retry == 2100
+    assert kontur == 2100
+    assert process_context_pack.startup_context_token_budget_for_route(
+        10000,
+        route={"task_level": "L4", "task_type": "code_or_deploy_project", "risk_level": "high"},
+    ) == 5000
 
 
 def test_context_pack_rebuilds_from_process_events_assignments_and_human_decision(tmp_path: Path) -> None:

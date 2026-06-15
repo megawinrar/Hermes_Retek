@@ -142,12 +142,12 @@ def test_adaptive_token_budget_scales_by_task_level(monkeypatch) -> None:
         1400,
         role="bot2_verdict",
         route={"task_level": "L2", "risk_level": "medium"},
-    ) == 1000
+    ) == 1400
     assert process_orchestrator.token_budget_for_role(
         1400,
         role="bot2_verdict",
         route={"task_level": "L4", "human_gate_required": True},
-    ) == 1000
+    ) == 1400
 
 
 def test_reasoning_model_token_headroom_keeps_codex_bot1_from_too_small_caps(monkeypatch) -> None:
@@ -161,7 +161,7 @@ def test_reasoning_model_token_headroom_keeps_codex_bot1_from_too_small_caps(mon
         role="bot1",
         route=route,
         model="deepseek-v4-flash",
-    ) == 900
+    ) == 1400
     assert process_orchestrator.token_budget_for_role(
         2400,
         role="bot1",
@@ -180,7 +180,7 @@ def test_reasoning_model_headroom_can_be_disabled(monkeypatch) -> None:
         role="bot1",
         route={"task_level": "L2", "risk_level": "high"},
         model="gpt-5.3-codex",
-    ) == 900
+    ) == 1400
 
 
 def test_auto_model_policy_uses_codex_bot1_for_l3_l4_and_deepseek_for_l2() -> None:

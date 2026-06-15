@@ -184,7 +184,7 @@ handoff-20260615-coverage70-server
 Current stop marker after this continuation:
 
 ```text
-handoff-20260615-rlm-live-kontur
+handoff-20260615-big-context-policy
 ```
 
 This marker points to the GitHub branch state after:
@@ -201,6 +201,10 @@ The current marker additionally points to:
 - server-side Kontur browser script credential sanitization;
 - `/opt/data/rlm_store.db` smoke write;
 - server overlay/restart notes for the Docker file bind mount.
+- big-task context policy: `max_tokens` default 6000, manual cap 20000,
+  normal context pack 50% capped at 3000, expanded context pack 70% capped at
+  5000 for L4, retries, high-risk agent work, Kontur/supplier, deploy,
+  migrations, and huge tasks.
 
 ## Server Deploy
 
@@ -417,6 +421,68 @@ Kontur runtime status observed before fixes:
 - logs also showed BotHub read timeouts/interruptions and
   `Memory is not available`, which are still separate runtime issues.
 
+## Latest Continuation: Big-Task Context Policy
+
+Decision:
+
+- Hermes must accept complex tasks; refusing them because the prompt is large is
+  not acceptable.
+- The safe pattern is not one infinite raw chat. Use a fresh execution session
+  plus a larger dry structured context pack from SQLite/RLM/events/artifacts.
+- Ordinary tasks stay compact. Complex/retry/high-risk tasks get expanded
+  context automatically.
+
+Implemented policy:
+
+```text
+default process max_tokens: 6000
+manual max_tokens cap through hermes_process_tool: 20000
+normal startup context pack: 50% of max_tokens, capped at 3000
+expanded startup context pack: 70% of max_tokens, capped at 5000
+default context pack when max_tokens is absent: 3000
+```
+
+Expanded context triggers:
+
+- `phase != initial`, especially `human_continue`;
+- L4 or human-gated routes;
+- high-risk review routes with agents;
+- `supplier_price_deadline_analysis`;
+- `code_or_deploy_project`;
+- `database_migration_change`;
+- `git_write_or_deploy`;
+- task/acceptance over 4000 chars;
+- Kontur/zakupki/Excel/deploy/migration keywords.
+
+Files changed:
+
+- `scripts/process_context_pack.py`
+  - added expanded context detection and route-aware budget calculation;
+  - added env overrides:
+    - `HERMES_CONTEXT_PACK_RATIO`
+    - `HERMES_CONTEXT_PACK_EXPANDED_RATIO`
+    - `HERMES_CONTEXT_PACK_DEFAULT_TOKENS`
+    - `HERMES_CONTEXT_PACK_MAX_TOKENS`
+    - `HERMES_CONTEXT_PACK_EXPANDED_MAX_TOKENS`
+    - `HERMES_CONTEXT_PACK_BIG_TASK_CHARS`
+- `scripts/process_orchestrator.py`
+  - default `--max-tokens` is now `HERMES_PROCESS_MAX_TOKENS` or 6000;
+  - route-aware context pack budget is used for run/continue;
+  - Bot2 verdict budget increased to 1600 for L2 and 2200 for L3/L4.
+- `custom/tools/hermes_process_tool.py`
+  - default `max_tokens` is now 6000;
+  - schema/manual cap is now 20000 through `HERMES_PROCESS_MAX_TOKEN_LIMIT`.
+- `configs/token_governor.yaml`
+  - documents the structured context pack policy.
+
+Verification:
+
+```text
+focused context/tool/orchestrator tests: 68 passed
+full pytest: 275 passed
+secret_audit current tree: 0 findings
+```
+
 Known server risk:
 
 - A broad secret audit over all server `custom/` still reports old findings in:
@@ -489,7 +555,7 @@ Implemented status as of `1e8b0b4`:
 Use this in the next Codex chat:
 
 ```text
-Продолжи Hermes Retek с docs/16_session_handoff.md. Рабочая ветка ops-safe-restart-speed. GitHub ветка с текущей работой: ops-safe-restart-speed-g3-rlm-20260615. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения. Сначала проверь git status, затем проверь сервер: hermes-agent/hermes-yandex-proxy, /opt/data/rlm_store.db, skill kontur-parser, и свежие логи Hermes. Дальше продолжай Kontur workflow: Excel export, RLM lessons, missing deps, и runtime memory diagnostics.
+Продолжи Hermes Retek с docs/16_session_handoff.md. Рабочая ветка ops-safe-restart-speed. GitHub ветка с текущей работой: ops-safe-restart-speed-g3-rlm-20260615. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения. Сначала проверь git status, затем проверь сервер: hermes-agent/hermes-yandex-proxy, /opt/data/rlm_store.db, skill kontur-parser, свежие логи Hermes, и что big-task context policy активна: max_tokens default 6000, normal context pack до 3000, expanded context pack до 5000. Дальше продолжай Kontur workflow: Excel export, RLM lessons, missing deps, и runtime memory diagnostics.
 ```
 
 ## Recommended Next Work
