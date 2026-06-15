@@ -92,6 +92,37 @@ def test_build_run_command_passes_bounded_parallel_options() -> None:
     assert cmd[cmd.index("--bothub-requests-per-minute") + 1] == "18"
 
 
+def test_kontur_parser_tasks_get_process_first_bounded_defaults() -> None:
+    tool = load_tool()
+    task = "Начни парсинг zakupki.kontur.ru: реализация Р6М5, продажа лома Р18, скачай Excel"
+
+    assert tool.should_route_task_process_first(task) is True
+    cmd = tool.build_command({"action": "run", "task": task})
+
+    assert cmd[cmd.index("--max-parallel-agents") + 1] == "2"
+    assert cmd[cmd.index("--verification-parallel-agents") + 1] == "1"
+    assert cmd[cmd.index("--agent-timeout-seconds") + 1] == "180"
+    assert cmd[cmd.index("--agent-max-tokens") + 1] == "1200"
+    assert cmd[cmd.index("--bothub-max-parallel-calls") + 1] == "2"
+    assert cmd[cmd.index("--bothub-requests-per-minute") + 1] == "30"
+
+
+def test_explicit_process_options_override_process_first_defaults() -> None:
+    tool = load_tool()
+    cmd = tool.build_command(
+        {
+            "action": "run",
+            "task": "Контур парсинг закупки",
+            "max_parallel_agents": 1,
+            "agent_timeout_seconds": 60,
+        }
+    )
+
+    assert cmd[cmd.index("--max-parallel-agents") + 1] == "1"
+    assert cmd[cmd.index("--agent-timeout-seconds") + 1] == "60"
+    assert cmd[cmd.index("--verification-parallel-agents") + 1] == "1"
+
+
 def test_build_run_command_accepts_larger_task_token_budget() -> None:
     tool = load_tool()
     cmd = tool.build_command({"action": "run", "task": "Huge task", "max_tokens": 9000})

@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -75,6 +76,19 @@ PARALLEL_RUN_OPTIONS = {
     "bothub_max_parallel_calls": ("--bothub-max-parallel-calls", 1, 8),
     "bothub_requests_per_minute": ("--bothub-requests-per-minute", 1, 120),
 }
+PROCESS_FIRST_RE = re.compile(
+    r"\b(kontur|zakupki|excel|xlsx|browser scraping|scraping|supplier|tender)\b|"
+    r"(контур|закупк|парсинг|парс|эксел|торг|лом|поставщик|тендер|р6м5|р18|д16т|быстрорежущ)",
+    re.I,
+)
+PROCESS_FIRST_DEFAULTS = {
+    "max_parallel_agents": 2,
+    "verification_parallel_agents": 1,
+    "agent_timeout_seconds": 180,
+    "agent_max_tokens": 1200,
+    "bothub_max_parallel_calls": 2,
+    "bothub_requests_per_minute": 30,
+}
 
 
 def _json(data: dict[str, Any]) -> str:
@@ -109,6 +123,27 @@ def _text(value: Any, default: str = "") -> str:
     if value is None:
         return default
     return str(value)
+
+
+def should_route_task_process_first(task: str) -> bool:
+    return bool(PROCESS_FIRST_RE.search(task or ""))
+
+
+def process_first_defaults_for_task(task: str) -> dict[str, int]:
+    if not should_route_task_process_first(task):
+        return {}
+    return dict(PROCESS_FIRST_DEFAULTS)
+
+
+def _apply_process_first_defaults(args: dict[str, Any]) -> dict[str, Any]:
+    task = _text(args.get("task")).strip()
+    defaults = process_first_defaults_for_task(task)
+    if not defaults:
+        return args
+    updated = dict(args)
+    for key, value in defaults.items():
+        updated.setdefault(key, value)
+    return updated
 
 
 def check_requirements() -> bool:
@@ -157,6 +192,7 @@ def _append_parallel_run_options(cmd: list[str], args: dict[str, Any]) -> list[s
 
 
 def build_command(args: dict[str, Any]) -> list[str]:
+    args = _apply_process_first_defaults(args)
     action = _text(args.get("action"), "run").strip().lower()
     if action not in SUPPORTED_ACTIONS:
         raise ValueError(f"unsupported action: {action}")
@@ -342,6 +378,7 @@ def _run_namespace(args: dict[str, Any]) -> SimpleNamespace:
 
 
 def run_orchestrator_in_process(args: dict[str, Any]) -> Any:
+    args = _apply_process_first_defaults(args)
     action = _text(args.get("action"), "run").strip().lower()
     if action not in SUPPORTED_ACTIONS:
         raise ValueError(f"unsupported action: {action}")
@@ -513,6 +550,7 @@ def summarize_payload(action: str, payload: Any, *, include_raw: bool = False) -
 
 
 def execute(**kwargs: Any) -> str:
+    kwargs = _apply_process_first_defaults(kwargs)
     action = _text(kwargs.get("action"), "run").strip().lower()
     timeout = _as_int(kwargs.get("timeout"), 240, minimum=30, maximum=900) + 15
     include_raw = _as_bool(kwargs.get("include_raw"), False)
@@ -581,7 +619,9 @@ TOOL_SCHEMA = {
     "description": (
         "Run the Retek supervisor process loop from Telegram: route the task, "
         "run Bot#1/Bot#2 when needed, show logs, transcript, events, and record "
-        "human yes/no decisions or continue after a human YES."
+        "human yes/no decisions or continue after a human YES. Use this before "
+        "direct browser/skill execution for Kontur, zakupki, supplier, tender, "
+        "Excel export, scraping, parser, and other long-running multi-step tasks."
     ),
     "parameters": {
         "type": "object",

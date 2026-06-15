@@ -69,7 +69,7 @@ PROCESS_STORE_PATH = Path(
     )
 )
 ROUTE_AUDIT_CACHE_VERSION = "route-audit-v1"
-PROCESS_ROUTE_CACHE_VERSION = "process-route-v1"
+PROCESS_ROUTE_CACHE_VERSION = "process-route-v2"
 _PROCESS_ROUTE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _ROUTE_AUDIT_MEMORY_CACHE: dict[str, tuple[float, str, int, dict[str, Any]]] = {}
 _INITIALIZED_PROCESS_STORES: set[str] = set()

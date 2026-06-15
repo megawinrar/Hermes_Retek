@@ -27,6 +27,10 @@ try:
     from secret_patterns import redact_payload
 except ImportError:  # pragma: no cover - package-style import fallback
     from scripts.secret_patterns import redact_payload
+try:
+    import browser_pacing
+except ImportError:  # pragma: no cover - package-style import fallback
+    from scripts import browser_pacing
 
 
 DEFAULT_ROOT = Path(os.environ.get("HERMES_BROWSER_ROOT", "/opt/data/rebrowser"))
@@ -367,6 +371,7 @@ def record_audit(
     event = {
         "id": uuid.uuid4().hex,
         "created_at": utc_now(),
+        "created_at_epoch": time.time(),
         "session_id": paths.session_id,
         "action": action,
         "status": status,
@@ -382,6 +387,7 @@ def record_audit(
             {
                 "session_id": paths.session_id,
                 "updated_at": event["created_at"],
+                "last_action_epoch": event["created_at_epoch"],
                 "last_action": action,
                 "last_status": status,
                 "audit_path": str(paths.audit_path),
@@ -478,10 +484,23 @@ def cmd_status(args: argparse.Namespace) -> None:
 def cmd_action(args: argparse.Namespace) -> None:
     paths = session_paths(args.session, root=args.root)
     payload = build_payload_from_args(args, paths)
+    pace_policy = browser_pacing.policy_from_values(
+        profile=getattr(args, "pace_profile", None),
+        min_delay_seconds=getattr(args, "min_delay_seconds", None),
+        max_delay_seconds=getattr(args, "max_delay_seconds", None),
+    )
+    pace_event = browser_pacing.pace_before_action(
+        session_id=paths.session_id,
+        state_path=paths.state_path,
+        action=args.action,
+        policy=pace_policy,
+    )
+    payload["pace"] = pace_event
     started = time.monotonic()
     try:
         result = run_node_action(payload, node_bin=args.node_bin)
         result["wall_ms"] = int((time.monotonic() - started) * 1000)
+        result["pace"] = pace_event
         record_audit(paths, action=args.action, status="ok", payload=payload, result=result)
         print(
             json.dumps(
@@ -519,6 +538,14 @@ def build_parser() -> argparse.ArgumentParser:
         action_parser.add_argument("--viewport-width", type=int, default=1440)
         action_parser.add_argument("--viewport-height", type=int, default=1000)
         action_parser.add_argument("--keep-open-seconds", type=int, default=0)
+        action_parser.add_argument(
+            "--pace-profile",
+            choices=["off", "human", "kontur", "cautious", "slow", "bulk"],
+            default=os.environ.get("HERMES_BROWSER_PACE_PROFILE", "human"),
+            help="Human-paced delay profile between browser actions in the same session.",
+        )
+        action_parser.add_argument("--min-delay-seconds", type=float, default=None)
+        action_parser.add_argument("--max-delay-seconds", type=float, default=None)
         action_parser.set_defaults(func=cmd_action)
 
     start = sub.add_parser("start", help="Start browser and optionally open URL")

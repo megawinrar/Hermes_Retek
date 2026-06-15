@@ -95,6 +95,29 @@ def test_supplier_price_deadline_analysis_has_specific_l2_route() -> None:
     assert route["human_gate_required"] is False
 
 
+def test_kontur_parsing_terms_route_to_supplier_browser_process() -> None:
+    route = classify_task("Начни парсинг zakupki.kontur.ru: реализация Р6М5, продажа лома Р18, скачай Excel")
+    assert route["task_level"] == "L2"
+    assert route["task_type"] == "supplier_price_deadline_analysis"
+    assert route["risk_level"] == "high"
+    assert route["review_required"] is True
+    assert route["human_gate_required"] is False
+
+
+def test_kontur_browser_parse_routes_without_price_words() -> None:
+    route = classify_task("Спарси Контур по Д16Т и сохрани результаты")
+    assert route["task_level"] == "L2"
+    assert route["task_type"] == "supplier_price_deadline_analysis"
+    assert route["risk_level"] == "high"
+    assert route["review_required"] is True
+    assert route["human_gate_required"] is False
+
+
+def test_generic_parse_does_not_become_supplier_browser_task() -> None:
+    route = classify_task("parse local JSON report and summarize fields")
+    assert route["task_type"] != "supplier_price_deadline_analysis"
+
+
 def test_bot2_classification_audit_can_only_raise_route() -> None:
     route = classify_task("rewrite short hello")
     audited = apply_classification_audit(

@@ -540,6 +540,38 @@ def test_supplier_route_records_deterministic_calculator_context_when_explicitly
     assert "deterministic_tools" in workers
 
 
+def test_kontur_parser_task_runs_bot1_tester_bot2_with_browser_skills(tmp_path: Path) -> None:
+    args = args_for_process(
+        tmp_path,
+        task="Спарси Контур по Д16Т и сохрани результаты закупки в Excel",
+        acceptance="Need bounded Kontur evidence and normalized result paths.",
+        live_dual=False,
+        bot2_status="APPROVE",
+    )
+
+    payload = process_orchestrator.run_process(args)
+    route = payload["route"]
+    policy = route["parallel_orchestration"]
+    selected = {item["name"] for item in route["skill_context"]["selected_skills"]}
+    details = process_orchestrator.process_details(
+        payload["process_id"],
+        store_path=args.process_store,
+        supervisor_store_path=args.supervisor_store,
+    )
+    workers = {assignment["worker"] for assignment in details["assignments"]}
+    event_types = {event["event_type"] for event in details["events"]}
+
+    assert route["task_level"] == "L2"
+    assert route["task_type"] == "supplier_price_deadline_analysis"
+    assert route["review_required"] is True
+    assert {"hermes-browser", "kontur-parser"}.issubset(selected)
+    assert {"bot1", "tester", "bot2"}.issubset(workers)
+    assert policy["level"] == "L2"
+    assert policy["max_parallel_agents"] == 0
+    assert policy["verification_parallel_agents"] == 1
+    assert "skill_context_selected" in event_types
+
+
 def test_supplier_calculator_does_not_attach_to_serial_production_task_even_when_enabled(monkeypatch) -> None:
     monkeypatch.setenv("HERMES_ENABLE_SUPPLIER_CALCULATOR", "1")
     task = (

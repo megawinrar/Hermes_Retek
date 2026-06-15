@@ -672,6 +672,80 @@ Remaining runtime work:
   `/opt/hermes`; if the container is recreated from image rather than
   restarted, re-run the patchers from `/opt/hermes-assistant/scripts`.
 
+## Latest Continuation: Browser Logic Policy
+
+GitHub branch for this browser logic rollout:
+
+```text
+browser-logic-policy-20260615
+```
+
+Stop marker:
+
+```text
+handoff-20260615-browser-logic-policy
+```
+
+Implemented:
+
+- generic site parsing policy:
+  - `scripts/web_parsing_policy.py`
+  - selects site mode, pace profile, max parallel requests, checkpoint cadence,
+    UI seed requirement, date chunking, and evidence level;
+  - known Kontur profile uses `ui_seed_then_api_pagination`, one request at a
+    time, `pace_profile=kontur`, 2-year export chunks, and 1-year fallback;
+  - unknown authorized sites use `default_authenticated` with browser-first
+    probing, one worker, `pace_profile=cautious`, and checkpoint after each
+    action;
+  - unknown public sites use `default_public` with structured fetch plus
+    browser fallback and at most two parallel requests.
+- generic browser pacing:
+  - `scripts/browser_pacing.py`
+  - profiles: `human`, `kontur`, `cautious`, `slow`, `bulk`, `off`;
+  - `scripts/hermes_browser_session.py` exposes these through
+    `--pace-profile`;
+  - every browser action records pace metadata in the session audit/state.
+- Kontur-specific profile on top of the generic policy:
+  - `scripts/kontur_search_strategy.py`
+  - `scripts/kontur_export_strategy.py`
+  - `scripts/kontur_api_normalizer.py`
+  - `skills/kontur-parser/SKILL.md`
+  - UI creates valid `searchId`; API `queryId` must not be treated as a
+    browser `searchId`;
+  - expired-link pages force UI restart;
+  - Excel export errors/2000-row limits require screenshot/error capture,
+    then 2-year chunks, then 1-year fallback, then merge.
+- process-first routing for browser/parser/export tasks:
+  - `custom/tools/hermes_process_tool.py`
+  - `scripts/task_router.py`
+  - `scripts/process_orchestrator.py`
+  - long browser/parser/export/Kontur tasks get bounded supervised process,
+    Bot1/Tester/Bot2, RLM, and process logs.
+
+Local verification:
+
+```text
+focused browser/process tests: 115 passed
+full pytest: 328 passed
+secret_audit current tree: 0 findings
+coverage full report including tests: 84%
+web_parsing_policy.py coverage: 98%
+kontur_search_strategy.py coverage: 97%
+kontur_export_strategy.py coverage: 95%
+kontur_api_normalizer.py coverage: 98%
+browser_pacing.py coverage: 84%
+```
+
+Rollback model:
+
+- GitHub rollback: return to the previous branch/marker
+  `ops-safe-restart-speed-g3-rlm-20260615` or tag
+  `handoff-20260615-early-ack-subcall-rlm`.
+- Server rollback: restore the timestamped backup directory created during
+  overlay deploy. Production `/opt/hermes-assistant` must remain on branch
+  `custom`; do not use `git checkout`, `git pull`, or `git reset` there unless
+  explicitly approved.
+
 ## Next Session First Prompt
 
 Use this in the next Codex chat:

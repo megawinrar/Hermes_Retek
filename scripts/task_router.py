@@ -109,7 +109,20 @@ MIGRATION_WRITE_RE = re.compile(
 )
 SUPPLIER_PRICE_DEADLINE_RE = re.compile(
     r"\b(supplier|vendor|price|deadline|delivery|lead time|tender|crm parts?)\b|"
-    r"(поставщик|поставщиков|цен|стоимост|срок|доставк|тендер|закупк|детал|комплектующ)",
+    r"(поставщик|поставщиков|цен|стоимост|срок|доставк|тендер|закупк|закупки|контур|"
+    r"эксел|excel|xlsx)",
+    re.I,
+)
+KONTUR_BROWSER_RE = re.compile(
+    r"\b(kontur|zakupki(?:\.kontur\.ru)?)\b.*\b(parse|scrape|scraping|browser|search|export|evidence|capture|excel|xlsx)\b|"
+    r"\b(parse|scrape|scraping|browser|search|export|evidence|capture|excel|xlsx)\b.*\b(kontur|zakupki(?:\.kontur\.ru)?)\b|"
+    r"(контур|закупк).*(парс|скрап|брауз|поиск|собер|экспорт|доказ|скрин|эксел)|"
+    r"(парс|скрап|брауз|поиск|собер|экспорт|доказ|скрин|эксел).*(контур|закупк)",
+    re.I,
+)
+MATERIAL_TENDER_RE = re.compile(
+    r"(продаж|реализац|закупк|тендер|поиск|парс|экспорт|excel|xlsx).{0,80}(лом|р6м5|р18|д16т|быстрорежущ)|"
+    r"(лом|р6м5|р18|д16т|быстрорежущ).{0,80}(продаж|реализац|закупк|тендер|поиск|парс|экспорт|excel|xlsx)",
     re.I,
 )
 
@@ -156,7 +169,11 @@ def classify_task(task: str) -> dict[str, Any]:
     github_lookup = github_context and bool(GITHUB_READ_RE.search(text)) and not git_write
     migration = bool(MIGRATION_RE.search(text))
     migration_write = migration and bool(MIGRATION_WRITE_RE.search(text))
-    supplier_price_deadline = bool(SUPPLIER_PRICE_DEADLINE_RE.search(text))
+    kontur_browser_research = bool(KONTUR_BROWSER_RE.search(text))
+    material_tender_research = bool(MATERIAL_TENDER_RE.search(text))
+    supplier_price_deadline = (
+        bool(SUPPLIER_PRICE_DEADLINE_RE.search(text)) or kontur_browser_research or material_tender_research
+    )
     long = len(text) > 450
 
     if command:
@@ -188,7 +205,7 @@ def classify_task(task: str) -> dict[str, Any]:
     else:
         level, task_type, reason = "L2", "standard_task", "Standard task without multi-agent execution."
 
-    high_risk = high_risk or adversarial or git_write or migration
+    high_risk = high_risk or adversarial or git_write or migration or supplier_price_deadline
     risk = "high" if high_risk else "medium" if level in {"L2", "L3", "L4"} else "low"
     review_required = level in {"L3", "L4"} or risk == "high"
     if level == "L1":

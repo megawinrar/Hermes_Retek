@@ -222,6 +222,47 @@ def test_source_save_suppresses_preview_unless_explicit(tmp_path: Path) -> None:
     assert payload["include_preview"] is False
 
 
+def test_cmd_action_records_human_pacing(monkeypatch, tmp_path: Path, capsys) -> None:
+    paths = browser.session_paths("kontur", root=tmp_path)
+    paths.state_path.write_text(json.dumps({"last_action_epoch": 100.0}), encoding="utf-8")
+    slept: list[float] = []
+
+    def fake_run_node_action(payload: dict[str, object], *, node_bin: str = "node") -> dict[str, object]:
+        assert payload["pace"]["slept_seconds"] == 0.75
+        return {"title": "ok"}
+
+    monkeypatch.setattr(browser, "run_node_action", fake_run_node_action)
+    monkeypatch.setattr(browser.browser_pacing.time, "time", lambda: 100.25)
+    monkeypatch.setattr(browser.browser_pacing.time, "sleep", slept.append)
+
+    args = argparse.Namespace(
+        root=tmp_path,
+        session="kontur",
+        action="source",
+        timeout_ms=1000,
+        wait_until="networkidle2",
+        visible=False,
+        chrome_binary="",
+        user_agent="",
+        viewport_width=1000,
+        viewport_height=800,
+        save=False,
+        max_length=100,
+        include_preview=False,
+        keep_open_seconds=0,
+        node_bin="node-test",
+        pace_profile="human",
+        min_delay_seconds=1.0,
+        max_delay_seconds=1.0,
+    )
+
+    browser.cmd_action(args)
+    output = json.loads(capsys.readouterr().out)
+
+    assert slept == [0.75]
+    assert output["pace"]["slept_seconds"] == 0.75
+
+
 def test_run_node_action_uses_json_payload_and_returns_result(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 

@@ -31,20 +31,46 @@ from the environment, but normal operation should rely on the stored cookies.
 
 ## Search Workflow
 
+0. For Telegram/user-facing tasks, start a supervised process with
+   `hermes_process(action="run", ...)` before browser work so Bot#1/Bot#2,
+   RLM, bounded budgets, and process logs are created.
 1. Check session health first by opening `https://zakupki.kontur.ru/Grid`.
 2. Reuse cookies/profile before attempting login.
-3. Run one query at a time:
+2a. Confirm the generic site policy:
+   `python scripts/web_parsing_policy.py --url https://zakupki.kontur.ru/Grid --task "$TASK"`.
+   Kontur should resolve to `ui_seed_then_api_pagination`, one parallel request,
+   and `pace_profile=kontur`.
+3. Create the valid search through the UI: enter keywords, click `Найти`, and
+   read the `searchId` from the resulting URL. Do not treat API `queryId` as a
+   browser `searchId`; expired-link pages mean the URL/searchId path is wrong.
+   Use `python scripts/kontur_search_strategy.py --keywords "реализация Р6М5" --url "$CURRENT_URL"`
+   to verify whether the next step should be API pagination or UI restart.
+4. Run one query at a time:
    - `Д16Т`;
    - `реализация Р6М5`;
    - `продажа лома Р18`;
    - `отходы быстрорежущей стали`.
-4. Save evidence for every meaningful step: URL, query, screenshot if useful,
+5. Save evidence for every meaningful step: URL, query, screenshot if useful,
    HTML source, result count, and exported files.
-5. Keep requests bounded and human-paced. Do not run open-ended scraping loops.
-6. If Excel export does not start, save the page HTML and record which button or
+6. Keep requests bounded and human-paced. Use `--pace-profile kontur` for
+   browser actions and keep 1.25-2.5s spacing between search/filter/export
+   operations. Do not launch many fetches at once; stop, checkpoint, and resume
+   later if the site refuses or slows down.
+7. For Excel exports, first try the UI export for the current result set. If the
+   site shows a limit/error such as 2000 rows, capture screenshot + error text,
+   split the failed window by dates, and retry:
+   - first by 2-year windows;
+   - if a 2-year window still fails, split that window into 1-year windows;
+   - merge downloaded yearly Excel files after all chunks finish.
+   Use `python scripts/kontur_export_strategy.py --date-from 01.01.2020 --date-to 15.06.2026`
+   to generate the chunk plan.
+8. If Excel export does not start, save the page HTML and record which button or
    endpoint was attempted.
-7. If selectors fail, capture current HTML and write the failing selector names
+9. If selectors fail, capture current HTML and write the failing selector names
    to RLM instead of retrying blindly.
+10. Normalize raw `/api/grid` responses with
+   `python scripts/kontur_api_normalizer.py raw.json --output data.json` instead
+   of asking the LLM to infer fields from large JSON blobs.
 
 ## RLM Lessons
 
