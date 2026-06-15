@@ -609,6 +609,11 @@ Runtime guardrails status as of `bf0563d + runtime performance continuation`:
 - child-agent subcall lifecycle records were patched into the live
   `delegate_task` runtime; env controls:
   `HERMES_RLM_SUBCALL_ENABLED` and `HERMES_ASSISTANT_SCRIPTS`;
+- RLM canonical runtime path is `/opt/data/rlm_store.db`; inside
+  `hermes-agent` this is the mounted `hermes-data` Docker volume. On the host,
+  keep `/opt/data/rlm_store.db` as a symlink to
+  `/var/lib/docker/volumes/hermes-data/_data/rlm_store.db` so manual checks do
+  not accidentally inspect a different SQLite file;
 - local full test suite passed after this continuation: `289 passed`;
 - local coverage over `scripts/*.py` and `custom/**/*.py`: `74%`;
 - server focused tests passed: `19 passed`;

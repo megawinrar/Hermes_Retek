@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover - package-style import fallback
     from scripts.secret_patterns import redact_text
 
 
-DEFAULT_STORE_PATH = Path("/var/lib/docker/volumes/hermes-data/_data/rlm_store.db")
+DEFAULT_STORE_PATH = Path("/opt/data/rlm_store.db")
 SCHEMA_VERSION = 1
 
 SCHEMA_SQL = """
