@@ -928,3 +928,19 @@ Deployment reminder:
   - process plan `router/supervisor/bot1/bot2`;
   - no tester assignment for parser writing;
   - Bot#2 ordinary fixes returning to Bot#1, not Telegram human gate.
+
+Deployment completed:
+
+```text
+GitHub branch: browser-logic-policy-20260615
+commit: 289fcfd fix: keep parsing workflow to bot1 bot2
+server branch stayed: custom
+overlay backup: /home/yc-user/hermes-file-deploy-backups/parsing-bot1-bot2-20260615T205229Z
+safe restart: restart_completed, forced=false, reason=parsing_bot1_bot2_policy_guard
+containers: hermes-agent Up, hermes-yandex-proxy Up/healthy
+core guard marker: /opt/hermes/agent/tool_guardrails.py contains HERMES_RETEK_MARKETPLACE_PROCESS_FIRST_GUARD
+runtime guard smoke: blocked block marketplace_process_first_required False
+server route smoke: supplier_price_deadline_analysis ['router', 'supervisor', 'bot1', 'bot2'] parsing_bot1_bot2_only
+server dry process smoke: status return_to_bot1, human_message False
+old orphan B2B Puppeteer Chrome: gone after safe restart
+```
