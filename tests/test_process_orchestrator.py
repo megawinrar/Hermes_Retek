@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +13,7 @@ sys.path.insert(0, str(SCRIPTS))
 import process_orchestrator  # noqa: E402
 import process_context_pack  # noqa: E402
 import rlm_store  # noqa: E402
+from sqlite_utils import connect as sqlite_connect  # noqa: E402
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -941,7 +941,7 @@ def test_process_live_dual_repairs_invalid_bot2_json_in_main_orchestrator(monkey
     assert "[REDACTED]" in activity_events[0]["payload"]["output_preview"]
     assert activity_events[-1]["payload"]["repair_status"] == "repaired"
 
-    with sqlite3.connect(args.supervisor_store) as con:
+    with sqlite_connect(args.supervisor_store) as con:
         rows = con.execute(
             "SELECT payload_json FROM supervisor_events WHERE event_type = 'bot_activity' ORDER BY id"
         ).fetchall()
@@ -1180,7 +1180,7 @@ def test_process_rlm_records_are_redacted(tmp_path: Path) -> None:
 
     payload = process_orchestrator.run_process(args)
 
-    with sqlite3.connect(rlm_path) as con:
+    with sqlite_connect(rlm_path) as con:
         raw = json.dumps(con.execute("SELECT title, summary, content, tags_json, metadata_json FROM rlm_records").fetchall())
     assert secret not in raw
     assert rlm_store.search_records(process_id=payload["process_id"], store_path=rlm_path)

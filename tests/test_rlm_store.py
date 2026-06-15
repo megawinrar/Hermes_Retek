@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +15,7 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import rlm_store  # noqa: E402
+from sqlite_utils import connect as sqlite_connect  # noqa: E402
 
 
 def test_schema_initializes_store(tmp_path: Path) -> None:
@@ -133,7 +133,7 @@ def test_redaction_prevents_raw_secrets_in_storage_and_search_output(tmp_path: P
     assert "[REDACTED]" in record["content"]
     assert "[REDACTED]" in json.dumps(found)
 
-    with sqlite3.connect(store) as con:
+    with sqlite_connect(store) as con:
         raw_rows = con.execute("SELECT title, summary, content, tags_json, metadata_json FROM rlm_records").fetchall()
     assert secret not in json.dumps(raw_rows)
 

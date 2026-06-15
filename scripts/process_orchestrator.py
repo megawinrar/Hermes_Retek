@@ -56,6 +56,11 @@ from supervisor_common import (
 )
 from task_router import apply_classification_audit, classify_task as classify_task_uncached, parse_classification_audit
 
+try:
+    from sqlite_utils import connect as sqlite_connect
+except ImportError:  # pragma: no cover - package-style import fallback
+    from scripts.sqlite_utils import connect as sqlite_connect
+
 
 PROCESS_STORE_PATH = Path(
     os.environ.get(
@@ -391,7 +396,7 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
     store.parent.mkdir(parents=True, exist_ok=True)
     store_key = str(store)
     existed_before = store.exists()
-    con = sqlite3.connect(store)
+    con = sqlite_connect(store)
     con.row_factory = sqlite3.Row
     if not existed_before or store_key not in _INITIALIZED_PROCESS_STORES:
         con.execute("PRAGMA journal_mode=WAL")

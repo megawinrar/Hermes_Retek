@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -10,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import bot2_gate  # noqa: E402
+from sqlite_utils import connect as sqlite_connect  # noqa: E402
 
 
 def test_bot2_gate_review_repairs_invalid_json_once(monkeypatch, tmp_path: Path, capsys) -> None:
@@ -51,7 +51,7 @@ def test_bot2_gate_review_repairs_invalid_json_once(monkeypatch, tmp_path: Path,
     assert len(calls) == 2
     assert "Return ONLY valid JSON matching this schema" in calls[1]
 
-    with sqlite3.connect(store) as con:
+    with sqlite_connect(store) as con:
         raw_output = con.execute("SELECT raw_output FROM bot2_verdicts WHERE session_id='bot2-test'").fetchone()[0]
     assert "Bot#2 JSON Repair" in raw_output
 
@@ -124,7 +124,7 @@ def test_bot2_gate_storage_stdout_and_events_are_redacted(monkeypatch, tmp_path:
     assert secret not in stdout
     assert "[REDACTED]" in stdout
 
-    with sqlite3.connect(store) as con:
+    with sqlite_connect(store) as con:
         session = con.execute("SELECT task, acceptance_criteria, bot1_result, evidence FROM bot2_review_sessions").fetchone()
         rounds = con.execute("SELECT message FROM bot2_review_rounds ORDER BY id").fetchall()
         verdict = con.execute("SELECT verdict_json, raw_output FROM bot2_verdicts").fetchone()

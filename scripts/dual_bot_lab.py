@@ -24,6 +24,11 @@ from typing import Any
 
 from human_notification import redact_payload, redact_text
 
+try:
+    from sqlite_utils import connect as sqlite_connect
+except ImportError:  # pragma: no cover - package-style import fallback
+    from scripts.sqlite_utils import connect as sqlite_connect
+
 
 PROJECT_DIR = Path(os.environ.get("HERMES_PROJECT_DIR", "/opt/hermes-assistant"))
 ENV_FILE = PROJECT_DIR / ".env"
@@ -283,7 +288,7 @@ def bothub_config() -> dict[str, str]:
 
 def db() -> sqlite3.Connection:
     STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(STORE_PATH)
+    con = sqlite_connect(STORE_PATH)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
     con.executescript(

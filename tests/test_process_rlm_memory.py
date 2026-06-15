@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -13,6 +12,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import process_rlm_memory  # noqa: E402
 import rlm_store  # noqa: E402
+from sqlite_utils import connect as sqlite_connect  # noqa: E402
 
 
 def args_for_rlm(store: Path | None = None, *, enabled: bool = False) -> argparse.Namespace:
@@ -167,7 +167,7 @@ def test_write_records_redacts_secret_like_values(tmp_path: Path) -> None:
         human_message=f"Human gate for {secret}",
     )
 
-    with sqlite3.connect(store) as con:
+    with sqlite_connect(store) as con:
         raw = json.dumps(con.execute("SELECT title, summary, content, tags_json, metadata_json FROM rlm_records").fetchall())
 
     assert secret not in raw

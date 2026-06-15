@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sqlite3
 import statistics
 from collections import Counter
 from dataclasses import dataclass, field
@@ -16,8 +15,10 @@ from typing import Any
 
 try:
     from secret_patterns import redact_text
+    from sqlite_utils import connect as sqlite_connect
 except ModuleNotFoundError:  # pragma: no cover - package import path in tests
     from scripts.secret_patterns import redact_text
+    from scripts.sqlite_utils import connect as sqlite_connect
 
 
 DEFAULT_GATEWAY_LOG = Path("/opt/data/logs/gateway.log")
@@ -403,11 +404,11 @@ def table_counts(db_path: Path, table: str, since: datetime) -> dict[str, int]:
     if not db_path.exists():
         return {}
     try:
-        con = sqlite3.connect(str(db_path))
-        rows = con.execute(
-            f"SELECT status, COUNT(*) FROM {table} WHERE created_at >= ? GROUP BY status",
-            (since.isoformat(timespec="seconds"),),
-        ).fetchall()
+        with sqlite_connect(str(db_path)) as con:
+            rows = con.execute(
+                f"SELECT status, COUNT(*) FROM {table} WHERE created_at >= ? GROUP BY status",
+                (since.isoformat(timespec="seconds"),),
+            ).fetchall()
     except Exception:
         return {}
     return {str(status): int(count) for status, count in rows}
@@ -417,18 +418,18 @@ def active_rows(db_path: Path, table: str, columns: list[str]) -> list[dict[str,
     if not db_path.exists():
         return []
     try:
-        con = sqlite3.connect(str(db_path))
-        con.row_factory = sqlite3.Row
-        cols = ", ".join(columns)
-        rows = con.execute(
-            f"""
-            SELECT {cols}
-            FROM {table}
-            WHERE status IN ('running', 'awaiting_human_decision', 'return_to_bot1')
-            ORDER BY updated_at DESC
-            LIMIT 5
-            """
-        ).fetchall()
+        with sqlite_connect(str(db_path)) as con:
+            con.row_factory = sqlite3.Row
+            cols = ", ".join(columns)
+            rows = con.execute(
+                f"""
+                SELECT {cols}
+                FROM {table}
+                WHERE status IN ('running', 'awaiting_human_decision', 'return_to_bot1')
+                ORDER BY updated_at DESC
+                LIMIT 5
+                """
+            ).fetchall()
     except Exception:
         return []
     return [dict(row) for row in rows]

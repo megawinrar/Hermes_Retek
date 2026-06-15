@@ -29,6 +29,11 @@ from dual_bot_lab import (
 from human_notification import redact_payload, redact_text
 from supervisor_common import INVALID_BOT2_STATUS, parse_bot2_verdict
 
+try:
+    from sqlite_utils import connect as sqlite_connect
+except ImportError:  # pragma: no cover - package-style import fallback
+    from scripts.sqlite_utils import connect as sqlite_connect
+
 
 PROJECT_DIR = Path(os.environ.get("HERMES_PROJECT_DIR", "/opt/hermes-assistant"))
 STORE_PATH = Path(
@@ -74,7 +79,7 @@ def dumps(data: Any) -> str:
 def db(store_path: Path | str | None = None) -> sqlite3.Connection:
     path = Path(store_path or STORE_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(path)
+    con = sqlite_connect(path)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
     con.executescript(

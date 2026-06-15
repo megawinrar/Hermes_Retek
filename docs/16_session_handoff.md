@@ -637,8 +637,18 @@ Runtime guardrails status as of `bf0563d + runtime performance continuation`:
 - added repeatable repo script `scripts/secure_check_limits.py` plus
   `tests/test_secure_check_limits.py`;
 - current repo secret audit passed with `0` findings;
-- local full test suite passed after this continuation: `289 passed`;
-- local coverage over `scripts/*.py` and `custom/**/*.py`: `74%`;
+- refactored SQLite store handling through `scripts/sqlite_utils.py`:
+  context-managed connections now close on `with` exit instead of waiting for
+  garbage collection. Applied to Supervisor, process orchestrator, RLM,
+  session tags, Bot2 gate, dual-bot lab, and timing report DB reads;
+- added `tests/test_sqlite_utils.py` and updated raw SQLite test reads to use
+  the same closing connection helper;
+- full local suite after SQLite refactor:
+  `298 passed` with `-W error::ResourceWarning`;
+- local coverage after SQLite refactor remains `70%` over `scripts` and
+  `custom`;
+- latest local full test suite passed after this continuation: `298 passed`;
+- latest local coverage over `scripts` and `custom`: `70%`;
 - server focused tests passed: `19 passed`;
 - server RLM subcall smoke wrote `kind=subcall` to `/opt/data/rlm_store.db`;
 - server `hermes-agent` restarted without `--force`; the stale 2026-06-14

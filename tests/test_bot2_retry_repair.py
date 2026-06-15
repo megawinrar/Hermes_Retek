@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -10,6 +9,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import dual_bot_lab  # noqa: E402
 from process_orchestrator import live_dual_result  # noqa: E402
+from sqlite_utils import connect as sqlite_connect  # noqa: E402
 from supervisor_common import MAX_BOT_REVIEW_CYCLES  # noqa: E402
 
 
@@ -408,7 +408,7 @@ def test_dual_bot_lab_storage_and_report_are_redacted(monkeypatch, tmp_path: Pat
         bot2_result=f"Bot#2 transcript {secret}",
     )
 
-    with sqlite3.connect(store) as con:
+    with sqlite_connect(store) as con:
         run = con.execute("SELECT task, acceptance FROM dual_bot_runs WHERE id='dual-redact'").fetchone()
         message = con.execute("SELECT content, metadata_json FROM dual_bot_messages WHERE run_id='dual-redact'").fetchone()
 

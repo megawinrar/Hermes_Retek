@@ -4,7 +4,6 @@ import json
 import os
 import subprocess
 import sys
-import sqlite3
 from pathlib import Path
 
 
@@ -13,6 +12,7 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from supervisor_common import create_task, update_task  # noqa: E402
+from sqlite_utils import connect as sqlite_connect  # noqa: E402
 
 
 SAFE_RESTART = SCRIPTS / "hermes_safe_restart.sh"
@@ -76,7 +76,7 @@ def test_safe_restart_ignores_stale_human_waiting_task_by_default(tmp_path: Path
     task_id = create_task("Waiting for old approval", store_path=store)["task_id"]
     update_task(task_id, status="running", store_path=store)
     update_task(task_id, status="awaiting_human_decision", store_path=store)
-    with sqlite3.connect(store) as con:
+    with sqlite_connect(store) as con:
         con.execute(
             "UPDATE supervisor_tasks SET updated_at='2026-01-01T00:00:00+00:00' WHERE id=?",
             (task_id,),
@@ -110,7 +110,7 @@ def test_safe_restart_blocks_running_task_even_when_timestamp_is_old(tmp_path: P
     store = tmp_path / "supervisor.db"
     task_id = create_task("Still marked running", store_path=store)["task_id"]
     update_task(task_id, status="running", store_path=store)
-    with sqlite3.connect(store) as con:
+    with sqlite_connect(store) as con:
         con.execute(
             "UPDATE supervisor_tasks SET updated_at='2026-01-01T00:00:00+00:00' WHERE id=?",
             (task_id,),

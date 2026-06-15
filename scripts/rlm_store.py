@@ -19,8 +19,10 @@ from typing import Any
 
 try:
     from secret_patterns import redact_text
+    from sqlite_utils import connect as sqlite_connect
 except ImportError:  # pragma: no cover - package-style import fallback
     from scripts.secret_patterns import redact_text
+    from scripts.sqlite_utils import connect as sqlite_connect
 
 
 DEFAULT_STORE_PATH = Path("/opt/data/rlm_store.db")
@@ -80,7 +82,7 @@ def get_store_path() -> Path:
 def connect(store_path: Path | str | None = None) -> sqlite3.Connection:
     path = Path(store_path) if store_path else get_store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(path)
+    con = sqlite_connect(path)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
     init_schema(con)
