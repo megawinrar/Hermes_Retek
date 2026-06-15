@@ -570,12 +570,46 @@ Additional ops status as of `5f32a78`:
 - local test suite passed: `278 passed`;
 - server focused timing tests passed: `11 passed`.
 
+Runtime guardrails status as of `bf0563d + local runtime_guardrails patch`:
+
+- `/opt/data/config.yaml` was backed up to
+  `/opt/data/config.yaml.backup-runtime-guardrails-20260615T092020Z`;
+- parent Hermes loop was capped with `agent.max_turns: 16`;
+- user-visible progress cadence was tightened with
+  `agent.gateway_notify_interval: 30` and
+  `agent.gateway_timeout_warning: 300`;
+- subagent/delegate guardrails were tightened:
+  `delegation.max_concurrent_children: 2`,
+  `delegation.child_timeout_seconds: 120`,
+  `delegation.max_iterations: 8`;
+- gateway streaming was enabled:
+  `streaming.enabled: true`, `streaming.transport: auto`,
+  `streaming.edit_interval: 1.0`, `streaming.buffer_threshold: 24`;
+- `hermes_safe_restart.sh` initially blocked restart because of stale
+  `awaiting_human_decision`/`return_to_bot1` records from 2026-06-14; restart
+  was forced with reason `runtime_guardrails_stale_waiting_tasks` after
+  verifying those records were not live turns;
+- server `hermes-agent` restarted successfully and still runs on BotHub;
+- added repeatable repo script `scripts/runtime_guardrails.py` plus
+  `tests/test_runtime_guardrails.py`;
+- local test suite passed after this change: `281 passed`;
+- server focused runtime guardrail tests passed: `3 passed`.
+
+Remaining runtime work:
+
+- Full early Telegram ack before the first LLM request is not implemented yet.
+  Streaming/progress cadence is enabled now, but if BotHub delays first token
+  for hundreds of seconds, a gateway-level "accepted/working" ack still needs
+  a small upstream-aware Telegram adapter patch.
+- Safe restart guard should be refined so stale human-waiting tasks do not
+  block config-only restarts forever while genuinely running tasks still block.
+
 ## Next Session First Prompt
 
 Use this in the next Codex chat:
 
 ```text
-Продолжи Hermes Retek с docs/16_session_handoff.md. Рабочая ветка ops-safe-restart-speed. GitHub ветка с текущей работой: ops-safe-restart-speed-g3-rlm-20260615. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения. Сначала проверь git status, затем проверь сервер: hermes-agent/hermes-yandex-proxy, что Hermes снова на BotHub (`OPENAI_BASE_URL=https://openai.bothub.chat/v1`, `OPENAI_MODEL=deepseek-v4-flash`), что cron snapshot пишет `/opt/data/logs/gateway.log` и `/opt/data/logs/agent.log`, что `/opt/data/rlm_store.db` жив, skill kontur-parser есть, и big-task context policy активна: max_tokens default 6000, normal context pack до 3000, expanded context pack до 5000. Затем продолжай runtime performance work: early Telegram ack/flush, hard caps на api_calls/tool_turns/delegate_task, missing deps, RLM lessons, and Kontur workflow.
+Продолжи Hermes Retek с docs/16_session_handoff.md. Рабочая ветка ops-safe-restart-speed. GitHub ветка с текущей работой: ops-safe-restart-speed-g3-rlm-20260615. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения. Сначала проверь git status, затем проверь сервер: hermes-agent/hermes-yandex-proxy, что Hermes снова на BotHub (`OPENAI_BASE_URL=https://openai.bothub.chat/v1`, `OPENAI_MODEL=deepseek-v4-flash`), что runtime guardrails активны (`agent.max_turns=16`, `delegation.max_iterations=8`, `delegation.child_timeout_seconds=120`, `delegation.max_concurrent_children=2`, `streaming.enabled=true`), что cron snapshot пишет `/opt/data/logs/gateway.log` и `/opt/data/logs/agent.log`, что `/opt/data/rlm_store.db` жив, skill kontur-parser есть, и big-task context policy активна: max_tokens default 6000, normal context pack до 3000, expanded context pack до 5000. Затем продолжай runtime performance work: full early Telegram ack before first LLM request, refine safe restart stale-task drain policy, missing deps, RLM lessons, and Kontur workflow.
 ```
 
 ## Recommended Next Work
