@@ -36,6 +36,11 @@ Runtime-контракт:
 5. Любые skill scripts и внешние write-actions проходят через `tool_gateway.py`.
 6. Telegram-задачи запускай через Hermes tool `hermes_process`, который
    вызывает `scripts/process_orchestrator.py` и сохраняет process/audit логи.
+7. Внешние сайты, маркетплейсы, площадки закупок/тендеров, scraping/parsing,
+   Excel/export и задачи с логином/куками всегда сначала запускай через
+   `hermes_process(action="run", ...)`. Нельзя начинать такие задачи прямыми
+   `browser_*`, `execute_code` или ad-hoc JS-скриптами до создания process/RLM
+   записи и выбора site policy через `scripts/web_parsing_policy.py`.
 
 ### Workflow (этапы для сложных задач)
 

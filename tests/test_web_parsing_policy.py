@@ -23,6 +23,23 @@ def test_kontur_domain_selects_ui_seed_single_request_policy() -> None:
     assert selected["fallback_chunk_years"] == 1
 
 
+def test_b2b_center_uses_persistent_browser_login_policy() -> None:
+    selected = policy.select_policy(
+        url="https://www.b2b-center.ru/market/",
+        task="зайди в аккаунт и найди Р6М5 Р18 на площадке",
+    )
+
+    assert selected["name"] == "b2b_center"
+    assert selected["mode"] == "persistent_browser_login_then_ui_search"
+    assert selected["pace_profile"] == "cautious"
+    assert selected["max_parallel_requests"] == 1
+    assert selected["requires_ui_seed"] is True
+    assert selected["min_delay_seconds"] == 2.5
+    assert selected["max_delay_seconds"] == 6.0
+    assert "accept or close cookie notices before login" in selected["rules"]
+    assert "treat browser unsupported/cookies disabled banners as recoverable setup errors" in selected["rules"]
+
+
 def test_unknown_authorized_site_uses_cautious_browser_first_policy() -> None:
     selected = policy.select_policy(url="https://example-crm.test/search", task="зайди в аккаунт и выгрузи xlsx")
 
@@ -50,3 +67,4 @@ def test_cli_outputs_policy_json(capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["name"] == "kontur"
     assert "pace browser and API actions through the selected delay profile" in payload["rules"]
+    assert "verify authenticated state by DOM/cookies/URL, not by screenshot existence alone" in payload["rules"]

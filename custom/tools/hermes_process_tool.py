@@ -77,8 +77,10 @@ PARALLEL_RUN_OPTIONS = {
     "bothub_requests_per_minute": ("--bothub-requests-per-minute", 1, 120),
 }
 PROCESS_FIRST_RE = re.compile(
-    r"\b(kontur|zakupki|excel|xlsx|browser scraping|scraping|supplier|tender)\b|"
-    r"(контур|закупк|парсинг|парс|эксел|торг|лом|поставщик|тендер|р6м5|р18|д16т|быстрорежущ)",
+    r"\b(kontur|zakupki|b2b-center|b2b|marketplace|market|excel|xlsx|browser scraping|"
+    r"scraping|supplier|tender|external site|website parsing)\b|"
+    r"(контур|закупк|парсинг|парс|эксел|торг|лом|поставщик|тендер|площадк|маркетплейс|"
+    r"внешн.{0,20}сайт|сайт.{0,30}поиск|р6м5|р18|д16т|быстрорежущ)",
     re.I,
 )
 PROCESS_FIRST_DEFAULTS = {
@@ -620,8 +622,9 @@ TOOL_SCHEMA = {
         "Run the Retek supervisor process loop from Telegram: route the task, "
         "run Bot#1/Bot#2 when needed, show logs, transcript, events, and record "
         "human yes/no decisions or continue after a human YES. Use this before "
-        "direct browser/skill execution for Kontur, zakupki, supplier, tender, "
-        "Excel export, scraping, parser, and other long-running multi-step tasks."
+        "direct browser/skill execution for external websites, marketplaces such "
+        "as B2B-Center, Kontur, zakupki, supplier, tender, Excel export, scraping, "
+        "parser, authenticated browser, and other long-running multi-step tasks."
     ),
     "parameters": {
         "type": "object",

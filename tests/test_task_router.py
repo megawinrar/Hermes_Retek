@@ -113,6 +113,15 @@ def test_kontur_browser_parse_routes_without_price_words() -> None:
     assert route["human_gate_required"] is False
 
 
+def test_marketplace_site_search_routes_to_supplier_browser_process() -> None:
+    route = classify_task("https://www.b2b-center.ru/market/ вот еще площадка для поиска Р6М5 и Р18")
+    assert route["task_level"] == "L2"
+    assert route["task_type"] == "supplier_price_deadline_analysis"
+    assert route["risk_level"] == "high"
+    assert route["review_required"] is True
+    assert route["human_gate_required"] is False
+
+
 def test_generic_parse_does_not_become_supplier_browser_task() -> None:
     route = classify_task("parse local JSON report and summarize fields")
     assert route["task_type"] != "supplier_price_deadline_analysis"

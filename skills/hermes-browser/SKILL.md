@@ -57,7 +57,13 @@ Each session stores:
    intentionally for a local debugging step.
 6. Prefer `source --save` for authenticated pages. Use `--include-preview` only
    when a short stdout HTML preview is actually needed.
-7. Do not add stealth plugins, CAPTCHA solving, or fingerprint spoofing. Normal
+7. Do not use `browser_vision` as the first inspection path when the configured
+   model has no image-input support. Use DOM snapshots, saved HTML, local OCR, or
+   screenshot evidence instead.
+8. Verify login by page state, not by screenshot existence: account/user UI,
+   authenticated cookies, non-login URL, and absence of cookie-disabled or
+   unsupported-browser banners.
+9. Do not add stealth plugins, CAPTCHA solving, or fingerprint spoofing. Normal
    browser configuration, persistent profile, and an ordinary user-agent override
    are allowed for compatibility.
 
@@ -92,6 +98,10 @@ For any new site:
    date window, cursor, or downloaded file.
 6. If the site refuses, slows, or returns limits, reduce chunk size and
    parallelism before declaring the parser broken.
+7. If login shows a cookie-disabled or unsupported-browser banner, treat it as a
+   browser setup failure: close/accept cookie notices, keep profile/cookies,
+   align UA/viewport/locale/client hints, and retry in visible or persistent
+   profile mode before blaming the website.
 
 ## Failure Handling
 

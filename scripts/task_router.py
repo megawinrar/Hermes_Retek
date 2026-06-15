@@ -120,6 +120,13 @@ KONTUR_BROWSER_RE = re.compile(
     r"(парс|скрап|брауз|поиск|собер|экспорт|доказ|скрин|эксел).*(контур|закупк)",
     re.I,
 )
+MARKETPLACE_BROWSER_RE = re.compile(
+    r"\b(b2b-center|b2b|marketplace|external site|website)\b.*\b(parse|scrape|scraping|browser|search|export|excel|xlsx|tender|supplier)\b|"
+    r"\b(parse|scrape|scraping|browser|search|export|excel|xlsx|tender|supplier)\b.*\b(b2b-center|b2b|marketplace|external site|website)\b|"
+    r"(площадк|маркетплейс|внешн.{0,20}сайт|сайт).{0,80}(поиск|парс|собер|экспорт|эксел|тендер|закупк|лом|р6м5|р18)|"
+    r"(поиск|парс|собер|экспорт|эксел|тендер|закупк|лом|р6м5|р18).{0,80}(площадк|маркетплейс|внешн.{0,20}сайт|сайт)",
+    re.I,
+)
 MATERIAL_TENDER_RE = re.compile(
     r"(продаж|реализац|закупк|тендер|поиск|парс|экспорт|excel|xlsx).{0,80}(лом|р6м5|р18|д16т|быстрорежущ)|"
     r"(лом|р6м5|р18|д16т|быстрорежущ).{0,80}(продаж|реализац|закупк|тендер|поиск|парс|экспорт|excel|xlsx)",
@@ -170,9 +177,13 @@ def classify_task(task: str) -> dict[str, Any]:
     migration = bool(MIGRATION_RE.search(text))
     migration_write = migration and bool(MIGRATION_WRITE_RE.search(text))
     kontur_browser_research = bool(KONTUR_BROWSER_RE.search(text))
+    marketplace_browser_research = bool(MARKETPLACE_BROWSER_RE.search(text))
     material_tender_research = bool(MATERIAL_TENDER_RE.search(text))
     supplier_price_deadline = (
-        bool(SUPPLIER_PRICE_DEADLINE_RE.search(text)) or kontur_browser_research or material_tender_research
+        bool(SUPPLIER_PRICE_DEADLINE_RE.search(text))
+        or kontur_browser_research
+        or marketplace_browser_research
+        or material_tender_research
     )
     long = len(text) > 450
 

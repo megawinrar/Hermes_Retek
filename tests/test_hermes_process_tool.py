@@ -107,6 +107,18 @@ def test_kontur_parser_tasks_get_process_first_bounded_defaults() -> None:
     assert cmd[cmd.index("--bothub-requests-per-minute") + 1] == "30"
 
 
+def test_marketplace_search_tasks_get_process_first_defaults() -> None:
+    tool = load_tool()
+    task = "https://www.b2b-center.ru/market/ вот еще площадка для поиска Р6М5 и Р18"
+
+    assert tool.should_route_task_process_first(task) is True
+    cmd = tool.build_command({"action": "run", "task": task})
+
+    assert cmd[cmd.index("--max-parallel-agents") + 1] == "2"
+    assert cmd[cmd.index("--agent-timeout-seconds") + 1] == "180"
+    assert cmd[cmd.index("--bothub-requests-per-minute") + 1] == "30"
+
+
 def test_explicit_process_options_override_process_first_defaults() -> None:
     tool = load_tool()
     cmd = tool.build_command(

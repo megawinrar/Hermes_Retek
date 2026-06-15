@@ -44,9 +44,24 @@ SITE_POLICIES = {
         fallback_chunk_years=1,
         evidence_level="high",
     ),
+    "b2b_center": ParsingPolicy(
+        name="b2b_center",
+        mode="persistent_browser_login_then_ui_search",
+        pace_profile="cautious",
+        min_delay_seconds=2.5,
+        max_delay_seconds=6.0,
+        max_parallel_requests=1,
+        checkpoint_every_actions=1,
+        requires_ui_seed=True,
+        chunk_years=1,
+        fallback_chunk_years=None,
+        evidence_level="high",
+    ),
 }
 
 DOMAIN_POLICY_HINTS = {
+    "b2b-center.ru": "b2b_center",
+    "www.b2b-center.ru": "b2b_center",
     "zakupki.kontur.ru": "kontur",
     "kontur.ru": "kontur",
 }
@@ -122,7 +137,19 @@ def select_policy(*, url: str = "", task: str = "", requires_auth: bool | None =
         "checkpoint URL, query, selector notes, errors, and artifact paths",
         "capture screenshot/source when selectors, exports, or auth state fail",
         "write compact lessons to RLM without raw secrets",
+        "verify authenticated state by DOM/cookies/URL, not by screenshot existence alone",
+        "do not call browser vision when the configured model lacks image input support",
     ]
+    if policy.name == "b2b_center":
+        payload["rules"].extend(
+            [
+                "use a persistent profile and preserve cookies between attempts",
+                "accept or close cookie notices before login",
+                "keep user-agent, viewport, locale, and browser client hints consistent",
+                "treat browser unsupported/cookies disabled banners as recoverable setup errors",
+                "do not conclude proxy/stealth failure until a visible or persistent-profile login was attempted",
+            ]
+        )
     return payload
 
 

@@ -799,6 +799,41 @@ Server focused pytest was not run because neither the host nor the container
 currently exposes pytest through `python3 -m pytest`; runtime smoke checks were
 used instead. Local full pytest for the same commit passed with `328 passed`.
 
+## 2026-06-15 B2B-Center Live Observation
+
+User launched a Telegram task with `https://www.b2b-center.ru/market/` and
+credentials. Do not repeat credentials in logs, docs, or chat.
+
+Observed behavior:
+
+- early Telegram ack was fast;
+- Hermes reused the long Kontur Telegram session instead of creating a supervised
+  `hermes_process` run;
+- no new process/RLM process record was created before browser work;
+- Hermes used direct `browser_*` tools first, then wrote `/opt/data/rebrowser/b2b-login.js`;
+- `browser_vision` failed because the configured BotHub model has no image input;
+- the handwritten Puppeteer script reached the AJAX login form and saved:
+  - `/opt/data/rebrowser/b2b-login.js`
+  - `/opt/data/rebrowser/b2b-login-form.png`
+  - `/opt/data/rebrowser/b2b-logged-in.png`
+- login did not succeed; the page showed cookie/browser setup warnings and the
+  direct `/auth/login.html` URL returned 404.
+
+Architectural conclusion:
+
+- the "UI reconnaissance -> saved Puppeteer/browser script" behavior is useful;
+- it must run inside `hermes_process`, with selected site policy, RLM/process
+  logging, bounded attempts, per-site workspace, and persistent browser profile;
+- B2B-Center should not be treated as a generic unknown site. Use
+  `b2b_center` policy:
+  - mode `persistent_browser_login_then_ui_search`;
+  - `pace_profile=cautious`;
+  - `max_parallel_requests=1`;
+  - verify auth by DOM/cookies/URL, not screenshot existence;
+  - accept/close cookie notices and align UA/viewport/locale/client hints before
+    declaring the site blocked;
+  - avoid `browser_vision` unless the provider supports image input.
+
 ## Next Session First Prompt
 
 Use this in the next Codex chat:
