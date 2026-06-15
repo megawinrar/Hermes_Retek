@@ -26,6 +26,9 @@ DEFAULT_PROCESS_STORE = Path("/opt/data/process_orchestrator_store.db")
 DEFAULT_SUPERVISOR_STORE = Path("/opt/data/supervisor_store.db")
 
 TS_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(?P<ms>\d{3})")
+DOCKER_TS_RE = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(?P<fraction>\d+))?Z"
+)
 INBOUND_RE = re.compile(r"inbound message: platform=(?P<platform>\S+) user=(?P<user>.*?) chat=(?P<chat>\S+) msg='(?P<msg>.*)'")
 READY_RE = re.compile(
     r"response ready: platform=(?P<platform>\S+) chat=(?P<chat>\S+) "
@@ -149,10 +152,15 @@ class AgentStats:
 
 def parse_ts(line: str) -> datetime | None:
     match = TS_RE.match(line)
-    if not match:
-        return None
-    raw = f"{match.group('ts')}.{match.group('ms')}"
-    return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=timezone.utc)
+    if match:
+        raw = f"{match.group('ts')}.{match.group('ms')}"
+        return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=timezone.utc)
+    docker_match = DOCKER_TS_RE.match(line)
+    if docker_match:
+        fraction = (docker_match.group("fraction") or "0")[:6].ljust(6, "0")
+        raw = f"{docker_match.group('ts')}.{fraction}"
+        return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S.%f").replace(tzinfo=timezone.utc)
+    return None
 
 
 def read_recent_lines(path: Path, *, since: datetime) -> list[str]:
@@ -518,6 +526,54 @@ def diagnose(stats: GatewayStats, agent_stats: AgentStats) -> list[str]:
     return result
 
 
+def operational_actions(stats: GatewayStats, agent_stats: AgentStats) -> list[str]:
+    completed = [turn for turn in stats.turns if not turn.pending]
+    first_flushes = [turn.first_flush_seconds for turn in completed if turn.first_flush_seconds is not None]
+    api_calls = [turn.api_calls for turn in completed]
+    llm_durations = [call.seconds for call in agent_stats.llm_calls]
+    tool_errors = [call for call in agent_stats.tool_calls if not call.ok]
+    slow_tools = [call for call in agent_stats.tool_calls if call.seconds >= 20]
+    delegated = [call for call in agent_stats.tool_calls if call.tool == "delegate_task"]
+    tool_turns = [turn.tool_turns for turn in agent_stats.turn_ended]
+    actions: list[str] = []
+
+    if first_flushes and max(first_flushes) >= 45:
+        actions.append(
+            "Добавить ранний Telegram progress/ack до запуска длинного LLM/tool-loop: целевой first flush <= 10s."
+        )
+    if api_calls and max(api_calls) >= 16:
+        actions.append(
+            "Включить hard cap на внутренние LLM-итерации: L1<=2, L2<=4, L3<=8, L4<=12; дальше checkpoint и вопрос пользователю."
+        )
+    elif api_calls and max(api_calls) >= 8:
+        actions.append("Снизить число внутренних LLM-итераций: после 8 api_calls отдавать краткий checkpoint вместо продолжения loop.")
+    if tool_turns and max(tool_turns) >= 80:
+        actions.append(
+            "Включить hard cap на tool_turns и дедупликацию неудачных инструментов: повтор одной ошибки не должен снова идти в LLM."
+        )
+    elif tool_turns and max(tool_turns) >= 40:
+        actions.append("Ограничить tool-loop: после 40 tool_turns нужен summary/checkpoint, а не новые инструменты.")
+    if delegated and max(call.seconds for call in delegated) >= 120:
+        actions.append(
+            "Ограничить delegate_task: timeout 120s, max_parallel<=2, обязательный child_session_id и отдельная запись latency."
+        )
+    if llm_durations and percentile(llm_durations, 0.95) >= 60:
+        actions.append(
+            "Добавить provider latency policy: при BotHub p95>=60s временно переводить простые задачи на быстрый fallback."
+        )
+    if slow_tools:
+        actions.append("Поставить per-tool timeout для сетевых/браузерных проверок и не ретраить tool без новой причины.")
+    if len(tool_errors) >= 5:
+        actions.append("Разобрать top tool errors и починить missing deps/whitelist; ошибки сейчас раздувают число api/tool шагов.")
+    if stats.sigterms:
+        actions.append("Убрать рестарты во время активных turns: перед restart нужен drain/quiet window, иначе задачи прерываются.")
+    if stats.compression_starts:
+        actions.append("Не запускать session compression внутри активного ответа; переносить compression до/после turn или в background.")
+    if not actions:
+        actions.append("Срочных runtime guardrails не требуется; продолжать наблюдение и сравнить следующий 24ч отчёт.")
+    return actions
+
+
 def build_report(
     *,
     stats: GatewayStats,
@@ -624,6 +680,9 @@ def build_report(
     else:
         lines.append("- нет tool calls")
 
+    lines.extend(["", "Что чинить первым"])
+    lines.extend(f"- {item}" for item in operational_actions(stats, agent_stats))
+
     lines.extend(["", "Почему могло лагать"])
     lines.extend(f"- {item}" for item in diagnose(stats, agent_stats))
     return redact_text("\n".join(lines))
@@ -632,8 +691,11 @@ def build_report(
 def build_json(stats: GatewayStats, agent_stats: AgentStats, *, hours: int, now: datetime) -> dict[str, Any]:
     completed = [turn for turn in stats.turns if not turn.pending]
     durations = [turn.response_seconds for turn in completed]
+    first_flushes = [turn.first_flush_seconds for turn in completed if turn.first_flush_seconds is not None]
+    api_calls = [turn.api_calls for turn in completed]
     llm_durations = [call.seconds for call in agent_stats.llm_calls]
     tool_errors = [call for call in agent_stats.tool_calls if not call.ok]
+    tool_turns = [turn.tool_turns for turn in agent_stats.turn_ended]
     delegated = [call for call in agent_stats.tool_calls if call.tool == "delegate_task"]
     return {
         "hours": hours,
@@ -644,6 +706,10 @@ def build_json(stats: GatewayStats, agent_stats: AgentStats, *, hours: int, now:
         "avg_seconds": statistics.mean(durations) if durations else 0,
         "p95_seconds": percentile(durations, 0.95),
         "max_seconds": max(durations, default=0),
+        "first_flush_median_seconds": statistics.median(first_flushes) if first_flushes else 0,
+        "first_flush_max_seconds": max(first_flushes, default=0),
+        "api_calls_avg": statistics.mean(api_calls) if api_calls else 0,
+        "api_calls_max": max(api_calls, default=0),
         "network_errors": stats.network_errors,
         "sigterms": len(stats.sigterms),
         "compression_count": len(stats.compression_starts),
@@ -652,10 +718,12 @@ def build_json(stats: GatewayStats, agent_stats: AgentStats, *, hours: int, now:
         "llm_p95_seconds": percentile(llm_durations, 0.95),
         "tool_call_count": len(agent_stats.tool_calls),
         "tool_error_count": len(tool_errors),
+        "tool_turns_max": max(tool_turns, default=0),
         "agent_session_count": len(agent_sessions(agent_stats)),
         "agent_turn_count": len(agent_stats.turn_ended),
         "delegate_task_count": len(delegated),
         "delegate_task_max_seconds": max((call.seconds for call in delegated), default=0),
+        "operational_action_count": len(operational_actions(stats, agent_stats)),
     }
 
 

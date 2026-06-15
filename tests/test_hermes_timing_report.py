@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from scripts.hermes_timing_report import AgentStats, agent_sessions, build_json, build_report, parse_agent, parse_gateway, read_recent_lines, telegram_chunks  # noqa: E402
+from scripts.hermes_timing_report import AgentStats, agent_sessions, build_json, build_report, operational_actions, parse_agent, parse_gateway, read_recent_lines, telegram_chunks  # noqa: E402
 
 
 def utc(value: str) -> datetime:
@@ -111,6 +111,8 @@ def test_build_report_diagnoses_high_api_and_network():
     assert "agent sessions seen: 1" in report
     assert "delegate_task calls: 1" in report
     assert "Есть delegate_task" in report
+    assert "Что чинить первым" in report
+    assert "progress/ack" in report
 
 
 def test_build_json_handles_no_completed_turns():
@@ -128,6 +130,69 @@ def test_build_json_handles_no_completed_turns():
     assert payload["avg_seconds"] == 0
     assert payload["agent_session_count"] == 0
     assert payload["delegate_task_count"] == 0
+    assert payload["first_flush_max_seconds"] == 0
+    assert payload["api_calls_max"] == 0
+    assert payload["tool_turns_max"] == 0
+
+
+def test_operational_actions_cover_current_runtime_bottlenecks():
+    gateway = parse_gateway(
+        [
+            "2026-06-15 06:00:00,000 INFO inbound message: platform=telegram user=u chat=1 msg='залей веткой'",
+            "2026-06-15 06:16:35,700 INFO [Telegram] Flushing text batch for chat=1 (44 chars)",
+            "2026-06-15 06:37:49,300 INFO response ready: platform=telegram chat=1 time=2269.3s api_calls=49 response=1561 chars",
+            "2026-06-15 06:38:00,000 WARNING Received SIGTERM",
+            "2026-06-15 06:38:09,000 INFO Starting Hermes Gateway",
+            "2026-06-15 06:39:00,000 INFO Session hygiene: auto-compressing session s",
+        ]
+    )
+    agent = parse_agent(
+        [
+            "2026-06-15 06:00:00,000 INFO run_agent: OpenAI client created (chat_completion_stream_request, shared=False) thread=t1 provider=custom base_url=https://openai.bothub.chat/v1 model=deepseek-v4-flash",
+            "2026-06-15 06:01:13,000 INFO run_agent: OpenAI client closed (stream_request_complete, shared=False, tcp_force_closed=0) thread=t1 provider=custom base_url=https://openai.bothub.chat/v1 model=deepseek-v4-flash",
+            "2026-06-15 06:01:14,000 INFO [s] agent.tool_executor: tool delegate_task completed (393.60s, 1000 chars)",
+            "2026-06-15 06:01:15,000 WARNING [s] agent.tool_executor: Tool execute_code returned error (3.21s): bad",
+            "2026-06-15 06:01:16,000 WARNING [s] agent.tool_executor: Tool memory returned error (0.01s): bad",
+            "2026-06-15 06:01:17,000 WARNING [s] agent.tool_executor: Tool browser_navigate returned error (8.00s): bad",
+            "2026-06-15 06:01:18,000 WARNING [s] agent.tool_executor: Tool execute_code returned error (3.21s): bad",
+            "2026-06-15 06:01:19,000 WARNING [s] agent.tool_executor: Tool execute_code returned error (3.21s): bad",
+            "2026-06-15 06:01:20,000 INFO [s] agent.conversation_loop: Turn ended: reason=text_response(finish_reason=stop) model=deepseek-v4-flash api_calls=49/64 budget=49/64 tool_turns=221 last_msg_role=assistant response_len=1033 session=s",
+        ]
+    )
+
+    actions = "\n".join(operational_actions(gateway, agent))
+
+    assert "first flush <= 10s" in actions
+    assert "hard cap на внутренние LLM-итерации" in actions
+    assert "hard cap на tool_turns" in actions
+    assert "delegate_task: timeout 120s" in actions
+    assert "BotHub p95>=60s" in actions
+    assert "рестарты во время активных turns" in actions
+    assert "session compression" in actions
+
+
+def test_build_json_exposes_guardrail_metrics():
+    gateway = parse_gateway(
+        [
+            "2026-06-15 06:00:00,000 INFO inbound message: platform=telegram user=u chat=1 msg='slow'",
+            "2026-06-15 06:02:00,000 INFO [Telegram] Flushing text batch for chat=1 (44 chars)",
+            "2026-06-15 06:04:00,000 INFO response ready: platform=telegram chat=1 time=240.0s api_calls=16 response=500 chars",
+        ]
+    )
+    agent = parse_agent(
+        [
+            "2026-06-15 06:00:00,000 INFO [s] agent.tool_executor: tool delegate_task completed (121.00s, 1000 chars)",
+            "2026-06-15 06:03:00,000 INFO [s] agent.conversation_loop: Turn ended: reason=text_response(finish_reason=stop) model=deepseek-v4-flash api_calls=16/64 budget=16/64 tool_turns=88 last_msg_role=assistant response_len=500 session=s",
+        ]
+    )
+
+    payload = build_json(gateway, agent, hours=24, now=utc("2026-06-15T07:00:00"))
+
+    assert payload["first_flush_max_seconds"] == 120.0
+    assert payload["api_calls_max"] == 16
+    assert payload["tool_turns_max"] == 88
+    assert payload["delegate_task_max_seconds"] == 121.0
+    assert payload["operational_action_count"] >= 4
 
 
 def test_parse_agent_llm_tool_and_turn_timing():
@@ -173,6 +238,26 @@ def test_read_recent_lines_filters_by_timestamp(tmp_path):
     lines = read_recent_lines(log_path, since=utc("2026-06-14T03:00:00"))
 
     assert lines == ["2026-06-14 03:00:00,000 INFO fresh"]
+
+
+def test_read_recent_lines_accepts_docker_timestamp_prefix(tmp_path):
+    log_path = tmp_path / "docker.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "2026-06-14T02:59:59.999999999Z INFO old",
+                "2026-06-14T03:00:00.123456789Z INFO inbound message: platform=telegram user=u chat=1 msg='fresh'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    lines = read_recent_lines(log_path, since=utc("2026-06-14T03:00:00"))
+    stats = parse_gateway(lines)
+
+    assert lines == ["2026-06-14T03:00:00.123456789Z INFO inbound message: platform=telegram user=u chat=1 msg='fresh'"]
+    assert len(stats.turns) == 1
+    assert stats.turns[0].msg == "fresh"
 
 
 def test_telegram_chunks_keep_messages_under_limit():
