@@ -155,6 +155,10 @@ Bot обязан показать:
 7. Отправить final report.
 ```
 
+Production note: `api-limits-check` is executed from inside `hermes-agent`.
+Budget endpoints must use `http://hermes-yandex-proxy:8000`, not
+`localhost:8001`/`127.0.0.1:8001`, which are host-only addresses.
+
 Без checklist нельзя переходить в execution.
 
 ## Tool call deduplication

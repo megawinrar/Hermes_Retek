@@ -614,6 +614,17 @@ Runtime guardrails status as of `bf0563d + runtime performance continuation`:
   keep `/opt/data/rlm_store.db` as a symlink to
   `/var/lib/docker/volumes/hermes-data/_data/rlm_store.db` so manual checks do
   not accidentally inspect a different SQLite file;
+- fixed Hermes cron job `api-limits-check` (`89bb5d5a6b14`): the job runs
+  inside `hermes-agent`, so `localhost:8001`/`127.0.0.1:8001` is wrong there.
+  The prompt now queries `http://hermes-yandex-proxy:8000/...`; backup:
+  `/opt/data/cron/jobs.json.bak-20260615124857`;
+- added repeatable repo script `scripts/patch_cron_api_limits.py` plus
+  `tests/test_patch_cron_api_limits.py` to keep that cron URL fix
+  idempotent;
+- verified from inside `hermes-agent` that
+  `http://hermes-yandex-proxy:8000/v1/budget` and
+  `/v1/usage/today` return live budget data, while `localhost:8001` still
+  correctly fails from inside the container;
 - local full test suite passed after this continuation: `289 passed`;
 - local coverage over `scripts/*.py` and `custom/**/*.py`: `74%`;
 - server focused tests passed: `19 passed`;
@@ -640,7 +651,7 @@ Remaining runtime work:
 Use this in the next Codex chat:
 
 ```text
-Продолжи Hermes Retek с docs/16_session_handoff.md. Рабочая ветка ops-safe-restart-speed. GitHub ветка с текущей работой: ops-safe-restart-speed-g3-rlm-20260615. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения. Сначала проверь git status, затем проверь сервер: hermes-agent/hermes-yandex-proxy, что Hermes на BotHub (`OPENAI_BASE_URL=https://openai.bothub.chat/v1`, `OPENAI_MODEL=deepseek-v4-flash`), runtime guardrails активны, ранний Telegram ack patch marker есть в `/opt/hermes/gateway/platforms/base.py`, subcall RLM patch marker есть в `/opt/hermes/tools/delegate_tool.py`, `/opt/data/rlm_store.db` жив, skill kontur-parser есть, и big-task context policy активна. Затем наблюдай следующий реальный Telegram turn: должен быть быстрый ack до первого LLM, а при delegate_task должны появляться `kind=subcall` записи. Потом продолжай missing deps, RLM lessons, Kontur workflow и timing report comparison.
+Продолжи Hermes Retek с docs/16_session_handoff.md. Рабочая ветка ops-safe-restart-speed. GitHub ветка с текущей работой: ops-safe-restart-speed-g3-rlm-20260615. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения. Сначала проверь git status, затем проверь сервер: hermes-agent/hermes-yandex-proxy, что Hermes на BotHub (`OPENAI_BASE_URL=https://openai.bothub.chat/v1`, `OPENAI_MODEL=deepseek-v4-flash`), runtime guardrails активны, ранний Telegram ack patch marker есть в `/opt/hermes/gateway/platforms/base.py`, subcall RLM patch marker есть в `/opt/hermes/tools/delegate_tool.py`, `/opt/data/rlm_store.db` жив, skill kontur-parser есть, big-task context policy активна, и cron `api-limits-check` использует `http://hermes-yandex-proxy:8000`, а не `localhost:8001` внутри контейнера. Затем наблюдай следующий реальный Telegram turn: должен быть быстрый ack до первого LLM, а при delegate_task должны появляться `kind=subcall` записи. Потом продолжай missing deps, RLM lessons, Kontur workflow и timing report comparison.
 ```
 
 ## Recommended Next Work
