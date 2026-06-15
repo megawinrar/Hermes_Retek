@@ -1001,7 +1001,14 @@ smoke:
 - runtime guard smoke after restart:
   - with_recent_approval allow allow True False
   - without_store block_continue marketplace_process_first_required False False
+cleanup:
+- old bad process records were not deleted, but were marked blocked/current_phase=superseded_by_hotfix with a process_events entry:
+  - proc-20260615-220750-02557f
+  - proc-20260615-221130-3d0a86
+- matching supervisor tasks were marked blocked:
+  - sup-20260615-220750-58204d
+  - sup-20260615-221130-6015a3
+- post-cleanup safe restart dry-run: no_active_work, forced=false.
 remaining:
-- old bad process records are still present: proc-20260615-220750-02557f running and proc-20260615-221130-3d0a86 return_to_bot1. They were not deleted; treat them as superseded by this hotfix if they appear in logs.
 - next live B2B retry should start from a fresh Telegram/process turn so stale context does not keep referencing the old blocked b2b-search.js flow.
 ```
