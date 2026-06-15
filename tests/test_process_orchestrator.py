@@ -379,6 +379,59 @@ def test_bot2_route_audit_raises_l1_to_human_gate(tmp_path: Path) -> None:
     assert "hermes-devops" in details["summary"]["skills"]["gated"]
 
 
+def test_supplier_parser_route_audit_keeps_local_script_work_inside_bot1_bot2(tmp_path: Path) -> None:
+    process_store = tmp_path / "process.db"
+    supervisor_store = tmp_path / "supervisor.db"
+    audit = {
+        "status": "REQUIRE_HUMAN_GATE",
+        "recommended_level": "L4",
+        "risk_level": "high",
+        "review_required": True,
+        "human_gate_required": True,
+        "summary": "Login and local write_file/save JSON are present, but this is parser output under /opt/data.",
+        "signals": ["login", "write script", "save local json"],
+    }
+    result = run_cli(
+        sys.executable,
+        str(SCRIPTS / "process_orchestrator.py"),
+        "--process-store",
+        str(process_store),
+        "--supervisor-store",
+        str(supervisor_store),
+        "run",
+        "--task",
+        "Write and execute B2B-Center Puppeteer scraper script at /opt/data/rebrowser/b2b-search.js "
+        "and save results to /opt/data/rebrowser/b2b-results.json for Р6М5 and Р18",
+        "--acceptance",
+        "Bot1 writes parser, Bot2 checks evidence, no extra roles.",
+        "--bot2-route-audit-json",
+        json.dumps(audit),
+        "--bot2-status",
+        "APPROVE",
+        "--notification-dry-run",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+
+    assert payload["status"] == "approved"
+    assert payload["route"]["task_level"] == "L2"
+    assert payload["route"]["task_type"] == "supplier_price_deadline_analysis"
+    assert payload["route"]["human_gate_required"] is False
+    assert payload["route"]["process_plan"] == ["router", "supervisor", "bot1", "bot2"]
+    assert payload["bot2_verdict"]["status"] == "APPROVE"
+
+    details = process_orchestrator.process_details(
+        payload["process_id"],
+        store_path=process_store,
+        supervisor_store_path=supervisor_store,
+    )
+    workers = [assignment["worker"] for assignment in details["assignments"]]
+    assert "bot1" in workers
+    assert "bot2" in workers
+    assert "tester" not in workers
+    assert "hermes-devops" not in details["summary"]["skills"]["gated"]
+
+
 def test_live_route_audit_auto_skips_low_risk_l1(monkeypatch, tmp_path: Path) -> None:
     import dual_bot_lab
 

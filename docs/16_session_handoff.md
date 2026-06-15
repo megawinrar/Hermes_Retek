@@ -969,3 +969,39 @@ safe restart: restart_completed, forced=false, reason=expose_hermes_process_tool
 runtime schema smoke: Final tool selection contains hermes_process; schema_has_hermes_process True; tool_count 31
 timing/context observation: latest B2B Telegram session had 182 active messages and ~256k chars; problem looked like stale/overlong context plus missing tool exposure, not reduced context
 ```
+
+Follow-up after B2B live retry:
+
+```text
+date: 2026-06-16
+issue: Hermes could call hermes_process, but B2B/Puppeteer/local JSON work was over-classified as L4/human_gate, then direct script writes were still blocked by the marketplace guard after approval.
+root causes:
+- /opt/data/rlm_store.db was root:root 0644, so Hermes user could not write RLM records.
+- task_router treated plain "write scraper script" as git/external write because GIT_WRITE_RE matched bare "write".
+- Bot#2 route audit could raise supplier/browser parsing from L2 Bot1/Bot2 into L4/devops/human_gate for ordinary local parser output writes.
+- marketplace guard was process-first only; it did not unlock matching write_file/execute_code/terminal calls after a fresh approved hermes_process.
+fixes:
+- chowned /opt/data/rlm_store.db to hermes:hermes; RLM smoke record succeeded.
+- scripts/task_router.py now classifies B2B/Puppeteer/scraper/result tasks as supplier_price_deadline_analysis L2.
+- apply_classification_audit preserves supplier/browser parsing as router/supervisor/bot1/bot2 unless audit evidence contains a real human blocker: missing credentials, captcha, 2FA/SMS, paid export, destructive external account write, legal/account policy block.
+- scripts/patch_marketplace_process_guard.py now adds HERMES_RETEK_MARKETPLACE_PROCESS_APPROVAL_GATE: direct marketplace script tools are blocked before process approval, but allowed when a recent approved/accepted process in /opt/data/process_orchestrator_store.db matches the same marketplace tokens.
+tests:
+- full local pytest: 344 passed
+- focused guard/router/process pytest: 74 passed
+server:
+- branch stayed custom
+- task_router overlay backup: /home/yc-user/hermes-file-deploy-backups/router-parsing-audit-20260615T221555Z
+- guard patch backup: /home/yc-user/hermes-file-deploy-backups/marketplace-approval-guard-20260615T221923Z
+- safe restarts forced=true because old bad B2B processes were still active:
+  - router_parsing_audit_no_false_human_gate
+  - marketplace_guard_allow_after_approved_process
+smoke:
+- route audit smoke preserved L2 supplier_price_deadline_analysis, process_plan router/supervisor/bot1/bot2, human_gate_required false.
+- hermes_process smoke returned ok=true/status=approved and wrote RLM records.
+- runtime guard smoke after restart:
+  - with_recent_approval allow allow True False
+  - without_store block_continue marketplace_process_first_required False False
+remaining:
+- old bad process records are still present: proc-20260615-220750-02557f running and proc-20260615-221130-3d0a86 return_to_bot1. They were not deleted; treat them as superseded by this hotfix if they appear in logs.
+- next live B2B retry should start from a fresh Telegram/process turn so stale context does not keep referencing the old blocked b2b-search.js flow.
+```

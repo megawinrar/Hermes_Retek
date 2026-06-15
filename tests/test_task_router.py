@@ -144,6 +144,59 @@ def test_generic_parse_does_not_become_supplier_browser_task() -> None:
     assert route["task_type"] != "supplier_price_deadline_analysis"
 
 
+def test_supplier_scraper_audit_preserves_bot1_bot2_for_local_result_write() -> None:
+    route = classify_task(
+        "Write and execute B2B-Center Puppeteer scraper script at /opt/data/rebrowser/b2b-search.js "
+        "and save results to /opt/data/rebrowser/b2b-results.json for Р6М5 and Р18"
+    )
+    audited = apply_classification_audit(
+        route,
+        {
+            "status": "REQUIRE_HUMAN_GATE",
+            "recommended_level": "L4",
+            "risk_level": "high",
+            "review_required": True,
+            "human_gate_required": True,
+            "summary": "Login and local save/write_file are present, but this is parser output under /opt/data.",
+            "signals": ["login", "write script", "save local json"],
+        },
+    )
+
+    assert audited["task_level"] == "L2"
+    assert audited["task_type"] == "supplier_price_deadline_analysis"
+    assert audited["risk_level"] == "high"
+    assert audited["review_required"] is True
+    assert audited["human_gate_required"] is False
+    assert audited["process_plan"] == ["router", "supervisor", "bot1", "bot2"]
+    assert "devops_if_approved" not in audited["process_plan"]
+    assert "task_level:L2->L4:parsing_route_preserved" in audited["classification_audit"]["ignored_demotions"]
+    assert (
+        "human_gate_required:false->true:parsing_policy_no_blocker"
+        in audited["classification_audit"]["ignored_demotions"]
+    )
+
+
+def test_supplier_scraper_audit_still_requires_gate_for_captcha() -> None:
+    route = classify_task("Спарси B2B-Center по Р6М5 и сохрани Excel")
+    audited = apply_classification_audit(
+        route,
+        {
+            "status": "REQUIRE_HUMAN_GATE",
+            "recommended_level": "L4",
+            "risk_level": "high",
+            "review_required": True,
+            "human_gate_required": True,
+            "summary": "CAPTCHA is shown during login, so a human decision is required.",
+            "signals": ["captcha"],
+        },
+    )
+
+    assert audited["task_level"] == "L2"
+    assert audited["human_gate_required"] is True
+    assert audited["process_plan"] == ["router", "supervisor", "bot1", "bot2"]
+    assert "human_gate_required:false->true" in audited["classification_audit"]["applied"]
+
+
 def test_bot2_classification_audit_can_only_raise_route() -> None:
     route = classify_task("rewrite short hello")
     audited = apply_classification_audit(

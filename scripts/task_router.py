@@ -86,6 +86,21 @@ PARSING_HUMAN_GATE_REASONS = [
     "destructive_external_write",
     "legal_or_account_policy_blocker",
 ]
+PARSING_HUMAN_GATE_BLOCKER_RE = re.compile(
+    r"\b(missing[_ -]?credentials?|credentials? missing|no credentials?|password unavailable|"
+    r"captcha|2fa|mfa|otp|sms code|sms|payment|paid export|paywall|"
+    r"destructive[_ -]?external[_ -]?write|account (?:blocked|suspended)|legal blocker|policy blocker)\b|"
+    r"(нет|нужн|треб).{0,40}(логин|парол|доступ|капч|2fa|смс|sms|код)|"
+    r"(платн.{0,20}выгруз|оплат|аккаунт.{0,20}(заблок|огранич)|юридич|политик)",
+    re.I,
+)
+PARSING_DESTRUCTIVE_EXTERNAL_ACTION_RE = re.compile(
+    r"\b(delete|remove|modify|submit|send|publish|place bid|bid|order|checkout)\b.{0,80}"
+    r"\b(external|remote|website|site|account|kontur|b2b|marketplace|production)\b|"
+    r"(удал|измен|отправ|опублик|созда.{0,20}заявк|ставк).{0,80}"
+    r"(сайт|аккаунт|контур|b2b|площадк|внешн)",
+    re.I,
+)
 
 HIGH_RISK_RE = re.compile(
     r"\b(prod|production|deploy|server|token|secret|auth|permission|database|db|schema|"
@@ -109,7 +124,7 @@ COMMAND_RE = re.compile(r"^(status|list|show|logs?|health|date|time|tasks?)(\s|$
 ADVERSARIAL_RE = re.compile(r"skip tests|bypass|without tests|without review|без тест|обойт|срочн|просто выкат", re.I)
 GITHUB_CONTEXT_RE = re.compile(r"\b(github|pull request|pr|issue)\b|(гитхаб|гитхабе|гитхаба)", re.I)
 GITHUB_READ_RE = re.compile(r"\b(look up|lookup|read|show|list|summari[sz]e|status|comment|inspect|find)\b|(найд|покаж|посмотр|статус)", re.I)
-GIT_WRITE_RE = re.compile(r"\b(push|merge|deploy|release|tag|commit|write|delete|close|reopen|main)\b|(запуш|пуш|мердж|депло|в main)", re.I)
+GIT_WRITE_RE = re.compile(r"\b(push|merge|deploy|release|tag|commit|delete|close|reopen|main)\b|(запуш|пуш|мердж|депло|в main)", re.I)
 MIGRATION_RE = re.compile(r"\b(migration|migrate|sqlite|postgres|postgresql|schema rollback|database migration)\b|(миграц|постгрес|схем)", re.I)
 MIGRATION_WRITE_RE = re.compile(
     r"\b(apply|run|execute|create|edit|write|implement|deploy|production)\b.*\b(migration|schema)\b|"
@@ -130,8 +145,8 @@ KONTUR_BROWSER_RE = re.compile(
     re.I,
 )
 MARKETPLACE_BROWSER_RE = re.compile(
-    r"\b(b2b-center|b2b|marketplace|external site|website)\b.*\b(parse|scrape|scraping|browser|search|export|excel|xlsx|tender|supplier)\b|"
-    r"\b(parse|scrape|scraping|browser|search|export|excel|xlsx|tender|supplier)\b.*\b(b2b-center|b2b|marketplace|external site|website)\b|"
+    r"\b(b2b-center|b2b|marketplace|external site|website)\b.*\b(parse|parser|scrape|scraper|scraping|puppeteer|browser|search|export|excel|xlsx|result|tender|supplier)\b|"
+    r"\b(parse|parser|scrape|scraper|scraping|puppeteer|browser|search|export|excel|xlsx|result|tender|supplier)\b.*\b(b2b-center|b2b|marketplace|external site|website)\b|"
     r"(площадк|маркетплейс|внешн.{0,20}сайт|сайт).{0,80}(поиск|парс|собер|экспорт|эксел|тендер|закупк|лом|р6м5|р18)|"
     r"(поиск|парс|собер|экспорт|эксел|тендер|закупк|лом|р6м5|р18).{0,80}(площадк|маркетплейс|внешн.{0,20}сайт|сайт)",
     re.I,
@@ -282,6 +297,18 @@ def _route_with_level(route: dict[str, Any], level: str) -> dict[str, Any]:
     return updated
 
 
+def _audit_text(audit: dict[str, Any]) -> str:
+    try:
+        return json.dumps(audit, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return str(audit)
+
+
+def _audit_requires_parsing_human_gate(audit: dict[str, Any]) -> bool:
+    text = _audit_text(audit)
+    return bool(PARSING_HUMAN_GATE_BLOCKER_RE.search(text) or PARSING_DESTRUCTIVE_EXTERNAL_ACTION_RE.search(text))
+
+
 def apply_classification_audit(route: dict[str, Any], audit: dict[str, Any]) -> dict[str, Any]:
     """Apply Bot#2 classification audit conservatively.
 
@@ -296,9 +323,12 @@ def apply_classification_audit(route: dict[str, Any], audit: dict[str, Any]) -> 
     original_risk = str(route.get("risk_level") or "")
     recommended_level = _normalize_level(audit.get("recommended_level") or audit.get("task_level"))
     recommended_risk = _normalize_risk(audit.get("risk_level") or audit.get("recommended_risk_level"))
+    parsing_route = str(route.get("task_type") or "") == "supplier_price_deadline_analysis"
 
     if recommended_level:
-        if LEVEL_RANK[recommended_level] > LEVEL_RANK.get(original_level, -1):
+        if parsing_route and recommended_level != original_level:
+            ignored.append(f"task_level:{original_level}->{recommended_level}:parsing_route_preserved")
+        elif LEVEL_RANK[recommended_level] > LEVEL_RANK.get(original_level, -1):
             updated = _route_with_level(updated, recommended_level)
             applied.append(f"task_level:{original_level}->{recommended_level}")
         elif LEVEL_RANK[recommended_level] < LEVEL_RANK.get(original_level, -1):
@@ -316,8 +346,11 @@ def apply_classification_audit(route: dict[str, Any], audit: dict[str, Any]) -> 
         updated["review_required"] = True
         applied.append("review_required:false->true")
     if _truthy(audit.get("human_gate_required")) and not bool(updated.get("human_gate_required")):
-        updated["human_gate_required"] = True
-        applied.append("human_gate_required:false->true")
+        if parsing_route and not _audit_requires_parsing_human_gate(audit):
+            ignored.append("human_gate_required:false->true:parsing_policy_no_blocker")
+        else:
+            updated["human_gate_required"] = True
+            applied.append("human_gate_required:false->true")
 
     if updated.get("task_level") in {"L3", "L4"} or updated.get("risk_level") == "high":
         if not bool(updated.get("review_required")):

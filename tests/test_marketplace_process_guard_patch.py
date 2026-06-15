@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -65,11 +66,23 @@ class ToolCallGuardrailController:
 
 def _patched_namespace(monkeypatch) -> dict[str, object]:
     monkeypatch.delenv("HERMES_RETEK_MARKETPLACE_PROCESS_GUARD", raising=False)
+    monkeypatch.delenv("HERMES_PROCESS_STORE", raising=False)
     updated, changed = patch_marketplace_process_guard.patch_marketplace_process_guard(BASE_SNIPPET)
     assert changed is True
     namespace: dict[str, object] = {}
     exec(compile(updated, "<patched_tool_guardrails>", "exec"), namespace)
     return namespace
+
+
+def _write_process_store(path: Path, *, status: str, task: str) -> None:
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE process_runs (id TEXT, status TEXT, updated_at TEXT, task TEXT)")
+    con.execute(
+        "INSERT INTO process_runs VALUES (?, ?, datetime('now'), ?)",
+        ("proc-test", status, task),
+    )
+    con.commit()
+    con.close()
 
 
 def test_patch_marketplace_process_guard_inserts_import_helper_and_call() -> None:
@@ -78,7 +91,9 @@ def test_patch_marketplace_process_guard_inserts_import_helper_and_call() -> Non
     assert changed is True
     assert patch_marketplace_process_guard.PATCH_MARKER in updated
     assert "import os" in updated
+    assert "import sqlite3" in updated
     assert "MARKETPLACE_PROCESS_FIRST_PATTERNS" in updated
+    assert "MARKETPLACE_PROCESS_APPROVED_STATUSES" in updated
     assert "marketplace_process_first_required" in updated
 
 
@@ -108,6 +123,55 @@ def test_marketplace_puppeteer_write_file_is_blocked(monkeypatch) -> None:
     assert decision.code == "marketplace_process_first_required"
     assert decision.allows_execution is False
     assert controller._halt_decision is None
+
+
+def test_marketplace_puppeteer_write_file_is_allowed_after_recent_approved_process(monkeypatch, tmp_path: Path) -> None:
+    store = tmp_path / "process.db"
+    _write_process_store(
+        store,
+        status="approved",
+        task="Write and execute B2B-Center Puppeteer scraper script and save results for Р6М5 and Р18",
+    )
+    namespace = _patched_namespace(monkeypatch)
+    monkeypatch.setenv("HERMES_PROCESS_STORE", str(store))
+    controller = namespace["ToolCallGuardrailController"]()
+
+    decision = controller.before_call(
+        "write_file",
+        {
+            "path": "/opt/data/rebrowser/b2b-search.js",
+            "content": 'const puppeteer = require("rebrowser-puppeteer-core"); await page.goto("https://www.b2b-center.ru/market/");',
+        },
+    )
+
+    assert decision.action == "allow"
+    assert decision.allows_execution is True
+
+
+def test_marketplace_puppeteer_write_file_still_blocked_for_unapproved_process(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    store = tmp_path / "process.db"
+    _write_process_store(
+        store,
+        status="return_to_bot1",
+        task="Write and execute B2B-Center Puppeteer scraper script and save results for Р6М5 and Р18",
+    )
+    namespace = _patched_namespace(monkeypatch)
+    monkeypatch.setenv("HERMES_PROCESS_STORE", str(store))
+    controller = namespace["ToolCallGuardrailController"]()
+
+    decision = controller.before_call(
+        "write_file",
+        {
+            "path": "/opt/data/rebrowser/b2b-search.js",
+            "content": 'const puppeteer = require("rebrowser-puppeteer-core"); await page.goto("https://www.b2b-center.ru/market/");',
+        },
+    )
+
+    assert decision.action == "block_continue"
+    assert decision.allows_execution is False
 
 
 def test_normal_write_file_is_allowed(monkeypatch) -> None:
