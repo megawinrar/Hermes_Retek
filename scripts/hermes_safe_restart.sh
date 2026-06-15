@@ -15,6 +15,7 @@ TASK_ID="${HERMES_SUPERVISOR_TASK_ID:-}"
 FORCE=0
 DRY_RUN=0
 NOTIFY_TELEGRAM="${HERMES_RESTART_NOTIFY_TELEGRAM:-0}"
+WAITING_TTL_SECONDS="${HERMES_RESTART_WAITING_TTL_SECONDS:-21600}"
 
 usage() {
   cat <<'USAGE'
@@ -30,6 +31,8 @@ Options:
   --lock-dir PATH           Lock directory path.
   --notify-telegram         Send pre/post Telegram notifications through scripts/devlog.py.
   --no-notify-telegram      Disable Telegram notifications.
+  --waiting-ttl-seconds N   Treat awaiting_human_decision/return_to_bot1 as active only if updated within N seconds.
+                            Default: 21600 (6h). Use -1 to block on waiting tasks forever.
   --force                   Allow restart even when active work is detected.
   --dry-run                 Run checks and audit without calling docker restart.
   -h, --help                Show this help.
@@ -73,6 +76,10 @@ while [ "$#" -gt 0 ]; do
     --no-notify-telegram)
       NOTIFY_TELEGRAM=0
       shift
+      ;;
+    --waiting-ttl-seconds)
+      WAITING_TTL_SECONDS="${2:?--waiting-ttl-seconds requires a value}"
+      shift 2
       ;;
     --force)
       FORCE=1
@@ -176,17 +183,30 @@ sqlite_table_exists() {
   [ "$(sqlite_scalar "$db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='$table';")" = "1" ]
 }
 
+waiting_active_predicate() {
+  if [ "$WAITING_TTL_SECONDS" -lt 0 ] 2>/dev/null; then
+    printf "status IN ('awaiting_human_decision', 'return_to_bot1')"
+    return 0
+  fi
+  if ! [ "$WAITING_TTL_SECONDS" -ge 0 ] 2>/dev/null; then
+    WAITING_TTL_SECONDS=21600
+  fi
+  printf "status IN ('awaiting_human_decision', 'return_to_bot1') AND julianday(updated_at) >= julianday('now', '-%s seconds')" "$WAITING_TTL_SECONDS"
+}
+
 active_supervisor_details() {
   if ! sqlite_table_exists "$SUPERVISOR_STORE" "supervisor_tasks"; then
     printf ''
     return 0
   fi
+  local waiting_predicate
+  waiting_predicate="$(waiting_active_predicate)"
   local sql="
     SELECT COALESCE(group_concat(id || ':' || status, ', '), '')
     FROM (
       SELECT id, status
       FROM supervisor_tasks
-      WHERE status IN ('running', 'awaiting_human_decision', 'return_to_bot1')
+      WHERE status = 'running' OR ($waiting_predicate)
       ORDER BY updated_at DESC
       LIMIT 5
     );
@@ -199,12 +219,14 @@ active_process_details() {
     printf ''
     return 0
   fi
+  local waiting_predicate
+  waiting_predicate="$(waiting_active_predicate)"
   local sql="
     SELECT COALESCE(group_concat(id || ':' || status, ', '), '')
     FROM (
       SELECT id, status
       FROM process_runs
-      WHERE status IN ('running', 'awaiting_human_decision', 'return_to_bot1')
+      WHERE status = 'running' OR ($waiting_predicate)
       ORDER BY updated_at DESC
       LIMIT 5
     );

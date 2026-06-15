@@ -170,6 +170,39 @@ def test_get_record_kind_filter_and_artifact_fallback_ref(tmp_path: Path) -> Non
     assert f"artifact=rlm:{artifact['id']}" in pack["context"]
 
 
+def test_add_subcall_record_stores_child_agent_lifecycle(tmp_path: Path) -> None:
+    store = tmp_path / "rlm.db"
+    secret = "auth.sid=" + "S" * 32
+
+    record = rlm_store.add_subcall_record(
+        parent_process_id="proc-parent",
+        child_agent_id="sa-1",
+        parent_agent_id="sa-parent",
+        depth=1,
+        status="timeout",
+        goal=f"Investigate supplier portal with {secret}",
+        summary="Timed out before result",
+        timeout_seconds=120,
+        token_budget=900,
+        api_calls=3,
+        duration_seconds=121.4,
+        metadata={"raw": secret, "exit_reason": "timeout"},
+        store_path=store,
+    )
+    found = rlm_store.search_records(kind="subcall", process_id="proc-parent", store_path=store)
+
+    assert record["kind"] == "subcall"
+    assert record["metadata"]["child_agent_id"] == "sa-1"
+    assert record["metadata"]["parent_agent_id"] == "sa-parent"
+    assert record["metadata"]["timeout_seconds"] == 120.0
+    assert record["metadata"]["duration_seconds"] == 121.4
+    assert {"subcall", "status:timeout", "child:sa-1", "parent:sa-parent", "process:proc-parent"} <= set(
+        record["tags"]
+    )
+    assert found[0]["id"] == record["id"]
+    assert secret not in json.dumps(record, ensure_ascii=False)
+
+
 def test_parse_metadata_rejects_non_object_and_bad_json() -> None:
     with pytest.raises(argparse.ArgumentTypeError):
         rlm_store._parse_metadata('["not", "an", "object"]')

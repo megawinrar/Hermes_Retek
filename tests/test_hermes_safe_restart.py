@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import sqlite3
 from pathlib import Path
 
 
@@ -67,6 +68,60 @@ def test_safe_restart_blocks_when_supervisor_task_is_active(tmp_path: Path) -> N
     event = audit_lines(tmp_path)[-1]
     assert event["event"] == "restart_blocked"
     assert event["status"] == "active_work"
+    assert task_id in str(event["details"])
+
+
+def test_safe_restart_ignores_stale_human_waiting_task_by_default(tmp_path: Path) -> None:
+    store = tmp_path / "supervisor.db"
+    task_id = create_task("Waiting for old approval", store_path=store)["task_id"]
+    update_task(task_id, status="running", store_path=store)
+    update_task(task_id, status="awaiting_human_decision", store_path=store)
+    with sqlite3.connect(store) as con:
+        con.execute(
+            "UPDATE supervisor_tasks SET updated_at='2026-01-01T00:00:00+00:00' WHERE id=?",
+            (task_id,),
+        )
+        con.commit()
+
+    result = run_safe_restart(tmp_path, "--dry-run", "--reason", "config-only")
+
+    assert result.returncode == 0, result.stderr
+    event = audit_lines(tmp_path)[-1]
+    assert event["event"] == "restart_skipped"
+    assert event["status"] == "dry_run"
+    assert event["details"] == "no_active_work"
+
+
+def test_safe_restart_blocks_recent_human_waiting_task(tmp_path: Path) -> None:
+    store = tmp_path / "supervisor.db"
+    task_id = create_task("Waiting for current approval", store_path=store)["task_id"]
+    update_task(task_id, status="running", store_path=store)
+    update_task(task_id, status="awaiting_human_decision", store_path=store)
+
+    result = run_safe_restart(tmp_path, "--dry-run", "--reason", "config-only")
+
+    assert result.returncode == 3
+    event = audit_lines(tmp_path)[-1]
+    assert event["event"] == "restart_blocked"
+    assert task_id in str(event["details"])
+
+
+def test_safe_restart_blocks_running_task_even_when_timestamp_is_old(tmp_path: Path) -> None:
+    store = tmp_path / "supervisor.db"
+    task_id = create_task("Still marked running", store_path=store)["task_id"]
+    update_task(task_id, status="running", store_path=store)
+    with sqlite3.connect(store) as con:
+        con.execute(
+            "UPDATE supervisor_tasks SET updated_at='2026-01-01T00:00:00+00:00' WHERE id=?",
+            (task_id,),
+        )
+        con.commit()
+
+    result = run_safe_restart(tmp_path, "--dry-run", "--reason", "config-only")
+
+    assert result.returncode == 3
+    event = audit_lines(tmp_path)[-1]
+    assert event["event"] == "restart_blocked"
     assert task_id in str(event["details"])
 
 

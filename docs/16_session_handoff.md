@@ -570,7 +570,7 @@ Additional ops status as of `5f32a78`:
 - local test suite passed: `278 passed`;
 - server focused timing tests passed: `11 passed`.
 
-Runtime guardrails status as of `bf0563d + local runtime_guardrails patch`:
+Runtime guardrails status as of `bf0563d + runtime performance continuation`:
 
 - `/opt/data/config.yaml` was backed up to
   `/opt/data/config.yaml.backup-runtime-guardrails-20260615T092020Z`;
@@ -592,24 +592,50 @@ Runtime guardrails status as of `bf0563d + local runtime_guardrails patch`:
 - server `hermes-agent` restarted successfully and still runs on BotHub;
 - added repeatable repo script `scripts/runtime_guardrails.py` plus
   `tests/test_runtime_guardrails.py`;
-- local test suite passed after this change: `281 passed`;
-- server focused runtime guardrail tests passed: `3 passed`.
+- added `scripts/patch_gateway_early_ack.py` plus
+  `tests/test_patch_gateway_early_ack.py`;
+- added `scripts/patch_delegate_subcall_rlm.py` plus
+  `tests/test_patch_delegate_subcall_rlm.py`;
+- added `rlm_store.add_subcall_record(...)` and tests for durable child-agent
+  lifecycle records;
+- `scripts/hermes_safe_restart.sh` now treats `running` as always active, but
+  only treats `awaiting_human_decision` and `return_to_bot1` as active while
+  they are fresh; default TTL is `21600` seconds and can be changed with
+  `--waiting-ttl-seconds` or `HERMES_RESTART_WAITING_TTL_SECONDS`;
+- full early Telegram ack was patched into the live gateway runtime before the
+  first LLM/tool loop; env controls:
+  `HERMES_TELEGRAM_EARLY_ACK_ENABLED` and
+  `HERMES_TELEGRAM_EARLY_ACK_TEXT`;
+- child-agent subcall lifecycle records were patched into the live
+  `delegate_task` runtime; env controls:
+  `HERMES_RLM_SUBCALL_ENABLED` and `HERMES_ASSISTANT_SCRIPTS`;
+- local full test suite passed after this continuation: `289 passed`;
+- local coverage over `scripts/*.py` and `custom/**/*.py`: `74%`;
+- server focused tests passed: `19 passed`;
+- server RLM subcall smoke wrote `kind=subcall` to `/opt/data/rlm_store.db`;
+- server `hermes-agent` restarted without `--force`; the stale 2026-06-14
+  waiting records no longer blocked restart;
+- production `/opt/hermes-assistant` remained on branch `custom` at `908cd72`;
+- Hermes still runs on BotHub:
+  `OPENAI_BASE_URL=https://openai.bothub.chat/v1`,
+  `OPENAI_MODEL=deepseek-v4-flash`.
 
 Remaining runtime work:
 
-- Full early Telegram ack before the first LLM request is not implemented yet.
-  Streaming/progress cadence is enabled now, but if BotHub delays first token
-  for hundreds of seconds, a gateway-level "accepted/working" ack still needs
-  a small upstream-aware Telegram adapter patch.
-- Safe restart guard should be refined so stale human-waiting tasks do not
-  block config-only restarts forever while genuinely running tasks still block.
+- Watch the next real Telegram turn and confirm the early ack appears before
+  the first BotHub/model response.
+- Watch the next real `delegate_task` turn and confirm real child-agent
+  lifecycle rows are written as `kind=subcall` in `/opt/data/rlm_store.db`.
+- The early ack and delegate subcall hooks are runtime patches under
+  `/opt/hermes`; if the container is recreated from image rather than
+  restarted, re-run the patchers from `/opt/hermes-assistant/scripts`.
 
 ## Next Session First Prompt
 
 Use this in the next Codex chat:
 
 ```text
-Продолжи Hermes Retek с docs/16_session_handoff.md. Рабочая ветка ops-safe-restart-speed. GitHub ветка с текущей работой: ops-safe-restart-speed-g3-rlm-20260615. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения. Сначала проверь git status, затем проверь сервер: hermes-agent/hermes-yandex-proxy, что Hermes снова на BotHub (`OPENAI_BASE_URL=https://openai.bothub.chat/v1`, `OPENAI_MODEL=deepseek-v4-flash`), что runtime guardrails активны (`agent.max_turns=16`, `delegation.max_iterations=8`, `delegation.child_timeout_seconds=120`, `delegation.max_concurrent_children=2`, `streaming.enabled=true`), что cron snapshot пишет `/opt/data/logs/gateway.log` и `/opt/data/logs/agent.log`, что `/opt/data/rlm_store.db` жив, skill kontur-parser есть, и big-task context policy активна: max_tokens default 6000, normal context pack до 3000, expanded context pack до 5000. Затем продолжай runtime performance work: full early Telegram ack before first LLM request, refine safe restart stale-task drain policy, missing deps, RLM lessons, and Kontur workflow.
+Продолжи Hermes Retek с docs/16_session_handoff.md. Рабочая ветка ops-safe-restart-speed. GitHub ветка с текущей работой: ops-safe-restart-speed-g3-rlm-20260615. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения. Сначала проверь git status, затем проверь сервер: hermes-agent/hermes-yandex-proxy, что Hermes на BotHub (`OPENAI_BASE_URL=https://openai.bothub.chat/v1`, `OPENAI_MODEL=deepseek-v4-flash`), runtime guardrails активны, ранний Telegram ack patch marker есть в `/opt/hermes/gateway/platforms/base.py`, subcall RLM patch marker есть в `/opt/hermes/tools/delegate_tool.py`, `/opt/data/rlm_store.db` жив, skill kontur-parser есть, и big-task context policy активна. Затем наблюдай следующий реальный Telegram turn: должен быть быстрый ack до первого LLM, а при delegate_task должны появляться `kind=subcall` записи. Потом продолжай missing deps, RLM lessons, Kontur workflow и timing report comparison.
 ```
 
 ## Recommended Next Work
@@ -624,18 +650,11 @@ tags=context,compaction,{process_id}
 metadata={source_event_ids, trigger_percent, token_budget}
 ```
 
-3. Add subcall records for parallel agents:
-
-```text
-kind=subcall
-metadata={parent_process_id, child_agent_id, depth, timeout, token_budget}
-```
-
-4. Clean old server-side secret placeholders/findings in `custom/config`.
-5. Decide whether to install a lightweight test runner on the server or keep
+3. Clean old server-side secret placeholders/findings in `custom/config`.
+4. Decide whether to install a lightweight test runner on the server or keep
    server verification to syntax/smoke checks.
-6. Install or vendor the browser parsing dependencies Hermes tried to use
+5. Install or vendor the browser parsing dependencies Hermes tried to use
    (`bs4`, and possibly `requests`, `pandas`, `openpyxl`) only if the next
    Kontur workflow still needs Python HTML/Excel parsing.
-7. Investigate runtime `Memory is not available` in Hermes logs now that RLM
+6. Investigate runtime `Memory is not available` in Hermes logs now that RLM
    process memory is active through `hermes_process_tool`.

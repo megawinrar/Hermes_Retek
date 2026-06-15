@@ -191,6 +191,66 @@ def add_record(
     return _row_to_record(row, include_content=True)
 
 
+def add_subcall_record(
+    *,
+    parent_process_id: str = "",
+    child_agent_id: str,
+    parent_agent_id: str = "",
+    depth: int = 0,
+    status: str,
+    goal: str = "",
+    summary: str = "",
+    timeout_seconds: float | int | None = None,
+    token_budget: int | None = None,
+    api_calls: int | None = None,
+    duration_seconds: float | int | None = None,
+    metadata: dict[str, Any] | None = None,
+    store_path: Path | str | None = None,
+) -> dict[str, Any]:
+    """Store a child-agent lifecycle record in the standard RLM table."""
+    safe_metadata = dict(metadata or {})
+    safe_metadata.update(
+        {
+            "parent_process_id": parent_process_id,
+            "child_agent_id": child_agent_id,
+            "parent_agent_id": parent_agent_id,
+            "depth": int(depth),
+            "status": status,
+        }
+    )
+    if timeout_seconds is not None:
+        safe_metadata["timeout_seconds"] = float(timeout_seconds)
+    if token_budget is not None:
+        safe_metadata["token_budget"] = int(token_budget)
+    if api_calls is not None:
+        safe_metadata["api_calls"] = int(api_calls)
+    if duration_seconds is not None:
+        safe_metadata["duration_seconds"] = float(duration_seconds)
+
+    tags = ["subcall", f"status:{status}", f"child:{child_agent_id}"]
+    if parent_agent_id:
+        tags.append(f"parent:{parent_agent_id}")
+    if parent_process_id:
+        tags.append(f"process:{parent_process_id}")
+
+    title = f"Subcall {child_agent_id} {status}".strip()
+    compact_goal = goal.strip()
+    compact_summary = summary.strip()
+    summary_text = compact_summary or compact_goal or f"Child agent {child_agent_id} status={status}"
+
+    return add_record(
+        "subcall",
+        title,
+        summary_text,
+        content=compact_goal,
+        tags=tags,
+        process_id=parent_process_id,
+        importance=0.65 if status in {"timeout", "error", "failed"} else 0.45,
+        metadata=safe_metadata,
+        store_path=store_path,
+    )
+
+
 def search_records(
     query: str = "",
     tags: list[str] | None = None,
