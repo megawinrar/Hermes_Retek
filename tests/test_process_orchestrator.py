@@ -540,7 +540,7 @@ def test_supplier_route_records_deterministic_calculator_context_when_explicitly
     assert "deterministic_tools" in workers
 
 
-def test_kontur_parser_task_runs_bot1_tester_bot2_with_browser_skills(tmp_path: Path) -> None:
+def test_kontur_parser_task_runs_bot1_bot2_only_with_browser_skills(tmp_path: Path) -> None:
     args = args_for_process(
         tmp_path,
         task="Спарси Контур по Д16Т и сохрани результаты закупки в Excel",
@@ -564,12 +564,42 @@ def test_kontur_parser_task_runs_bot1_tester_bot2_with_browser_skills(tmp_path: 
     assert route["task_level"] == "L2"
     assert route["task_type"] == "supplier_price_deadline_analysis"
     assert route["review_required"] is True
+    assert route["process_plan"] == ["router", "supervisor", "bot1", "bot2"]
+    assert route["autonomy_policy"]["mode"] == "parsing_bot1_bot2_only"
     assert {"hermes-browser", "kontur-parser"}.issubset(selected)
-    assert {"bot1", "tester", "bot2"}.issubset(workers)
+    assert {"bot1", "bot2"}.issubset(workers)
+    assert "tester" not in workers
     assert policy["level"] == "L2"
     assert policy["max_parallel_agents"] == 0
     assert policy["verification_parallel_agents"] == 1
     assert "skill_context_selected" in event_types
+
+
+def test_parser_bot2_request_changes_returns_to_bot1_without_human_gate(tmp_path: Path) -> None:
+    args = args_for_process(
+        tmp_path,
+        task="Спарси Контур по Д16Т и сохрани результаты закупки в Excel",
+        acceptance="Need parser evidence and output file.",
+        live_dual=False,
+        bot2_status="REQUEST_CHANGES",
+    )
+
+    payload = process_orchestrator.run_process(args)
+    details = process_orchestrator.process_details(
+        payload["process_id"],
+        store_path=args.process_store,
+        supervisor_store_path=args.supervisor_store,
+    )
+    events = {event["event_type"]: event["payload"] for event in details["events"]}
+    next_action = events["process_next_action"]
+
+    assert payload["status"] == "return_to_bot1"
+    assert details["status"] == "return_to_bot1"
+    assert "human_notification" not in events
+    assert "autonomous_bot1_revision_requested" in events
+    assert next_action["action"] == "return_to_bot1_with_bot2_fixes"
+    assert next_action["target_worker"] == "bot1"
+    assert next_action["source"] == "parsing_autonomy_policy"
 
 
 def test_supplier_calculator_does_not_attach_to_serial_production_task_even_when_enabled(monkeypatch) -> None:

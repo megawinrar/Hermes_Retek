@@ -91,7 +91,7 @@ def test_on_demand_browser_skill_loads_only_for_supplier_browser_tasks() -> None
             "risk_level": "high",
             "review_required": True,
             "human_gate_required": False,
-            "process_plan": ["router", "supervisor", "bot1", "tester", "bot2_light_if_risky"],
+            "process_plan": ["router", "supervisor", "bot1", "bot2"],
         },
     )
 
@@ -110,7 +110,7 @@ def test_on_demand_browser_selection_is_not_sticky_after_cache() -> None:
         "risk_level": "high",
         "review_required": True,
         "human_gate_required": False,
-        "process_plan": ["router", "supervisor", "bot1", "tester", "bot2_light_if_risky"],
+        "process_plan": ["router", "supervisor", "bot1", "bot2"],
     }
     generic_route = {
         "task_level": "L2",

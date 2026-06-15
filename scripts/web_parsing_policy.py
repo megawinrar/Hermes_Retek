@@ -132,6 +132,8 @@ def select_policy(*, url: str = "", task: str = "", requires_auth: bool | None =
     payload = asdict(policy)
     payload["host"] = host
     payload["rules"] = [
+        "use only Bot#1 for parser implementation and Bot#2 for review; do not add tester/architect/devops roles",
+        "ask the user only for missing credentials, captcha/2FA, payment, destructive external writes, or legal/account blocks",
         "use one bounded parser worker per site profile unless policy allows more",
         "pace browser and API actions through the selected delay profile",
         "checkpoint URL, query, selector notes, errors, and artifact paths",

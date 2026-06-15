@@ -66,7 +66,7 @@ SAMPLE_ROUTE_L2_SUPPLIER = {
     "task_level": "L2",
     "task_type": "supplier_price_deadline_analysis",
     "risk_level": "high",
-    "process_plan": ["router", "supervisor", "bot1", "tester", "bot2_light_if_risky"],
+    "process_plan": ["router", "supervisor", "bot1", "bot2"],
     "skill_context": {
         "selected_skills": [
             {"name": "hermes-analyst", "tags": ["analysis", "requirements"]},

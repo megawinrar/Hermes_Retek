@@ -179,6 +179,30 @@ levels:
       - devops_if_approved
     bot2_required: true
 
+task_type_overrides:
+  supplier_price_deadline_analysis:
+    process_plan:
+      - router
+      - supervisor
+      - bot1
+      - bot2
+    max_worker_agents: 2
+    max_parallel_discovery_agents: 0
+    bot1_responsibility: "Пишет/запускает парсер, ведёт checkpoint/evidence/RLM."
+    bot2_responsibility: "Проверяет результат, ошибки, лимиты сайта и просит исправление у Bot#1."
+    forbidden_roles:
+      - architect
+      - tester
+      - devops_if_approved
+      - extra_parallel_agents
+    human_gate_only_for:
+      - missing_credentials
+      - captcha
+      - 2fa_or_sms_code
+      - payment_or_paid_export
+      - destructive_external_write
+      - legal_or_account_policy_blocker
+
 human_decision:
   yes:
     label: "Да"

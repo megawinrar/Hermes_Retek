@@ -93,6 +93,10 @@ def test_supplier_price_deadline_analysis_has_specific_l2_route() -> None:
     assert route["risk_level"] == "high"
     assert route["review_required"] is True
     assert route["human_gate_required"] is False
+    assert route["process_plan"] == ["router", "supervisor", "bot1", "bot2"]
+    assert route["autonomy_policy"]["mode"] == "parsing_bot1_bot2_only"
+    assert route["autonomy_policy"]["max_worker_agents"] == 2
+    assert "tester" not in route["process_plan"]
 
 
 def test_kontur_parsing_terms_route_to_supplier_browser_process() -> None:
@@ -102,6 +106,15 @@ def test_kontur_parsing_terms_route_to_supplier_browser_process() -> None:
     assert route["risk_level"] == "high"
     assert route["review_required"] is True
     assert route["human_gate_required"] is False
+    assert route["process_plan"] == ["router", "supervisor", "bot1", "bot2"]
+    assert route["autonomy_policy"]["ask_human_only_for"] == [
+        "missing_credentials",
+        "captcha",
+        "2fa_or_sms_code",
+        "payment_or_paid_export",
+        "destructive_external_write",
+        "legal_or_account_policy_blocker",
+    ]
 
 
 def test_kontur_browser_parse_routes_without_price_words() -> None:
@@ -111,6 +124,7 @@ def test_kontur_browser_parse_routes_without_price_words() -> None:
     assert route["risk_level"] == "high"
     assert route["review_required"] is True
     assert route["human_gate_required"] is False
+    assert route["process_plan"] == ["router", "supervisor", "bot1", "bot2"]
 
 
 def test_marketplace_site_search_routes_to_supplier_browser_process() -> None:
@@ -120,6 +134,9 @@ def test_marketplace_site_search_routes_to_supplier_browser_process() -> None:
     assert route["risk_level"] == "high"
     assert route["review_required"] is True
     assert route["human_gate_required"] is False
+    assert route["process_plan"] == ["router", "supervisor", "bot1", "bot2"]
+    assert route["autonomy_policy"]["script_writer"] == "bot1"
+    assert route["autonomy_policy"]["reviewer"] == "bot2"
 
 
 def test_generic_parse_does_not_become_supplier_browser_task() -> None:

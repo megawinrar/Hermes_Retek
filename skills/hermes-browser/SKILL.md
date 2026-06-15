@@ -67,6 +67,23 @@ Each session stores:
    browser configuration, persistent profile, and an ordinary user-agent override
    are allowed for compatibility.
 
+## Parsing Process Rule
+
+For parsing, scraping, marketplace, tender, supplier, Excel/export, and
+authenticated browser research tasks, use only the Bot#1/Bot#2 worker pair:
+
+1. Bot#1 owns parser implementation, browser probing, checkpoints, downloads,
+   screenshots/source, result files, and RLM lessons.
+2. Bot#2 reviews evidence, site limits, parser errors, pacing, and whether the
+   output satisfies the task.
+3. Do not add Architect, Tester, DevOps, or extra parallel discovery agents for
+   writing the parser.
+4. If Bot#2 requests changes, return the fix package to Bot#1 inside the process
+   instead of asking the user by default.
+5. Ask the user only for real blockers: missing credentials, CAPTCHA, 2FA/SMS,
+   payment/paid export, destructive external write, or legal/account-policy
+   block.
+
 ## Kontur Pattern
 
 For supplier/tender searches:

@@ -862,3 +862,69 @@ metadata={source_event_ids, trigger_percent, token_budget}
    Kontur workflow still needs Python HTML/Excel parsing.
 6. Investigate runtime `Memory is not available` in Hermes logs now that RLM
    process memory is active through `hermes_process_tool`.
+
+## 2026-06-16 Parsing Bot1/Bot2 Autonomy Rule
+
+User requested a hard rule: parsing/script-writing is Bot#1 + Bot#2 maximum, not
+a broad multi-agent workflow that keeps asking the user.
+
+Implemented locally on branch `browser-logic-policy-20260615`:
+
+- `scripts/task_router.py`
+  - supplier/browser/marketplace parsing route now uses process plan:
+    `router -> supervisor -> bot1 -> bot2`;
+  - no `tester`, `architect`, `devops_if_approved`, or extra parallel agents;
+  - route includes `autonomy_policy.mode=parsing_bot1_bot2_only`;
+  - `ask_human_only_for`: missing credentials, CAPTCHA, 2FA/SMS, payment/paid
+    export, destructive external write, legal/account policy block.
+- `custom/tools/hermes_process_tool.py`
+  - process-first defaults for marketplace/parser tasks now set
+    `--max-parallel-agents 0`, `--verification-parallel-agents 1`.
+- `scripts/process_orchestrator.py`
+  - Bot#2 parser verdicts `REQUEST_CHANGES`, `INSUFFICIENT_EVIDENCE`, and
+    `REFACTORING_REQUIRED` return the process to Bot#1 without a human gate;
+  - `process_next_action.action=return_to_bot1_with_bot2_fixes`;
+  - event `autonomous_bot1_revision_requested` records the reason.
+- `scripts/supervisor_common.py`
+  - status machine allows `running -> return_to_bot1` for internal revision loops.
+- `scripts/web_parsing_policy.py`, `AGENTS.md`, `skills/hermes-browser/SKILL.md`,
+  `configs/process_workers.yaml`
+  - same business rule documented for the model and site policy.
+- `scripts/patch_marketplace_process_guard.py`
+  - patches upstream `/opt/hermes/agent/tool_guardrails.py`;
+  - blocks direct `write_file`, `execute_code`, and `terminal` attempts that
+    look like B2B/Kontur/Puppeteer marketplace scraper creation;
+  - directs Hermes to start through `hermes_process(action="run", task=...)`;
+  - toggle: `HERMES_RETEK_MARKETPLACE_PROCESS_GUARD=0`.
+
+Tests added/updated:
+
+```text
+tests/test_marketplace_process_guard_patch.py
+tests/test_task_router.py
+tests/test_process_orchestrator.py
+tests/test_hermes_process_tool.py
+tests/test_web_parsing_policy.py
+tests/test_skill_index.py
+tests/test_session_tags.py
+```
+
+Verification:
+
+```text
+focused pytest: 128 passed
+full pytest: 337 passed
+```
+
+Deployment reminder:
+
+- do not switch production `/opt/hermes-assistant` off branch `custom`;
+- deploy changed files as an overlay with backup;
+- copy and run `scripts/patch_marketplace_process_guard.py` inside
+  `hermes-agent` against `/opt/hermes/agent/tool_guardrails.py`;
+- verify marker `HERMES_RETEK_MARKETPLACE_PROCESS_FIRST_GUARD`;
+- restart through safe restart, then rerun the user parsing task and watch for:
+  - `hermes_process` before any marketplace browser/script work;
+  - process plan `router/supervisor/bot1/bot2`;
+  - no tester assignment for parser writing;
+  - Bot#2 ordinary fixes returning to Bot#1, not Telegram human gate.

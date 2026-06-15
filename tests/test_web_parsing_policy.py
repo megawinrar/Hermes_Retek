@@ -21,6 +21,8 @@ def test_kontur_domain_selects_ui_seed_single_request_policy() -> None:
     assert selected["max_parallel_requests"] == 1
     assert selected["chunk_years"] == 2
     assert selected["fallback_chunk_years"] == 1
+    assert "use only Bot#1 for parser implementation and Bot#2 for review; do not add tester/architect/devops roles" in selected["rules"]
+    assert "ask the user only for missing credentials, captcha/2FA, payment, destructive external writes, or legal/account blocks" in selected["rules"]
 
 
 def test_b2b_center_uses_persistent_browser_login_policy() -> None:

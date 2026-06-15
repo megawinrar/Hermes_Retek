@@ -602,6 +602,47 @@ def route_requires_bot2(route: dict[str, Any]) -> bool:
     return bool(route.get("review_required") or route.get("human_gate_required") or route.get("task_level") in {"L3", "L4"})
 
 
+PARSING_AUTONOMOUS_REVISION_STATUSES = {
+    "REQUEST_CHANGES",
+    "INSUFFICIENT_EVIDENCE",
+    "REFACTORING_REQUIRED",
+}
+
+
+def route_prefers_autonomous_bot1_revision(route: dict[str, Any], verdict: dict[str, Any]) -> bool:
+    if str(route.get("task_type") or "") != "supplier_price_deadline_analysis":
+        return False
+    if bool(route.get("human_gate_required")):
+        return False
+    policy = route.get("autonomy_policy") or {}
+    if policy.get("mode") != "parsing_bot1_bot2_only":
+        return False
+    return str(verdict.get("status") or "").upper() in PARSING_AUTONOMOUS_REVISION_STATUSES
+
+
+def bot1_revision_next_action(
+    *,
+    process_id_value: str,
+    supervisor_task_id: str,
+    verdict: dict[str, Any],
+    source: str,
+) -> dict[str, Any]:
+    return {
+        "action": "return_to_bot1_with_bot2_fixes",
+        "status": "return_to_bot1",
+        "target_worker": "bot1",
+        "target_phase": "revision",
+        "process_id": process_id_value,
+        "supervisor_task_id": supervisor_task_id,
+        "bot2_status": verdict.get("status", ""),
+        "bot2_summary": verdict.get("summary", ""),
+        "required_fixes": verdict.get("required_fixes", []),
+        "risks": verdict.get("risks", []),
+        "source": source,
+        "resume_hint": "Resume Bot#1 with Bot#2 fixes. Do not ask the user unless a real auth/captcha/payment/legal blocker appears.",
+    }
+
+
 def build_route_skill_context(route: dict[str, Any], *, include_approval_required: bool = False) -> dict[str, Any]:
     manifest = load_skill_manifest()
     return select_skill_context(
@@ -2287,6 +2328,14 @@ def continue_process(args: argparse.Namespace) -> dict[str, Any]:
 
     link_bot2(supervisor_task_id, bot2_session_id, verdict, store_path=args.supervisor_store)
     final_status = supervisor_status_for_verdict(verdict)
+    if final_status == "awaiting_human_decision" and route_prefers_autonomous_bot1_revision(route, verdict):
+        final_status = "return_to_bot1"
+        add_process_event(
+            args.process_id,
+            "autonomous_bot1_revision_requested",
+            {"reason": "parsing_bot1_bot2_only_after_continue", "verdict": verdict},
+            store_path=args.process_store,
+        )
     add_assignment(
         args.process_id,
         "bot2",
@@ -2366,18 +2415,28 @@ def continue_process(args: argparse.Namespace) -> dict[str, Any]:
 
     if final_status in {"approved", "approved_refusal"}:
         final_action_name = "completed_after_bot1_revision"
+    elif final_status == "return_to_bot1":
+        final_action_name = "return_to_bot1_with_bot2_fixes"
     elif final_status == "awaiting_human_decision":
         final_action_name = "await_human_after_bot1_revision"
     else:
         final_action_name = "stop_after_bot1_revision"
-    final_next_action = {
-        "action": final_action_name,
-        "status": final_status,
-        "target_worker": "supervisor" if final_status == "awaiting_human_decision" else "",
-        "process_id": args.process_id,
-        "bot2_status": verdict.get("status", ""),
-        "bot2_summary": verdict.get("summary", ""),
-    }
+    if final_status == "return_to_bot1":
+        final_next_action = bot1_revision_next_action(
+            process_id_value=args.process_id,
+            supervisor_task_id=supervisor_task_id,
+            verdict=verdict,
+            source="parsing_autonomy_policy_after_continue",
+        )
+    else:
+        final_next_action = {
+            "action": final_action_name,
+            "status": final_status,
+            "target_worker": "supervisor" if final_status == "awaiting_human_decision" else "",
+            "process_id": args.process_id,
+            "bot2_status": verdict.get("status", ""),
+            "bot2_summary": verdict.get("summary", ""),
+        }
     add_process_event(args.process_id, "process_next_action", final_next_action, store_path=args.process_store)
     performance = build_process_performance(duration_ms=elapsed_ms(process_started_at), route_audit={}, verdict=verdict)
     add_process_event(args.process_id, "process_performance", performance, store_path=args.process_store)
@@ -2724,6 +2783,14 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
 
     needs_bot2 = route_requires_bot2(route)
     final_status = supervisor_status_for_verdict(verdict) if needs_bot2 else "approved"
+    if final_status == "awaiting_human_decision" and route_prefers_autonomous_bot1_revision(route, verdict):
+        final_status = "return_to_bot1"
+        add_process_event(
+            pid,
+            "autonomous_bot1_revision_requested",
+            {"reason": "parsing_bot1_bot2_only", "verdict": verdict},
+            store_path=args.process_store,
+        )
     if route.get("human_gate_required") and final_status in {"approved", "approved_refusal"}:
         verdict = route_policy_verdict()
         final_status = "awaiting_human_decision"
@@ -2811,6 +2878,19 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
                     },
                     store_path=args.process_store,
                 )
+
+    if final_status == "return_to_bot1":
+        add_process_event(
+            pid,
+            "process_next_action",
+            bot1_revision_next_action(
+                process_id_value=pid,
+                supervisor_task_id=supervisor_task_id,
+                verdict=verdict,
+                source="parsing_autonomy_policy",
+            ),
+            store_path=args.process_store,
+        )
 
     update_task(supervisor_task_id, status=final_status, store_path=args.supervisor_store)
     if final_status == "awaiting_human_decision":

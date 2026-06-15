@@ -77,7 +77,7 @@ SUPERVISOR_STATUSES = {
 }
 ALLOWED_STATUS_TRANSITIONS = {
     "created": {"running", "failed", "blocked"},
-    "running": {"approved", "approved_refusal", "awaiting_human_decision", "failed", "blocked"},
+    "running": {"approved", "approved_refusal", "awaiting_human_decision", "return_to_bot1", "failed", "blocked"},
     "awaiting_human_decision": {"return_to_bot1", "accepted_by_user_override", "failed", "blocked"},
     "return_to_bot1": {"running", "failed", "blocked"},
     "approved": set(),

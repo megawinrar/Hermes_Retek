@@ -99,7 +99,7 @@ def test_kontur_parser_tasks_get_process_first_bounded_defaults() -> None:
     assert tool.should_route_task_process_first(task) is True
     cmd = tool.build_command({"action": "run", "task": task})
 
-    assert cmd[cmd.index("--max-parallel-agents") + 1] == "2"
+    assert cmd[cmd.index("--max-parallel-agents") + 1] == "0"
     assert cmd[cmd.index("--verification-parallel-agents") + 1] == "1"
     assert cmd[cmd.index("--agent-timeout-seconds") + 1] == "180"
     assert cmd[cmd.index("--agent-max-tokens") + 1] == "1200"
@@ -114,7 +114,7 @@ def test_marketplace_search_tasks_get_process_first_defaults() -> None:
     assert tool.should_route_task_process_first(task) is True
     cmd = tool.build_command({"action": "run", "task": task})
 
-    assert cmd[cmd.index("--max-parallel-agents") + 1] == "2"
+    assert cmd[cmd.index("--max-parallel-agents") + 1] == "0"
     assert cmd[cmd.index("--agent-timeout-seconds") + 1] == "180"
     assert cmd[cmd.index("--bothub-requests-per-minute") + 1] == "30"
 

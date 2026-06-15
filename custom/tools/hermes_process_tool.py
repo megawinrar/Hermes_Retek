@@ -84,7 +84,7 @@ PROCESS_FIRST_RE = re.compile(
     re.I,
 )
 PROCESS_FIRST_DEFAULTS = {
-    "max_parallel_agents": 2,
+    "max_parallel_agents": 0,
     "verification_parallel_agents": 1,
     "agent_timeout_seconds": 180,
     "agent_max_tokens": 1200,

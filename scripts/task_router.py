@@ -77,6 +77,15 @@ PROCESS_PLAN: dict[str, list[str]] = {
     "L3": ["router", "supervisor", "architect", "bot1", "tester", "bot2"],
     "L4": ["router", "supervisor", "architect", "bot1", "tester", "bot2", "devops_if_approved"],
 }
+PARSING_PROCESS_PLAN = ["router", "supervisor", "bot1", "bot2"]
+PARSING_HUMAN_GATE_REASONS = [
+    "missing_credentials",
+    "captcha",
+    "2fa_or_sms_code",
+    "payment_or_paid_export",
+    "destructive_external_write",
+    "legal_or_account_policy_blocker",
+]
 
 HIGH_RISK_RE = re.compile(
     r"\b(prod|production|deploy|server|token|secret|auth|permission|database|db|schema|"
@@ -146,6 +155,19 @@ class Route:
 
     def as_dict(self) -> dict[str, Any]:
         defaults = dict(LEVEL_DEFAULTS[self.task_level])
+        process_plan = PROCESS_PLAN[self.task_level]
+        autonomy_policy: dict[str, Any] = {}
+        if self.task_type == "supplier_price_deadline_analysis":
+            process_plan = PARSING_PROCESS_PLAN
+            autonomy_policy = {
+                "mode": "parsing_bot1_bot2_only",
+                "max_worker_agents": 2,
+                "script_writer": "bot1",
+                "reviewer": "bot2",
+                "forbidden_roles": ["architect", "tester", "devops_if_approved", "extra_parallel_agents"],
+                "ask_human_only_for": PARSING_HUMAN_GATE_REASONS,
+                "default_action_on_bot2_changes": "return_to_bot1_without_human_gate",
+            }
         defaults.update(
             {
                 "task_level": self.task_level,
@@ -155,9 +177,11 @@ class Route:
                 "stress_profile": self.stress_profile,
                 "review_required": self.review_required,
                 "human_gate_required": self.human_gate_required,
-                "process_plan": PROCESS_PLAN[self.task_level],
+                "process_plan": process_plan,
             }
         )
+        if autonomy_policy:
+            defaults["autonomy_policy"] = autonomy_policy
         return defaults
 
 
