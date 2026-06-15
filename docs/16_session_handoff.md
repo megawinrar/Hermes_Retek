@@ -621,10 +621,22 @@ Runtime guardrails status as of `bf0563d + runtime performance continuation`:
 - added repeatable repo script `scripts/patch_cron_api_limits.py` plus
   `tests/test_patch_cron_api_limits.py` to keep that cron URL fix
   idempotent;
+- converted Hermes cron job `api-limits-check` to deterministic
+  `no_agent=True` script mode using `/opt/data/scripts/hermes_budget_report.py`
+  from repo source `scripts/hermes_budget_report.py`; this avoids spending
+  8-11 LLM calls on four budget endpoint checks;
+- added `tests/test_hermes_budget_report.py`;
 - verified from inside `hermes-agent` that
   `http://hermes-yandex-proxy:8000/v1/budget` and
   `/v1/usage/today` return live budget data, while `localhost:8001` still
   correctly fails from inside the container;
+- secured server `/opt/data/cron/check_limits.sh`: hardcoded Telegram/BotHub
+  literals were moved to `/opt/data/cron/.check_limits.env` with `0600`;
+  the active shell script now reads env values only. Backup with old literals
+  is permission-restricted at `/opt/data/cron/check_limits.sh.bak-20260615131715`;
+- added repeatable repo script `scripts/secure_check_limits.py` plus
+  `tests/test_secure_check_limits.py`;
+- current repo secret audit passed with `0` findings;
 - local full test suite passed after this continuation: `289 passed`;
 - local coverage over `scripts/*.py` and `custom/**/*.py`: `74%`;
 - server focused tests passed: `19 passed`;
@@ -642,6 +654,10 @@ Remaining runtime work:
   the first BotHub/model response.
 - Watch the next real `delegate_task` turn and confirm real child-agent
   lifecycle rows are written as `kind=subcall` in `/opt/data/rlm_store.db`.
+- The latest log check found no new real `delegate_task` after the subcall
+  patch, so only the smoke `kind=subcall` row exists so far.
+- Watch the next scheduled `api-limits-check` run and confirm it completes
+  as `no_agent` script output with no LLM calls.
 - The early ack and delegate subcall hooks are runtime patches under
   `/opt/hermes`; if the container is recreated from image rather than
   restarted, re-run the patchers from `/opt/hermes-assistant/scripts`.
@@ -651,7 +667,7 @@ Remaining runtime work:
 Use this in the next Codex chat:
 
 ```text
-Продолжи Hermes Retek с docs/16_session_handoff.md. Рабочая ветка ops-safe-restart-speed. GitHub ветка с текущей работой: ops-safe-restart-speed-g3-rlm-20260615. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения. Сначала проверь git status, затем проверь сервер: hermes-agent/hermes-yandex-proxy, что Hermes на BotHub (`OPENAI_BASE_URL=https://openai.bothub.chat/v1`, `OPENAI_MODEL=deepseek-v4-flash`), runtime guardrails активны, ранний Telegram ack patch marker есть в `/opt/hermes/gateway/platforms/base.py`, subcall RLM patch marker есть в `/opt/hermes/tools/delegate_tool.py`, `/opt/data/rlm_store.db` жив, skill kontur-parser есть, big-task context policy активна, и cron `api-limits-check` использует `http://hermes-yandex-proxy:8000`, а не `localhost:8001` внутри контейнера. Затем наблюдай следующий реальный Telegram turn: должен быть быстрый ack до первого LLM, а при delegate_task должны появляться `kind=subcall` записи. Потом продолжай missing deps, RLM lessons, Kontur workflow и timing report comparison.
+Продолжи Hermes Retek с docs/16_session_handoff.md. Рабочая ветка ops-safe-restart-speed. GitHub ветка с текущей работой: ops-safe-restart-speed-g3-rlm-20260615. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения. Сначала проверь git status, затем проверь сервер: hermes-agent/hermes-yandex-proxy, что Hermes на BotHub (`OPENAI_BASE_URL=https://openai.bothub.chat/v1`, `OPENAI_MODEL=deepseek-v4-flash`), runtime guardrails активны, ранний Telegram ack patch marker есть в `/opt/hermes/gateway/platforms/base.py`, subcall RLM patch marker есть в `/opt/hermes/tools/delegate_tool.py`, `/opt/data/rlm_store.db` жив, skill kontur-parser есть, big-task context policy активна, cron `api-limits-check` работает как `no_agent` script `hermes_budget_report.py` через `http://hermes-yandex-proxy:8000`, а `/opt/data/cron/check_limits.sh` больше не содержит hardcoded secrets. Затем наблюдай следующий реальный Telegram turn: должен быть быстрый ack до первого LLM, а при delegate_task должны появляться `kind=subcall` записи. Потом продолжай missing deps, RLM lessons, Kontur workflow и timing report comparison.
 ```
 
 ## Recommended Next Work

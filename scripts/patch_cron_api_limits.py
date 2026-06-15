@@ -12,6 +12,7 @@ from typing import Any
 DEFAULT_JOB_ID = "89bb5d5a6b14"
 DEFAULT_JOB_NAME = "api-limits-check"
 DEFAULT_CONTAINER_BASE_URL = "http://hermes-yandex-proxy:8000"
+DEFAULT_SCRIPT = "hermes_budget_report.py"
 LEGACY_BASE_URLS = (
     "http://127.0.0.1:8001",
     "http://localhost:8001",
@@ -24,6 +25,8 @@ def patch_api_limits_job(
     job_id: str = DEFAULT_JOB_ID,
     job_name: str = DEFAULT_JOB_NAME,
     container_base_url: str = DEFAULT_CONTAINER_BASE_URL,
+    script: str | None = None,
+    no_agent: bool = False,
 ) -> tuple[dict[str, Any], bool]:
     """Patch Hermes cron api-limits-check URLs for execution inside Docker."""
 
@@ -50,15 +53,40 @@ def patch_api_limits_job(
         if patched_prompt != prompt:
             job["prompt"] = patched_prompt
             changed = True
+        if no_agent:
+            target_script = script or DEFAULT_SCRIPT
+            target_prompt = "Deterministic Hermes LLM budget report. Script mode: no LLM agent required."
+            desired_fields = {
+                "script": target_script,
+                "no_agent": True,
+                "prompt": target_prompt,
+                "enabled_toolsets": None,
+            }
+            for key, value in desired_fields.items():
+                if job.get(key) != value:
+                    job[key] = value
+                    changed = True
 
     if changed:
         updated["updated_at"] = datetime.now(timezone.utc).isoformat()
     return updated, changed
 
 
-def patch_jobs_file(path: Path, *, backup: bool = True, container_base_url: str = DEFAULT_CONTAINER_BASE_URL) -> bool:
+def patch_jobs_file(
+    path: Path,
+    *,
+    backup: bool = True,
+    container_base_url: str = DEFAULT_CONTAINER_BASE_URL,
+    script: str | None = None,
+    no_agent: bool = False,
+) -> bool:
     data = json.loads(path.read_text())
-    updated, changed = patch_api_limits_job(data, container_base_url=container_base_url)
+    updated, changed = patch_api_limits_job(
+        data,
+        container_base_url=container_base_url,
+        script=script,
+        no_agent=no_agent,
+    )
     if not changed:
         return False
 
@@ -74,10 +102,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Patch Hermes api-limits-check cron job for in-container execution")
     parser.add_argument("jobs_json", type=Path, help="Path to /opt/data/cron/jobs.json")
     parser.add_argument("--base-url", default=DEFAULT_CONTAINER_BASE_URL)
+    parser.add_argument("--script", default=DEFAULT_SCRIPT)
+    parser.add_argument("--no-agent", action="store_true", help="Run api-limits-check as a deterministic cron script")
     parser.add_argument("--no-backup", action="store_true")
     args = parser.parse_args(argv)
 
-    changed = patch_jobs_file(args.jobs_json, backup=not args.no_backup, container_base_url=args.base_url)
+    changed = patch_jobs_file(
+        args.jobs_json,
+        backup=not args.no_backup,
+        container_base_url=args.base_url,
+        script=args.script,
+        no_agent=args.no_agent,
+    )
     print("changed" if changed else "already-patched")
     return 0
 
