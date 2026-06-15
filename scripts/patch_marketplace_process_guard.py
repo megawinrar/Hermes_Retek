@@ -44,7 +44,7 @@ def _marketplace_process_first_decision(
     if not any(pattern in raw for pattern in MARKETPLACE_PROCESS_FIRST_PATTERNS):
         return None
     return ToolGuardrailDecision(
-        action="block",
+        action="block_continue",
         code="marketplace_process_first_required",
         message=(
             "Marketplace/browser parsing scripts must start through "
@@ -61,7 +61,8 @@ def _marketplace_process_first_decision(
 CALL_ANCHOR = "        signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))\n"
 CALL_BLOCK = """        marketplace_decision = _marketplace_process_first_decision(tool_name, args, signature)
         if marketplace_decision is not None:
-            self._halt_decision = marketplace_decision
+            if marketplace_decision.should_halt:
+                self._halt_decision = marketplace_decision
             return marketplace_decision
 """
 
@@ -74,7 +75,23 @@ def backup_path(path: Path) -> Path:
 def patch_marketplace_process_guard(source: str) -> tuple[str, bool]:
     """Return patched source and whether it changed."""
     if PATCH_MARKER in source and CALL_BLOCK in source:
-        return source, False
+        if 'action="block_continue"' in source:
+            return source, False
+        updated = source.replace(
+            'action="block",\n        code="marketplace_process_first_required"',
+            'action="block_continue",\n        code="marketplace_process_first_required"',
+            1,
+        )
+        return updated, updated != source
+    if PATCH_MARKER in source and 'action="block_continue"' in source:
+        old_call_block = """        marketplace_decision = _marketplace_process_first_decision(tool_name, args, signature)
+        if marketplace_decision is not None:
+            self._halt_decision = marketplace_decision
+            return marketplace_decision
+"""
+        if old_call_block in source:
+            updated = source.replace(old_call_block, CALL_BLOCK, 1)
+            return updated, updated != source
     if HELPER_ANCHOR not in source:
         raise ValueError("helper anchor not found")
     if CALL_ANCHOR not in source:

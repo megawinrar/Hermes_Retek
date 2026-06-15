@@ -40,6 +40,10 @@ class ToolGuardrailDecision:
     def allows_execution(self) -> bool:
         return self.action in {"allow", "warn"}
 
+    @property
+    def should_halt(self) -> bool:
+        return self.action in {"block", "halt"}
+
 
 def canonical_tool_args(args: Mapping[str, Any]) -> str:
     return json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
@@ -100,10 +104,10 @@ def test_marketplace_puppeteer_write_file_is_blocked(monkeypatch) -> None:
         },
     )
 
-    assert decision.action == "block"
+    assert decision.action == "block_continue"
     assert decision.code == "marketplace_process_first_required"
     assert decision.allows_execution is False
-    assert controller._halt_decision is decision
+    assert controller._halt_decision is None
 
 
 def test_normal_write_file_is_allowed(monkeypatch) -> None:
