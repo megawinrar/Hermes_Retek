@@ -17,6 +17,11 @@ def test_kontur_domain_selects_ui_seed_single_request_policy() -> None:
 
     assert selected["name"] == "kontur"
     assert selected["mode"] == "ui_seed_then_api_pagination"
+    assert selected["auth_strategy"] == "required_for_account_export"
+    assert selected["public_fallback_allowed"] is False
+    assert selected["stop_on_failed_login"] is True
+    assert selected["login_timeout_seconds"] == 20
+    assert selected["query_timeout_seconds"] == 75
     assert selected["pace_profile"] == "kontur"
     assert selected["max_parallel_requests"] == 1
     assert selected["chunk_years"] == 2
@@ -32,13 +37,20 @@ def test_b2b_center_uses_persistent_browser_login_policy() -> None:
     )
 
     assert selected["name"] == "b2b_center"
-    assert selected["mode"] == "persistent_browser_login_then_ui_search"
+    assert selected["mode"] == "persistent_browser_optional_login_then_ui_search"
+    assert selected["auth_strategy"] == "try_login_then_public_results_fallback"
+    assert selected["public_fallback_allowed"] is True
+    assert selected["stop_on_failed_login"] is False
+    assert selected["login_timeout_seconds"] == 15
+    assert selected["query_timeout_seconds"] == 60
     assert selected["pace_profile"] == "cautious"
     assert selected["max_parallel_requests"] == 1
     assert selected["requires_ui_seed"] is True
     assert selected["min_delay_seconds"] == 2.5
     assert selected["max_delay_seconds"] == 6.0
     assert "accept or close cookie notices before login" in selected["rules"]
+    assert "login is optional for public marketplace search; save auth=false and continue if result cards are visible" in selected["rules"]
+    assert "parse result anchors/cards and surrounding row text; do not require an exact Russian text prefix" in selected["rules"]
     assert "treat browser unsupported/cookies disabled banners as recoverable setup errors" in selected["rules"]
 
 
@@ -47,6 +59,9 @@ def test_unknown_authorized_site_uses_cautious_browser_first_policy() -> None:
 
     assert selected["name"] == "default_authenticated"
     assert selected["mode"] == "browser_first_then_structured_extract"
+    assert selected["auth_strategy"] == "required_unless_public_results_visible"
+    assert selected["public_fallback_allowed"] is True
+    assert selected["stop_on_failed_login"] is False
     assert selected["pace_profile"] == "cautious"
     assert selected["max_parallel_requests"] == 1
     assert selected["requires_ui_seed"] is True
@@ -58,6 +73,9 @@ def test_unknown_public_site_allows_small_parallel_fetch_with_browser_fallback()
 
     assert selected["name"] == "default_public"
     assert selected["mode"] == "structured_fetch_with_browser_fallback"
+    assert selected["auth_strategy"] == "not_required"
+    assert selected["public_fallback_allowed"] is True
+    assert selected["stop_on_failed_login"] is False
     assert selected["pace_profile"] == "human"
     assert selected["max_parallel_requests"] == 2
     assert selected["requires_ui_seed"] is False
@@ -70,3 +88,4 @@ def test_cli_outputs_policy_json(capsys) -> None:
     assert payload["name"] == "kontur"
     assert "pace browser and API actions through the selected delay profile" in payload["rules"]
     assert "verify authenticated state by DOM/cookies/URL, not by screenshot existence alone" in payload["rules"]
+    assert "wrap login/fetch/navigation waits in bounded timeouts and continue through the policy fallback path" in payload["rules"]

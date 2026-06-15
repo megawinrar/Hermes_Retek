@@ -10,6 +10,7 @@ from typing import Any
 
 import agent_workspace
 import rlm_store
+import web_parsing_policy
 
 try:
     from secret_patterns import redact_payload
@@ -138,6 +139,28 @@ def _route_summary(route: dict[str, Any]) -> dict[str, Any]:
         "process_plan": list(route.get("process_plan") or []),
         "needs_agents": bool(route.get("needs_agents")),
     }
+
+
+URL_RE = r"(?i)\bhttps?://[^\s)>\"]+|\b(?:[\w-]+\.)+(?:ru|com|org|net|io|рф)(?:/[^\s)>\"]*)?"
+
+
+def _first_url(text: str) -> str:
+    import re
+
+    match = re.search(URL_RE, text or "")
+    return match.group(0).rstrip(".,;") if match else ""
+
+
+def _parsing_policy_pack(*, route: dict[str, Any], task: str, acceptance: str) -> dict[str, Any]:
+    if str(route.get("task_type") or "") != "supplier_price_deadline_analysis":
+        return {}
+    try:
+        return web_parsing_policy.select_policy(url=_first_url(f"{task}\n{acceptance}"), task=f"{task}\n{acceptance}")
+    except Exception as exc:
+        return {
+            "status": "unavailable",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
 
 
 def _role_skill_summary(skill_context: dict[str, Any], role: str) -> dict[str, Any]:
@@ -408,6 +431,7 @@ def build_role_context_pack(
         "task": truncate_text(task),
         "acceptance": truncate_text(acceptance),
         "route": _route_summary(route),
+        "parsing_policy": _parsing_policy_pack(route=route, task=task, acceptance=acceptance),
         "role_skills": _role_skill_summary(skill_context, role),
         "workspace": _workspace_snapshot(process_id=process_id, role=role, workspace_root=workspace_root),
         "previous_attempts": _previous_attempts(assignments),

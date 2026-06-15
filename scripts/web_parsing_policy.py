@@ -19,6 +19,11 @@ AUTH_RE = re.compile(r"\b(login|auth|account|cookie|cookies|кабинет|ло�
 class ParsingPolicy:
     name: str
     mode: str
+    auth_strategy: str
+    public_fallback_allowed: bool
+    stop_on_failed_login: bool
+    login_timeout_seconds: int
+    query_timeout_seconds: int
     pace_profile: str
     min_delay_seconds: float
     max_delay_seconds: float
@@ -34,6 +39,11 @@ SITE_POLICIES = {
     "kontur": ParsingPolicy(
         name="kontur",
         mode="ui_seed_then_api_pagination",
+        auth_strategy="required_for_account_export",
+        public_fallback_allowed=False,
+        stop_on_failed_login=True,
+        login_timeout_seconds=20,
+        query_timeout_seconds=75,
         pace_profile="kontur",
         min_delay_seconds=1.25,
         max_delay_seconds=2.5,
@@ -46,7 +56,12 @@ SITE_POLICIES = {
     ),
     "b2b_center": ParsingPolicy(
         name="b2b_center",
-        mode="persistent_browser_login_then_ui_search",
+        mode="persistent_browser_optional_login_then_ui_search",
+        auth_strategy="try_login_then_public_results_fallback",
+        public_fallback_allowed=True,
+        stop_on_failed_login=False,
+        login_timeout_seconds=15,
+        query_timeout_seconds=60,
         pace_profile="cautious",
         min_delay_seconds=2.5,
         max_delay_seconds=6.0,
@@ -95,6 +110,11 @@ def default_policy(*, requires_auth: bool, export_task: bool) -> ParsingPolicy:
         return ParsingPolicy(
             name="default_authenticated",
             mode="browser_first_then_structured_extract",
+            auth_strategy="required_unless_public_results_visible",
+            public_fallback_allowed=True,
+            stop_on_failed_login=False,
+            login_timeout_seconds=20,
+            query_timeout_seconds=60,
             pace_profile="cautious",
             min_delay_seconds=2.0,
             max_delay_seconds=5.0,
@@ -108,6 +128,11 @@ def default_policy(*, requires_auth: bool, export_task: bool) -> ParsingPolicy:
     return ParsingPolicy(
         name="default_public",
         mode="structured_fetch_with_browser_fallback",
+        auth_strategy="not_required",
+        public_fallback_allowed=True,
+        stop_on_failed_login=False,
+        login_timeout_seconds=0,
+        query_timeout_seconds=45,
         pace_profile="human",
         min_delay_seconds=1.0,
         max_delay_seconds=2.0,
@@ -140,6 +165,8 @@ def select_policy(*, url: str = "", task: str = "", requires_auth: bool | None =
         "capture screenshot/source when selectors, exports, or auth state fail",
         "write compact lessons to RLM without raw secrets",
         "verify authenticated state by DOM/cookies/URL, not by screenshot existence alone",
+        "do not stop solely because login failed when public results or useful page content are visible",
+        "wrap login/fetch/navigation waits in bounded timeouts and continue through the policy fallback path",
         "do not call browser vision when the configured model lacks image input support",
     ]
     if policy.name == "b2b_center":
@@ -148,6 +175,8 @@ def select_policy(*, url: str = "", task: str = "", requires_auth: bool | None =
                 "use a persistent profile and preserve cookies between attempts",
                 "accept or close cookie notices before login",
                 "keep user-agent, viewport, locale, and browser client hints consistent",
+                "login is optional for public marketplace search; save auth=false and continue if result cards are visible",
+                "parse result anchors/cards and surrounding row text; do not require an exact Russian text prefix",
                 "treat browser unsupported/cookies disabled banners as recoverable setup errors",
                 "do not conclude proxy/stealth failure until a visible or persistent-profile login was attempted",
             ]

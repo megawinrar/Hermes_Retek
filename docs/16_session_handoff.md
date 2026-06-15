@@ -1012,3 +1012,35 @@ cleanup:
 remaining:
 - next live B2B retry should start from a fresh Telegram/process turn so stale context does not keep referencing the old blocked b2b-search.js flow.
 ```
+
+Follow-up after next live B2B retry:
+
+```text
+date: 2026-06-16
+observed:
+- Hermes successfully passed marketplace guard after process approval: write_file and execute_code created /opt/data/rebrowser/b2b-search.js, b2b-search-v2.js, and b2b-search-v3.js.
+- Bot1/Bot2 process routing was correct: supplier_price_deadline_analysis L2, process plan router/supervisor/bot1/bot2, no extra tester/architect/devops roles.
+- RLM was writable and recorded skill/process/Bot2 records.
+- v3 script ran node/chrome for about 3 minutes, then exited without updating /opt/data/rebrowser/b2b-results.json.
+- existing b2b-results.json still had 4 queries, zero parsed sales, and a global archive total 2425111, which means the parser read the site-wide count and used overly strict text parsing.
+root cause shifted from infrastructure to parser strategy:
+- generated script treated login as mandatory (`if (!loggedIn) return`) even though the public search/list page was visible;
+- AJAX login/fetch was not bounded tightly enough;
+- parser looked for exact lines starting with `Объявление о`, instead of anchors/cards and nearby row text;
+- the script did not save per-query source/screenshot after failed auth/public fallback.
+fixes:
+- scripts/web_parsing_policy.py now includes auth_strategy, public_fallback_allowed, stop_on_failed_login, login_timeout_seconds, and query_timeout_seconds.
+- B2B policy is now persistent_browser_optional_login_then_ui_search:
+  try login with a hard timeout, but continue public search with auth=false if result cards are visible.
+- default authenticated policy also allows public fallback when useful public content is visible.
+- scripts/process_context_pack.py now injects the selected parsing_policy into Bot1/Bot2 startup context packs for supplier/browser parsing tasks.
+- skills/hermes-browser/SKILL.md now explicitly says auth is a capability, not a stop condition, and marketplace parsers must parse cards/links, not only exact heading text.
+- live server RLM lesson written:
+  kind=browser_lesson, id=16, title="B2B public fallback after failed login".
+tests:
+- focused pytest: 13 passed
+- full local pytest: 345 passed
+next retry expectation:
+- Bot1 should not stop on failed B2B login if public results are visible.
+- It should write auth=false, save screenshot/source, parse links/cards, throttle requests, and let Bot2 judge whether public data satisfies the task.
+```

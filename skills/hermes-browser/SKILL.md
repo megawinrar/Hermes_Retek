@@ -63,7 +63,13 @@ Each session stores:
 8. Verify login by page state, not by screenshot existence: account/user UI,
    authenticated cookies, non-login URL, and absence of cookie-disabled or
    unsupported-browser banners.
-9. Do not add stealth plugins, CAPTCHA solving, or fingerprint spoofing. Normal
+9. Treat authentication as a capability, not a stop condition. If login fails
+   but public result cards, links, or useful page content are visible, continue
+   in public mode, record `auth=false`, save screenshot/source, and let Bot#2
+   review whether the task truly required private account access.
+10. Bound every login/fetch/navigation wait. A Puppeteer script must use page
+   timeouts and fetch aborts; never wait indefinitely for AJAX login.
+11. Do not add stealth plugins, CAPTCHA solving, or fingerprint spoofing. Normal
    browser configuration, persistent profile, and an ordinary user-agent override
    are allowed for compatibility.
 
@@ -115,7 +121,10 @@ For any new site:
    date window, cursor, or downloaded file.
 6. If the site refuses, slows, or returns limits, reduce chunk size and
    parallelism before declaring the parser broken.
-7. If login shows a cookie-disabled or unsupported-browser banner, treat it as a
+7. For marketplace/public searches, parse result anchors/cards and surrounding
+   row text. Do not require one exact heading prefix such as `Объявление о`;
+   sites change copy while links/cards remain stable.
+8. If login shows a cookie-disabled or unsupported-browser banner, treat it as a
    browser setup failure: close/accept cookie notices, keep profile/cookies,
    align UA/viewport/locale/client hints, and retry in visible or persistent
    profile mode before blaming the website.

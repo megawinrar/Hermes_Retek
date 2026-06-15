@@ -38,6 +38,18 @@ def skill_context() -> dict[str, object]:
     }
 
 
+def supplier_route() -> dict[str, object]:
+    return {
+        "task_level": "L2",
+        "task_type": "supplier_price_deadline_analysis",
+        "risk_level": "high",
+        "review_required": True,
+        "human_gate_required": False,
+        "process_plan": ["router", "supervisor", "bot1", "bot2"],
+        "needs_agents": False,
+    }
+
+
 def test_build_role_context_pack_includes_route_workspace_rlm_and_redacts_sensitive_values(tmp_path: Path) -> None:
     process_id = "proc-context-pack"
     rlm_path = tmp_path / "rlm.db"
@@ -138,6 +150,33 @@ def test_expanded_context_budget_for_complex_retry_and_kontur_tasks() -> None:
         10000,
         route={"task_level": "L4", "task_type": "code_or_deploy_project", "risk_level": "high"},
     ) == 5000
+
+
+def test_supplier_context_pack_includes_b2b_public_fallback_policy(tmp_path: Path) -> None:
+    pack = process_context_pack.build_role_context_pack(
+        role="bot1",
+        process_id="proc-b2b-policy",
+        task="Спарси https://www.b2b-center.ru/market/ по Р6М5 и Р18 через Puppeteer",
+        acceptance="Save JSON results and evidence.",
+        route=supplier_route(),
+        skill_context={
+            "task_tags": ["browser", "supplier"],
+            "selected_skills": [{"name": "hermes-browser", "path": "skills/hermes-browser/SKILL.md"}],
+            "roles": {"bot1": [{"name": "hermes-browser", "path": "skills/hermes-browser/SKILL.md"}]},
+            "gated_roles": {},
+            "runtime_contract": {},
+        },
+        rlm_store_path=tmp_path / "rlm.db",
+        workspace_root=str(tmp_path / "workspaces"),
+        token_budget=180,
+    )
+
+    policy = pack["parsing_policy"]
+    assert policy["name"] == "b2b_center"
+    assert policy["public_fallback_allowed"] is True
+    assert policy["stop_on_failed_login"] is False
+    assert policy["login_timeout_seconds"] == 15
+    assert "login is optional for public marketplace search; save auth=false and continue if result cards are visible" in policy["rules"]
 
 
 def test_context_pack_rebuilds_from_process_events_assignments_and_human_decision(tmp_path: Path) -> None:
