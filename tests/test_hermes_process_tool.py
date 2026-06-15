@@ -32,8 +32,40 @@ def test_build_run_command_defaults_to_live_process() -> None:
     assert "--live-route-audit" in cmd
     assert "--notify-telegram" in cmd
     assert "--notification-dry-run" not in cmd
+    assert cmd[cmd.index("--rlm-store") + 1] == "/opt/data/rlm_store.db"
+    assert "--rlm-enabled" in cmd
     assert cmd[cmd.index("--bot1-model") + 1] == "auto"
     assert cmd[cmd.index("--bot2-model") + 1] == "auto"
+
+
+def test_build_run_command_can_disable_rlm() -> None:
+    tool = load_tool()
+    cmd = tool.build_command({"action": "run", "task": "No memory write", "rlm_enabled": False})
+
+    assert "--rlm-store" not in cmd
+    assert "--rlm-enabled" not in cmd
+
+
+def test_build_run_command_treats_null_rlm_enabled_as_default() -> None:
+    tool = load_tool()
+    cmd = tool.build_command({"action": "run", "task": "Use default memory setting", "rlm_enabled": None})
+
+    assert cmd[cmd.index("--rlm-store") + 1] == "/opt/data/rlm_store.db"
+    assert "--rlm-enabled" in cmd
+
+
+def test_build_run_command_accepts_custom_rlm_store() -> None:
+    tool = load_tool()
+    cmd = tool.build_command(
+        {
+            "action": "run",
+            "task": "Use custom memory",
+            "rlm_store": "/tmp/custom-rlm.db",
+        }
+    )
+
+    assert cmd[cmd.index("--rlm-store") + 1] == "/tmp/custom-rlm.db"
+    assert "--rlm-enabled" in cmd
 
 
 def test_build_run_command_passes_bounded_parallel_options() -> None:
@@ -72,6 +104,9 @@ def test_tool_schema_exposes_bounded_parallel_options() -> None:
         "bothub_requests_per_minute",
     ]:
         assert properties[name]["type"] == "integer"
+    assert properties["rlm_enabled"]["type"] == "boolean"
+    assert properties["rlm_enabled"]["default"] is True
+    assert properties["rlm_store"]["default"] == "/opt/data/rlm_store.db"
 
 
 def test_build_decide_command_validates_choice() -> None:
@@ -97,6 +132,8 @@ def test_build_continue_command_defaults_to_auto_and_notifications() -> None:
     assert cmd[cmd.index("--mode") + 1] == "auto"
     assert cmd[cmd.index("--bot1-model") + 1] == "auto"
     assert cmd[cmd.index("--bot2-model") + 1] == "auto"
+    assert cmd[cmd.index("--rlm-store") + 1] == "/opt/data/rlm_store.db"
+    assert "--rlm-enabled" in cmd
     assert "--notify-telegram" in cmd
     assert "--notification-dry-run" not in cmd
 
@@ -219,6 +256,7 @@ def test_execute_runs_orchestrator_in_process() -> None:
         tool.DEFAULT_ORCHESTRATOR = ROOT / "scripts" / "process_orchestrator.py"
         tool.DEFAULT_PROCESS_STORE = str(Path(tmp) / "process.db")
         tool.DEFAULT_SUPERVISOR_STORE = str(Path(tmp) / "supervisor.db")
+        tool.DEFAULT_RLM_STORE = str(Path(tmp) / "rlm.db")
         tool._ORCHESTRATOR_CACHE = None
 
         run_result = json.loads(
@@ -299,6 +337,8 @@ def test_execute_in_process_passes_bounded_parallel_options() -> None:
     assert captured["agent_max_tokens"] == 800
     assert captured["bothub_max_parallel_calls"] == 2
     assert captured["bothub_requests_per_minute"] == 15
+    assert captured["rlm_enabled"] is True
+    assert captured["rlm_store"] == "/opt/data/rlm_store.db"
 
 
 def test_execute_reports_nonzero_exit(monkeypatch) -> None:
@@ -329,3 +369,5 @@ def test_subprocess_env_moves_runtime_state_to_opt_data(monkeypatch) -> None:
     assert env["SUPERVISOR_STORE_PATH"] == "/opt/data/supervisor_store.db"
     assert env["DUAL_BOT_LAB_STORE"] == "/opt/data/dual_bot_lab_store.db"
     assert env["DUAL_BOT_REPORT_DIR"] == "/opt/data/reports"
+    assert env["HERMES_RLM_ENABLED"] == "1"
+    assert env["HERMES_RLM_STORE_PATH"] == "/opt/data/rlm_store.db"

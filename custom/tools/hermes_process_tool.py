@@ -43,6 +43,8 @@ DEFAULT_PROCESS_STORE = os.environ.get("HERMES_PROCESS_STORE", "/opt/data/proces
 DEFAULT_SUPERVISOR_STORE = os.environ.get("HERMES_SUPERVISOR_STORE", "/opt/data/supervisor_store.db")
 DEFAULT_DUAL_BOT_STORE = os.environ.get("DUAL_BOT_LAB_STORE", "/opt/data/dual_bot_lab_store.db")
 DEFAULT_DUAL_BOT_REPORT_DIR = os.environ.get("DUAL_BOT_REPORT_DIR", "/opt/data/reports")
+DEFAULT_RLM_STORE = os.environ.get("HERMES_RLM_STORE", os.environ.get("HERMES_RLM_STORE_PATH", "/opt/data/rlm_store.db"))
+DEFAULT_RLM_ENABLED = os.environ.get("HERMES_RLM_ENABLED", "1")
 DEFAULT_EXECUTION_MODE = os.environ.get("HERMES_PROCESS_EXECUTION_MODE", "in_process")
 
 JSON_OUTPUT_ACTIONS = {"route", "run", "show", "transcript", "decide", "continue"}
@@ -107,6 +109,28 @@ def _base_command() -> list[str]:
     ]
 
 
+def _rlm_enabled(args: dict[str, Any] | None = None) -> bool:
+    args = args or {}
+    if args.get("rlm_enabled") is not None:
+        return _as_bool(args.get("rlm_enabled"), False)
+    return _as_bool(DEFAULT_RLM_ENABLED, True)
+
+
+def _rlm_store(args: dict[str, Any] | None = None) -> str:
+    args = args or {}
+    return _text(args.get("rlm_store"), DEFAULT_RLM_STORE).strip()
+
+
+def _append_rlm_options(cmd: list[str], args: dict[str, Any]) -> list[str]:
+    if not _rlm_enabled(args):
+        return cmd
+    store = _rlm_store(args)
+    if store:
+        cmd += ["--rlm-store", store]
+    cmd.append("--rlm-enabled")
+    return cmd
+
+
 def _append_parallel_run_options(cmd: list[str], args: dict[str, Any]) -> list[str]:
     for key, (flag, minimum, maximum) in PARALLEL_RUN_OPTIONS.items():
         if args.get(key) is None:
@@ -131,6 +155,7 @@ def build_command(args: dict[str, Any]) -> list[str]:
         task = _text(args.get("task")).strip()
         if not task:
             raise ValueError("task is required for run")
+        cmd = _append_rlm_options(cmd, args)
         cmd += [
             "run",
             "--task",
@@ -176,6 +201,7 @@ def build_command(args: dict[str, Any]) -> list[str]:
         ]
 
     if action == "continue":
+        cmd = _append_rlm_options(cmd, args)
         result = [
             *cmd,
             "continue",
@@ -214,6 +240,8 @@ def _subprocess_env() -> dict[str, str]:
     env.setdefault("SUPERVISOR_STORE_PATH", DEFAULT_SUPERVISOR_STORE)
     env.setdefault("DUAL_BOT_LAB_STORE", DEFAULT_DUAL_BOT_STORE)
     env.setdefault("DUAL_BOT_REPORT_DIR", DEFAULT_DUAL_BOT_REPORT_DIR)
+    env.setdefault("HERMES_RLM_STORE_PATH", DEFAULT_RLM_STORE)
+    env.setdefault("HERMES_RLM_ENABLED", "1" if _rlm_enabled({}) else "0")
     return env
 
 
@@ -255,10 +283,12 @@ def _load_orchestrator() -> Any:
     return module
 
 
-def _common_namespace() -> dict[str, Any]:
+def _common_namespace(args: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "process_store": DEFAULT_PROCESS_STORE,
         "supervisor_store": DEFAULT_SUPERVISOR_STORE,
+        "rlm_store": _rlm_store(args),
+        "rlm_enabled": _rlm_enabled(args),
     }
 
 
@@ -272,7 +302,7 @@ def _run_namespace(args: dict[str, Any]) -> SimpleNamespace:
         for key, (_flag, minimum, maximum) in PARALLEL_RUN_OPTIONS.items()
     }
     return SimpleNamespace(
-        **_common_namespace(),
+        **_common_namespace(args),
         **parallel_options,
         task=_text(args.get("task")).strip(),
         acceptance=_text(args.get("acceptance"), "Result must satisfy the task with concrete evidence and risk notes."),
@@ -322,7 +352,7 @@ def run_orchestrator_in_process(args: dict[str, Any]) -> Any:
             raise ValueError("choice must be yes or no")
         return orchestrator.decide_process(
             SimpleNamespace(
-                **_common_namespace(),
+                **_common_namespace(args),
                 process_id=process_id,
                 choice=choice,
                 reason=_text(args.get("reason")),
@@ -332,7 +362,7 @@ def run_orchestrator_in_process(args: dict[str, Any]) -> Any:
     if action == "continue":
         return orchestrator.continue_process(
             SimpleNamespace(
-                **_common_namespace(),
+                **_common_namespace(args),
                 process_id=process_id,
                 mode=_text(args.get("mode"), "auto"),
                 bot1_model=_text(args.get("bot1_model"), "auto"),
@@ -556,6 +586,16 @@ TOOL_SCHEMA = {
             "no_route_audit_cache": {"type": "boolean", "default": False},
             "notify_telegram": {"type": "boolean", "default": True, "description": "Send human-gate notification with Telegram Supervisor buttons when human decision is required."},
             "notification_dry_run": {"type": "boolean", "default": False},
+            "rlm_enabled": {
+                "type": "boolean",
+                "default": True,
+                "description": "Write compact process learning records into the Hermes RLM store for run/continue.",
+            },
+            "rlm_store": {
+                "type": "string",
+                "default": DEFAULT_RLM_STORE,
+                "description": "SQLite path for RLM records. Defaults to the mounted Hermes data volume.",
+            },
             "bot1_model": {"type": "string", "default": "auto"},
             "bot2_model": {"type": "string", "default": "auto"},
             "timeout": {"type": "integer", "default": 240, "minimum": 30, "maximum": 900},

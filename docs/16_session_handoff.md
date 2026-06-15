@@ -140,14 +140,19 @@ Focused coverage added:
 Latest local verification in this workspace:
 
 ```text
-pytest: 270 passed
-coverage over scripts/: 70%
+pytest: 273 passed
+coverage over production/custom/scripts code: 74%
+coverage full report including tests: 83%
 context_budget.py coverage: 96%
 supervisor_common.py coverage: 91%
 supervisor_run.py coverage: 73%
 supervisor_status.py coverage: 53%
 supervisor_task.py coverage: 55%
 tool_gateway.py coverage: 76%
+custom/tools/hermes_process_tool.py coverage: 79%
+process_orchestrator.py coverage: 70%
+process_rlm_memory.py coverage: 99%
+rlm_store.py coverage: 73%
 ```
 
 Additional narrow coverage added after the previous baseline:
@@ -163,13 +168,23 @@ Additional narrow coverage added after the previous baseline:
 - `context_budget` in-process CLI tests for text/file inputs, conflicting input
   rejection, missing input rejection, invalid token counts, and raw prompt
   non-disclosure.
+- `hermes_process_tool` default RLM flags for `run` and `continue`;
+- explicit `rlm_enabled=false` opt-out and `rlm_enabled=null` default fallback;
+- custom RLM store path plumbing through the tool adapter;
+- `kontur-parser` skill selection for supplier/browser routes.
 
 ## GitHub Stop Marker
 
-Stop marker for this session:
+Previous stop marker:
 
 ```text
 handoff-20260615-coverage70-server
+```
+
+Current stop marker after this continuation:
+
+```text
+handoff-20260615-rlm-live-kontur
 ```
 
 This marker points to the GitHub branch state after:
@@ -178,6 +193,14 @@ This marker points to the GitHub branch state after:
 - gateway/supervisor/context-budget narrow tests were added;
 - the latest reviewed files were overlaid onto the Yandex server without
   switching production away from `custom`.
+
+The current marker additionally points to:
+
+- live RLM enablement through `hermes_process_tool`;
+- `kontur-parser` skill and manifest/test coverage;
+- server-side Kontur browser script credential sanitization;
+- `/opt/data/rlm_store.db` smoke write;
+- server overlay/restart notes for the Docker file bind mount.
 
 ## Server Deploy
 
@@ -265,6 +288,135 @@ containers: hermes-agent Up, hermes-yandex-proxy Up/healthy
 restart performed: no
 ```
 
+## Latest Continuation: RLM Live Enablement and Kontur Skill
+
+Implemented after the `handoff-20260615-coverage70-server` marker:
+
+- `custom/tools/hermes_process_tool.py`
+  - defaults RLM writes on for `run` and `continue`;
+  - passes `rlm_store` and `rlm_enabled` into in-process namespaces;
+  - sets subprocess env defaults:
+    - `HERMES_RLM_STORE_PATH=/opt/data/rlm_store.db`
+    - `HERMES_RLM_ENABLED=1`
+  - keeps `rlm_enabled=false` as the safe opt-out.
+- `tests/test_hermes_process_tool.py`
+  - covers default RLM flags;
+  - covers explicit disable;
+  - covers `null`/missing default behavior;
+  - covers custom store path;
+  - isolates in-process RLM test writes into a temp SQLite file.
+- `skills/kontur-parser/SKILL.md`
+  - adds a narrow Kontur domain skill over `hermes-browser`;
+  - documents `/opt/data/rebrowser` state, cookies, scripts, artifacts, and
+    RLM lessons;
+  - explicitly forbids hard-coded/printed passwords, cookie values, tokens, and
+    `auth.sid`.
+- `skills/manifest.json`
+  - adds `kontur-parser` as an on-demand supplier/browser/auth skill.
+- `tests/test_skill_index.py`
+  - verifies supplier browser tasks select both `hermes-browser` and
+    `kontur-parser`.
+
+Local verification after these changes:
+
+```text
+pytest: 273 passed
+focused RLM/tool/skill tests: 39 passed
+secret_audit current tree: 0 findings
+coverage production/custom/scripts: 74%
+coverage full report including tests: 83%
+```
+
+Server operational fixes in the same continuation:
+
+- sanitized raw Kontur credentials out of these runtime JS files:
+  - `/opt/data/rebrowser/debug-dates.js`
+  - `/opt/data/rebrowser/debug-leak.js`
+  - `/opt/data/rebrowser/debug-login.js`
+  - `/opt/data/rebrowser/dump-grid.js`
+  - `/opt/data/rebrowser/login-kontur.js`
+  - `/opt/data/rebrowser/search-batches.js`
+  - `/opt/data/rebrowser/search-kontur.js`
+- runtime scripts now use existing cookies first and only read
+  `KONTUR_EMAIL`/`KONTUR_PASSWORD` from environment when explicitly set;
+- `cookies.json` and `session-state.json` are mode `0600`;
+- runtime JS syntax check passed with `node --check`;
+- deleted 19 macOS `._*` AppleDouble files from `/opt/hermes-assistant`;
+- kept a deletion list at:
+
+```text
+/home/yc-user/hermes-file-deploy-backups/appledouble-clean-20260615T023237Z/appledouble-files.txt
+```
+
+Server overlays in this continuation:
+
+```text
+RLM tool backup:
+/home/yc-user/hermes-file-deploy-backups/rlm-tool-20260615T022424Z
+
+Kontur skill backup:
+/home/yc-user/hermes-file-deploy-backups/kontur-skill-20260615T023046Z
+```
+
+Files overlaid on `/opt/hermes-assistant`:
+
+- `custom/tools/hermes_process_tool.py`
+- `tests/test_hermes_process_tool.py`
+- `skills/manifest.json`
+- `skills/kontur-parser/SKILL.md`
+- `tests/test_skill_index.py`
+
+Files overlaid on live skill storage:
+
+- `/opt/data/skills/manifest.json`
+- `/opt/data/skills/kontur-parser/SKILL.md`
+
+Server verification after overlay:
+
+```text
+server branch: custom
+server head: 908cd72
+server focused pytest after RLM overlay: 27 passed
+server focused pytest after skill overlay: 36 passed
+server pytest warning: could not create .pytest_cache under /opt/hermes-assistant
+server secret_audit on changed files: 0 findings
+hermes-agent: Up
+hermes-yandex-proxy: Up/healthy
+```
+
+Important Docker note:
+
+- `/opt/hermes-assistant/custom/tools/hermes_process_tool.py` is file-mounted
+  into the container as `/opt/hermes/tools/hermes_process_tool.py`;
+- replacing the host file with `install` changes the host inode, so the running
+  container kept the old mounted inode;
+- `hermes-agent` was restarted briefly to rebind the updated file;
+- a second brief restart was done after adding `kontur-parser` so the gateway
+  reloads the skill list.
+
+RLM live smoke after restart:
+
+```text
+tool path: /opt/hermes/tools/hermes_process_tool.py
+rlm_store: /opt/data/rlm_store.db
+has_rlm_enabled: true
+execute_ok: true
+status: approved
+process_id: proc-20260615-022720-2e15af
+rlm_records_after_smoke: 2
+latest record kinds: process_summary, bot_output
+```
+
+Kontur runtime status observed before fixes:
+
+- cookies were alive and Kontur Grid opened;
+- Hermes found `2 796` закупок for `Д16Т`;
+- Excel export did not download a file;
+- Python parsing failed because `bs4` was missing in the container;
+- logs showed `skill 'kontur-parser' not found`; this is fixed by the new skill;
+- logs also showed BotHub read timeouts/interruptions and
+  `Memory is not available`, which are still separate runtime issues.
+
 Known server risk:
 
 - A broad secret audit over all server `custom/` still reports old findings in:
@@ -328,24 +480,22 @@ Implemented status as of `1e8b0b4`:
 - `continue` after human YES rebuilds packs from process SQLite/RLM and passes
   Bot2 required fixes back into Bot1;
 - L0/simple L1 paths do not load memory by default unless RLM is enabled;
-- production `/opt/hermes-assistant` was not touched in this continuation.
+- `hermes_process_tool` now enables RLM for live `run`/`continue` by default;
+- production `/opt/hermes-assistant` remained on branch `custom`; only file
+  overlays and brief `hermes-agent` restarts were performed.
 
 ## Next Session First Prompt
 
 Use this in the next Codex chat:
 
 ```text
-Продолжи Hermes Retek с docs/16_session_handoff.md. Рабочая ветка ops-safe-restart-speed. GitHub ветка с текущей работой: ops-safe-restart-speed-g3-rlm-20260615. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения. Сначала проверь git status, затем продолжай с Bot1/Bot2 durable context pack: старт новых коротких сессий из RLM/process SQLite, без бесконечного чата и без потери контекста.
+Продолжи Hermes Retek с docs/16_session_handoff.md. Рабочая ветка ops-safe-restart-speed. GitHub ветка с текущей работой: ops-safe-restart-speed-g3-rlm-20260615. Не переключай production /opt/hermes-assistant с ветки custom без явного разрешения. Сначала проверь git status, затем проверь сервер: hermes-agent/hermes-yandex-proxy, /opt/data/rlm_store.db, skill kontur-parser, и свежие логи Hermes. Дальше продолжай Kontur workflow: Excel export, RLM lessons, missing deps, и runtime memory diagnostics.
 ```
 
 ## Recommended Next Work
 
-1. Add compact context-pack builder for Bot1/Bot2 session startup:
-   - process state;
-   - RLM records;
-   - last Bot1/Bot2/human events;
-   - selected skills;
-   - workspace metadata.
+1. Re-run the Kontur Excel export path and capture exact selectors/endpoints
+   into RLM and `kontur-parser` after a successful export.
 2. Add compaction records:
 
 ```text
@@ -364,3 +514,8 @@ metadata={parent_process_id, child_agent_id, depth, timeout, token_budget}
 4. Clean old server-side secret placeholders/findings in `custom/config`.
 5. Decide whether to install a lightweight test runner on the server or keep
    server verification to syntax/smoke checks.
+6. Install or vendor the browser parsing dependencies Hermes tried to use
+   (`bs4`, and possibly `requests`, `pandas`, `openpyxl`) only if the next
+   Kontur workflow still needs Python HTML/Excel parsing.
+7. Investigate runtime `Memory is not available` in Hermes logs now that RLM
+   process memory is active through `hermes_process_tool`.

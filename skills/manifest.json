@@ -113,6 +113,19 @@
       "levels": ["L2", "L3", "L4"]
     },
     {
+      "name": "kontur-parser",
+      "path": "skills/kontur-parser/SKILL.md",
+      "description": "Kontur Zakupki authenticated supplier search and evidence capture.",
+      "tags": ["browser", "supplier", "research", "kontur", "auth"],
+      "worker_roles": ["bot1", "tester"],
+      "risk_level": "medium",
+      "script_presence": true,
+      "network_required": true,
+      "auth_required": true,
+      "load_policy": "on_demand",
+      "levels": ["L2", "L3", "L4"]
+    },
+    {
       "name": "hermes-devops",
       "path": "skills/hermes-devops/SKILL.md",
       "description": "CI/CD, Docker, infrastructure and deployment operations.",

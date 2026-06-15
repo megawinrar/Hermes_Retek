@@ -96,7 +96,9 @@ def test_on_demand_browser_skill_loads_only_for_supplier_browser_tasks() -> None
     )
 
     assert "hermes-browser" not in names(generic["selected_skills"])
+    assert "kontur-parser" not in names(generic["selected_skills"])
     assert "hermes-browser" in names(supplier["selected_skills"])
+    assert "kontur-parser" in names(supplier["selected_skills"])
 
 
 def test_on_demand_browser_selection_is_not_sticky_after_cache() -> None:
