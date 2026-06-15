@@ -1044,3 +1044,101 @@ next retry expectation:
 - Bot1 should not stop on failed B2B login if public results are visible.
 - It should write auth=false, save screenshot/source, parse links/cards, throttle requests, and let Bot2 judge whether public data satisfies the task.
 ```
+
+Follow-up after parser/RLM/provider runtime patch and timing debug:
+
+```text
+date: 2026-06-16
+branch: browser-logic-policy-20260615
+github commit: 4c73ff6 fix: checkpoint parser results and provider failures
+server production branch: custom
+server production head before/after overlay: 908cd72
+important constraint: /opt/hermes-assistant was not switched away from custom.
+
+runtime patch deployed:
+- hermes-core/agent/conversation_loop.py:
+  HERMES_RETEK_PROVIDER_ERROR_GUIDANCE_PATCH
+  Known BotHub/provider errors now return actionable Telegram text instead of generic provider failed.
+- hermes-core/agent/turn_context.py:
+  HERMES_RETEK_CONTEXT_CIRCUIT_BREAKER_PATCH
+  Large context warning/forced compression before the next provider call.
+- hermes-core/agent/tool_executor.py:
+  HERMES_RETEK_PARSER_RESULT_RLM_HOOK
+  Successful parser artifacts from /opt/data/rebrowser/*.csv|*.json are checkpointed to RLM without duplicate spam.
+
+server backup:
+/home/yc-user/hermes-file-deploy-backups/rlm-provider-context-20260615T234333Z
+
+restart:
+safe restart dry-run: no_active_work
+safe restart: restart_completed, forced=false, reason=rlm_provider_context_patch
+
+tests:
+local pytest: 361 passed
+server focused pytest: 28 passed
+server main repo tests: 345 passed
+server full pytest without scope is not valid because it collects backups/ and hermes-core/tests without dev deps.
+focused coverage over new runtime/RLM/provider modules: 61%
+
+RLM marker:
+id=18
+kind=ops_change
+title=Runtime parser/RLM/provider guard deployed
+
+timing debug snapshot:
+live 60s observation after restart:
+- no new Hermes log lines during the watch window
+- hermes-agent CPU stayed ~0.48-0.58%
+- hermes-agent memory stayed ~198.7 MiB / 2 GiB
+- docker stats before watch: CPU 0.37%, memory 127.5 MiB / 2 GiB
+- host RAM available: ~3.1 GiB
+- disk /: 13G used, 16G free, 46%
+- safe restart dry-run after debug: no_active_work
+
+top slow tools in the last 6h:
+- execute_code 240.20s at 2026-06-15T20:30:47Z; node/Puppeteer subprocess timed out.
+- execute_code 120.30s at 2026-06-15T19:55:17Z; node/Puppeteer subprocess timed out.
+- delegate_task 120.26s at 2026-06-15T22:12:01Z; subagent timed out after 120s with 7 API calls.
+- hermes_process 8.35s at 2026-06-15T22:07:51Z; OperationalError unable to open database file, before later DB/RLM permission fixes.
+- Bot2 route audits around 6.7-11.2s when using gpt-5.3-codex.
+
+current process/supervisor state:
+- no OS-level stuck node/chrome/puppeteer process found.
+- fresh B2B process records from 22:07/22:11 were blocked as superseded_by_hotfix.
+- successful process records around 22:17 are approved.
+- old non-final process/supervisor records remain from smoke/dogfood tasks:
+  accepted_by_user_override: proc-20260615-220856-101d0b / sup-20260615-220856-0cd53e
+  awaiting_human_decision and return_to_bot1 records from 2026-06-14 smoke tasks.
+
+state.db session finding:
+- 24 sessions have ended_at=NULL.
+- largest open Telegram session:
+  id=20260615_043226_a2a3a4b3
+  age ~19.4h
+  messages=322
+  tools=133
+  api_calls=238
+  input_tokens=21666859
+  title=Task List Context Clarification
+- newest open Telegram session:
+  id=20260615_221001_825410
+  age ~1.8h
+  messages=17
+  tools=10
+  api_calls=6
+  input_tokens=37193
+
+diagnosis:
+- There is no live CPU/memory/browser hang after restart.
+- The real latency risks are bounded but too-long tool subprocesses (120-240s), one delegate_task timeout, and stale open sessions with huge accumulated context.
+- The large open Telegram session can still cause expensive/slow turns if Hermes resumes it instead of starting fresh or checkpointing through RLM.
+
+recommended next fix:
+1. Add stale-session cleanup/audit:
+   mark ended_at/end_reason for old open cron/cli sessions and old Telegram sessions that are not the newest active chat thread.
+2. Add hard per-tool timeout policy for parser execute_code/node:
+   browser parser scripts should use 45-90s phase timeouts and save partial artifacts/source/screenshot before exit.
+3. Add delegate_task watchdog:
+   after 90-120s, child agent should return partial summary/RLM checkpoint instead of silent timeout.
+4. Add timing report output to /opt/data/reports on every debug run, so the next session does not need to rediscover the same facts from Docker logs.
+```
