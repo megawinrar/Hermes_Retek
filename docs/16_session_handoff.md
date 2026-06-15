@@ -746,6 +746,59 @@ Rollback model:
   `custom`; do not use `git checkout`, `git pull`, or `git reset` there unless
   explicitly approved.
 
+Server rollout:
+
+```text
+server: yc-user@89.169.142.160
+production path: /opt/hermes-assistant
+server branch: custom
+server head: 908cd72
+GitHub branch: browser-logic-policy-20260615
+source commit: 8a7a3b2 feat: add generic browser parsing policy
+staging: /home/yc-user/hermes-deploy-staging-browser-logic-20260615T192042Z
+backup: /home/yc-user/hermes-file-deploy-backups/browser-logic-20260615T192042Z
+```
+
+Files overlaid on `/opt/hermes-assistant`:
+
+- `custom/tools/hermes_process_tool.py`
+- `docs/16_session_handoff.md`
+- `scripts/browser_pacing.py`
+- `scripts/hermes_browser_session.py`
+- `scripts/kontur_api_normalizer.py`
+- `scripts/kontur_export_strategy.py`
+- `scripts/kontur_search_strategy.py`
+- `scripts/process_orchestrator.py`
+- `scripts/task_router.py`
+- `scripts/web_parsing_policy.py`
+- `skills/manifest.json`
+- `skills/hermes-browser/SKILL.md`
+- `skills/kontur-parser/SKILL.md`
+- focused tests for the files above.
+
+Files also overlaid on live skill storage:
+
+- `/opt/data/skills/manifest.json`
+- `/opt/data/skills/hermes-browser/SKILL.md`
+- `/opt/data/skills/kontur-parser/SKILL.md`
+
+Server verification:
+
+```text
+syntax compile without pyc writes: syntax_compile_ok 9
+server changed-file secret_audit: 0 findings
+host/browser policy smoke: server_browser_logic_smoke_ok
+container browser policy smoke: kontur ui_seed_then_api_pagination kontur 1
+hermes_process registered in terminal toolset: true
+hermes-agent restart: completed, forced=false, reason=browser_logic_policy_rollout
+containers: hermes-agent Up, hermes-yandex-proxy Up/healthy
+BotHub env: OPENAI_BASE_URL=https://openai.bothub.chat/v1, OPENAI_MODEL=deepseek-v4-flash
+```
+
+Server focused pytest was not run because neither the host nor the container
+currently exposes pytest through `python3 -m pytest`; runtime smoke checks were
+used instead. Local full pytest for the same commit passed with `328 passed`.
+
 ## Next Session First Prompt
 
 Use this in the next Codex chat:
