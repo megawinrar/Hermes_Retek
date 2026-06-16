@@ -1260,3 +1260,48 @@ what to watch next:
 - If a session reaches block_llm, Hermes should compress first and only refuse
   the provider call if compression cannot reduce the context enough.
 ```
+
+Follow-up: process worklog / wakeback so Hermes does not "fall asleep" after a response:
+
+```text
+date: 2026-06-16
+branch: browser-logic-policy-20260615
+server production branch constraint still applies: do not switch
+/opt/hermes-assistant away from custom without explicit permission.
+
+problem:
+- Hermes can answer a user, then leave unfinished process state in SQLite.
+- The user then has to remind Hermes what was done, what was not done, and
+  whether Bot#1/Bot#2 should continue.
+- Existing process_orchestrator already stores status, assignments, events,
+  and process_next_action, but there was no compact readback/wakeback layer.
+
+added:
+- scripts/process_log.py now keeps the old JSONL event writer and also builds
+  a compact process worklog from process_orchestrator SQLite:
+  status, phase, last_activity_at, idle time, stale flag, done, pending,
+  not_done, next_action, Bot#2 state, human gate state, and resume command.
+- New CLI:
+  python3 scripts/process_log.py worklog --process-id PROC --format text
+  python3 scripts/process_log.py worklog --format json --limit 10
+  python3 scripts/process_log.py wakeback --telegram --limit 5
+  python3 scripts/process_log.py wakeback --telegram --auto-continue
+- Safety policy:
+  awaiting_human_decision never auto-continues; it only reminds via DevLog.
+  running never starts a duplicate process; it reports stale/watch state.
+  failed/blocked only reports investigation state.
+  return_to_bot1 can auto-continue only when next_action is
+  return_to_bot1_with_bot2_fixes and the route has parser autonomy policy
+  mode=parsing_bot1_bot2_only.
+
+recommended server use:
+- Add a cron/systemd timer later, not during deploy blindly:
+  every 5-10 minutes run:
+    cd /opt/hermes-assistant &&
+    python3 scripts/process_log.py wakeback --telegram --limit 5
+- Only after observing clean reminders, enable parser-only guarded continuation:
+    python3 scripts/process_log.py wakeback --telegram --auto-continue --limit 3
+
+verification:
+- focused local pytest: tests/test_process_log.py -> 5 passed.
+```
