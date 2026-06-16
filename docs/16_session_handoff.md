@@ -1305,3 +1305,60 @@ recommended server use:
 verification:
 - focused local pytest: tests/test_process_log.py -> 5 passed.
 ```
+
+Follow-up: Kairos bot runtime fix after Hermes failed to start it:
+
+```text
+date: 2026-06-16
+branch: browser-logic-policy-20260615
+
+user-visible failure:
+- Hermes said it was fixing /opt/data/kairos-bot/kairos_bot.py, but the patch
+  did not apply.
+- Real log showed:
+  TypeError: Application.__init__() got an unexpected keyword argument 'lifespan'
+- Buttons were missing because the old code only asked inline confirmation for
+  unclear media. Recognized tasks were saved immediately and answered with text.
+- UI looked partly non-Russian/rough because internal task types such as
+  production/material were shown and Markdown was sent as HTML.
+
+server facts:
+- Files live inside Docker volume:
+  container: /opt/data/kairos-bot
+  host: /var/lib/docker/volumes/hermes-data/_data/kairos-bot
+- /opt/data on the host is not the same path; do not look there.
+- Token is now in /opt/data/kairos-bot/.env inside the container, chmod 600,
+  not in Git runtime files.
+- Runtime venv:
+  /opt/data/kairos-bot/.venv
+
+fixed/deployed to hermes-agent volume:
+- runtime/kairos_bot/kairos_bot.py -> /opt/data/kairos-bot/kairos_bot.py
+- runtime/kairos_bot/poll_runner.py -> /opt/data/kairos-bot/poll_runner.py
+- runtime/kairos_bot/smoke_kairos.py -> /opt/data/kairos-bot/smoke_kairos.py
+
+fixes:
+- replaced unsupported aiohttp lifespan with app.on_startup;
+- added Russian HTML responses;
+- added task buttons after every created task:
+  В работе, Ждём цену, Выполнено, Не задача, Детали;
+- added callback handling for status changes/details;
+- fixed /task1 parsing;
+- fixed RLM ON CONFLICT bug;
+- polling runner now calls deleteWebhook before getUpdates;
+- created /opt/data/kairos-bot/.venv and installed aiohttp there.
+
+verified:
+- server py_compile:
+  .venv/bin/python -m py_compile kairos_bot.py poll_runner.py
+- server offline message flow:
+  .venv/bin/python smoke_kairos.py
+  -> kairos_message_flow_ok task_id=1
+
+ready command for the next launch:
+cd /opt/data/kairos-bot && .venv/bin/python poll_runner.py
+
+Do not re-read this whole chat for Kairos. Start from:
+runtime/kairos_bot/README.md
+and this handoff block.
+```
