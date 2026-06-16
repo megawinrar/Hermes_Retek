@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-PATCH_MARKER = "HERMES_RETEK_PARSER_RESULT_RLM_HOOK"
+PATCH_MARKER = "HERMES_RETEK_PARSER_RESULT_RLM_HOOK_V2"
+OLD_PATCH_MARKER = "HERMES_RETEK_PARSER_RESULT_RLM_HOOK"
 
 IMPORT_ANCHOR = "import random\n"
 IMPORT_BLOCK = "import random\nimport re\n"
@@ -21,22 +22,16 @@ HELPER_BLOCK = f'''logger = logging.getLogger(__name__)
 # {PATCH_MARKER}: persist useful browser/parser output files as compact RLM lessons.
 def _hermes_retek_parser_result_paths(function_args, function_result) -> list[str]:
     try:
-        raw = json.dumps(function_args, ensure_ascii=False, default=str) + "\\n" + str(function_result)
-    except Exception:
-        raw = str(function_args) + "\\n" + str(function_result)
-    candidates = re.findall(r"/opt/data/rebrowser/[^\\s'\\\"<>]+\\.(?:json|csv)", raw, flags=re.IGNORECASE)
-    seen: set[str] = set()
-    paths: list[str] = []
-    for candidate in candidates:
-        cleaned = candidate.rstrip(".,);:]")
-        lowered = cleaned.lower()
-        if cleaned in seen:
-            continue
-        if not (lowered.endswith(".json") or lowered.endswith(".csv")):
-            continue
-        seen.add(cleaned)
-        paths.append(cleaned)
-    return paths
+        import sys as _sys
+        _scripts_dir = os.environ.get("HERMES_ASSISTANT_SCRIPTS", "/opt/hermes-assistant/scripts")
+        if _scripts_dir and _scripts_dir not in _sys.path:
+            _sys.path.insert(0, _scripts_dir)
+        from parser_result_rlm import infer_parser_result_paths as _infer_parser_result_paths
+
+        return _infer_parser_result_paths(function_args, function_result)
+    except Exception as exc:
+        logger.debug("parser result path inference failed: %s", exc)
+        return []
 
 
 def _hermes_retek_infer_parser_site(path: str, function_args, function_result) -> str:
@@ -66,6 +61,7 @@ def _hermes_retek_maybe_record_parser_result(function_name: str, function_args, 
         for path in paths[:5]:
             if not os.path.exists(path):
                 continue
+            logger.info("parser result RLM hook recording: path=%s process=%s", path, process_id or "none")
             _write_parser_result_lesson(
                 path,
                 store_path=os.environ.get("HERMES_RLM_STORE_PATH", "/opt/data/rlm_store.db"),
@@ -118,10 +114,33 @@ def backup_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.backup-parser-result-rlm-{stamp}")
 
 
+def _replace_between(source: str, start_marker: str, end_anchor: str, replacement: str) -> tuple[str, bool]:
+    start = source.find(start_marker)
+    if start < 0:
+        return source, False
+    end = source.find(end_anchor, start)
+    if end < 0:
+        raise ValueError(f"end anchor not found after {start_marker}")
+    return source[:start] + replacement + source[end:], True
+
+
 def patch_parser_result_rlm_hook(source: str) -> tuple[str, bool]:
     """Return patched source and whether it changed."""
     if PATCH_MARKER in source:
         return source, False
+    if OLD_PATCH_MARKER in source:
+        updated = source
+        if "import re\n" not in updated:
+            if IMPORT_ANCHOR not in updated:
+                raise ValueError("import anchor not found")
+            updated = updated.replace(IMPORT_ANCHOR, IMPORT_BLOCK, 1)
+        updated, changed = _replace_between(
+            updated,
+            f"logger = logging.getLogger(__name__)\n\n\n# {OLD_PATCH_MARKER}:",
+            "\n\n# Maximum number",
+            HELPER_BLOCK,
+        )
+        return updated, changed
     updated = source
     if "import re\n" not in updated:
         if IMPORT_ANCHOR not in updated:

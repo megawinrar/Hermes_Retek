@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-PATCH_MARKER = "HERMES_RETEK_CONTEXT_CIRCUIT_BREAKER_PATCH"
+PATCH_MARKER = "HERMES_RETEK_CONTEXT_CIRCUIT_BREAKER_PATCH_V2"
+OLD_PATCH_MARKER = "HERMES_RETEK_CONTEXT_CIRCUIT_BREAKER_PATCH"
 
 IMPORT_ANCHOR = "import logging\n"
 IMPORT_BLOCK = "import logging\nimport os\n"
@@ -46,6 +47,10 @@ def _hermes_retek_context_breaker(agent, messages, active_system_prompt):
             warn_tokens=_hermes_retek_int_env("HERMES_CONTEXT_WARN_TOKENS", 60000),
             hard_tokens=_hermes_retek_int_env("HERMES_CONTEXT_HARD_TOKENS", 80000),
             max_tokens=_hermes_retek_int_env("HERMES_CONTEXT_MAX_TOKENS", 120000),
+            message_count=len(messages or []),
+            warn_messages=_hermes_retek_int_env("HERMES_CONTEXT_WARN_MESSAGES", 180),
+            hard_messages=_hermes_retek_int_env("HERMES_CONTEXT_HARD_MESSAGES", 240),
+            max_messages=_hermes_retek_int_env("HERMES_CONTEXT_MAX_MESSAGES", 280),
         )
     except Exception as exc:
         logger.debug("context circuit breaker failed: %s", exc)
@@ -62,10 +67,19 @@ CALL_BLOCK = '''    # ── Retek context circuit breaker ──
     if _hermes_retek_context_decision:
         _stage = str(_hermes_retek_context_decision.get("stage") or "ok")
         _tokens = int(_hermes_retek_context_decision.get("used_tokens") or 0)
+        _message_count = int(_hermes_retek_context_decision.get("message_count") or 0)
+        logger.info(
+            "context circuit breaker probe: stage=%s reason=%s tokens=%s messages=%s session=%s",
+            _stage,
+            _hermes_retek_context_decision.get("stage_reason") or "tokens",
+            _tokens,
+            _message_count,
+            agent.session_id or "none",
+        )
         if _stage == "compress_before_next_turn":
             logger.warning(
-                "context circuit breaker warning: stage=%s tokens=%s session=%s",
-                _stage, _tokens, agent.session_id or "none",
+                "context circuit breaker warning: stage=%s tokens=%s messages=%s session=%s",
+                _stage, _tokens, _message_count, agent.session_id or "none",
             )
             agent._emit_status(
                 f"🧠 Context is getting large (~{_tokens:,} tokens). "
@@ -73,8 +87,8 @@ CALL_BLOCK = '''    # ── Retek context circuit breaker ──
             )
         elif _stage in {"force_fresh_session", "block_llm"}:
             logger.warning(
-                "context circuit breaker hard action: stage=%s tokens=%s session=%s",
-                _stage, _tokens, agent.session_id or "none",
+                "context circuit breaker hard action: stage=%s tokens=%s messages=%s session=%s",
+                _stage, _tokens, _message_count, agent.session_id or "none",
             )
             agent._emit_status(
                 f"🧠 Context is too large (~{_tokens:,} tokens). "
@@ -108,10 +122,49 @@ def backup_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.backup-context-circuit-breaker-{stamp}")
 
 
+def _replace_between(source: str, start_marker: str, end_anchor: str, replacement: str) -> tuple[str, bool]:
+    start = source.find(start_marker)
+    if start < 0:
+        return source, False
+    end = source.find(end_anchor, start)
+    if end < 0:
+        raise ValueError(f"end anchor not found after {start_marker}")
+    return source[:start] + replacement + source[end:], True
+
+
+def _replace_through(source: str, start_marker: str, end_anchor: str, replacement: str) -> tuple[str, bool]:
+    start = source.find(start_marker)
+    if start < 0:
+        return source, False
+    end = source.find(end_anchor, start)
+    if end < 0:
+        raise ValueError(f"end anchor not found after {start_marker}")
+    return source[:start] + replacement + source[end + len(end_anchor):], True
+
+
 def patch_context_circuit_breaker(source: str) -> tuple[str, bool]:
     """Return patched source and whether it changed."""
     if PATCH_MARKER in source:
         return source, False
+    if OLD_PATCH_MARKER in source:
+        updated = source
+        if "import os\n" not in updated:
+            if IMPORT_ANCHOR not in updated:
+                raise ValueError("import anchor not found")
+            updated = updated.replace(IMPORT_ANCHOR, IMPORT_BLOCK, 1)
+        updated, helper_changed = _replace_between(
+            updated,
+            f"logger = logging.getLogger(__name__)\n\n\n# {OLD_PATCH_MARKER}:",
+            "\n\n@dataclass",
+            HELPER_BLOCK,
+        )
+        updated, call_changed = _replace_through(
+            updated,
+            "    # ── Retek context circuit breaker ──",
+            CALL_ANCHOR,
+            CALL_BLOCK,
+        )
+        return updated, helper_changed or call_changed
     updated = source
     if "import os\n" not in updated:
         if IMPORT_ANCHOR not in updated:

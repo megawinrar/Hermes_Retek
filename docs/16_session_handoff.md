@@ -1142,3 +1142,80 @@ recommended next fix:
    after 90-120s, child agent should return partial summary/RLM checkpoint instead of silent timeout.
 4. Add timing report output to /opt/data/reports on every debug run, so the next session does not need to rediscover the same facts from Docker logs.
 ```
+
+Follow-up after live B2B parser timing/context fix:
+
+```text
+date: 2026-06-16
+branch: browser-logic-policy-20260615
+server production branch: custom
+important constraint honored: /opt/hermes-assistant was not switched away from custom.
+
+live observation that motivated the fix:
+- user launched another B2B parsing run around 03:53 Samara.
+- Hermes resumed huge Telegram session 20260615_043226_a2a3a4b3.
+- the turn sent/retried a very large model request before finishing:
+  history about 320 messages, api_calls=8, tool_turns=135,
+  execute_code/node duration about 145s, total response ready about 645s.
+- one provider stream attempt timed out after 131s with 0 chunks.
+- b2b-results-v4.json was produced with 13 keyword count buckets, but the
+  RLM hook did not auto-record it because the tool response did not print the
+  output path. A manual RLM parser_result lesson was written as id=19.
+
+fixes added:
+- scripts/context_budget.py now supports message-count thresholds in addition
+  to token thresholds:
+  warn=180 messages, hard=240, block=280 by default.
+- scripts/parser_result_rlm.py now has infer_parser_result_paths(), so
+  `/opt/data/rebrowser/b2b-search-v4.js` implies
+  `/opt/data/rebrowser/b2b-results-v4.json`.
+- scripts/patch_context_circuit_breaker.py upgraded to
+  HERMES_RETEK_CONTEXT_CIRCUIT_BREAKER_PATCH_V2 and logs:
+  `context circuit breaker probe: stage=... reason=... tokens=... messages=...`.
+- scripts/patch_parser_result_rlm_hook.py upgraded to
+  HERMES_RETEK_PARSER_RESULT_RLM_HOOK_V2 and logs:
+  `parser result RLM hook recording: path=... process=...`.
+- new scripts/patch_pre_api_context_guard.py adds
+  HERMES_RETEK_PRE_API_CONTEXT_GUARD in conversation_loop.py.
+  It evaluates the real api_messages size immediately before provider call.
+  If context is huge, it tries compression/checkpoint first; if the request is
+  still at block_llm stage, it returns a user-facing message instead of spending
+  BotHub/provider calls on an oversized request.
+
+server overlay:
+- staging: /home/yc-user/hermes-deploy-staging-context-guard-20260616T001420Z
+- backup: /home/yc-user/hermes-file-deploy-backups/context-guard-20260616T001420Z
+- runtime markers:
+  hermes-core/agent/turn_context.py:
+    HERMES_RETEK_CONTEXT_CIRCUIT_BREAKER_PATCH_V2
+  hermes-core/agent/tool_executor.py:
+    HERMES_RETEK_PARSER_RESULT_RLM_HOOK_V2
+  hermes-core/agent/conversation_loop.py:
+    HERMES_RETEK_PRE_API_CONTEXT_GUARD
+- first server patch attempt exposed two patch-script upgrade bugs:
+  duplicate preflight `if (` in turn_context.py and a rstrip() newline bug in
+  conversation_loop.py. Both were fixed in patch scripts, files were restored
+  from backup, and patches were reapplied before restart.
+
+verification:
+- local focused pytest: 31 passed
+- local full pytest: 370 passed
+- server py_compile on 8 runtime/script files: py_compile_ok 8
+- server focused pytest: 31 passed
+- server branch after overlay: custom
+- safe restart dry-run: no_active_work
+- safe restart: restart_completed, forced=false,
+  reason=pre_api_context_guard_patch
+- post-restart container status: hermes-agent Up, no startup traceback/error in
+  recent logs.
+- RLM ops marker written after restart:
+  id=20, kind=ops_change, title="Pre-provider context guard deployed".
+
+what to watch next:
+- Next large Telegram turn should log `pre-api context guard probe`.
+- Parser scripts that create b2b-search-v*.js should auto-record
+  b2b-results-v*.json to RLM when the file exists, even if the model omits the
+  path in its tool response.
+- If a session reaches block_llm, Hermes should compress first and only refuse
+  the provider call if compression cannot reduce the context enough.
+```

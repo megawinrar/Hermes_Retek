@@ -13,6 +13,36 @@ import parser_result_rlm  # noqa: E402
 import rlm_store  # noqa: E402
 
 
+def test_infer_parser_result_paths_keeps_explicit_artifacts() -> None:
+    paths = parser_result_rlm.infer_parser_result_paths(
+        {"cmd": "node /opt/data/rebrowser/parser.js"},
+        "saved /opt/data/rebrowser/b2b-results-v4.json, /opt/data/rebrowser/export.csv)",
+    )
+
+    assert paths == [
+        "/opt/data/rebrowser/b2b-results-v4.json",
+        "/opt/data/rebrowser/export.csv",
+    ]
+
+
+def test_infer_parser_result_paths_from_rebrowser_search_script() -> None:
+    paths = parser_result_rlm.infer_parser_result_paths(
+        {"code": "node /opt/data/rebrowser/b2b-search-v4.js"},
+        "Done: counted 13 keyword buckets",
+    )
+
+    assert "/opt/data/rebrowser/b2b-results-v4.json" in paths
+
+
+def test_infer_parser_result_paths_deduplicates_inferred_and_explicit_path() -> None:
+    paths = parser_result_rlm.infer_parser_result_paths(
+        {"cmd": "node /opt/data/rebrowser/b2b-search.js"},
+        "output=/opt/data/rebrowser/b2b-results.json",
+    )
+
+    assert paths == ["/opt/data/rebrowser/b2b-results.json"]
+
+
 def test_summarize_b2b_sales_json_counts_nested_sales(tmp_path: Path) -> None:
     result = tmp_path / "b2b-results-v4.json"
     result.write_text(

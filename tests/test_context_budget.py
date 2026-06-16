@@ -62,9 +62,43 @@ def test_context_circuit_breaker_absolute_thresholds():
     assert "do_not_call_provider" in blocked["actions"]
 
 
+def test_context_circuit_breaker_message_count_thresholds():
+    assert context_budget.context_circuit_breaker(1_000, message_count=179)["stage"] == "ok"
+    warn = context_budget.context_circuit_breaker(1_000, message_count=180)
+    hard = context_budget.context_circuit_breaker(1_000, message_count=240)
+    blocked = context_budget.context_circuit_breaker(1_000, message_count=280)
+
+    assert warn["stage"] == "compress_before_next_turn"
+    assert warn["stage_reason"] == "messages"
+    assert warn["token_stage"] == "ok"
+    assert warn["message_stage"] == "compress_before_next_turn"
+    assert "trim_history_by_message_count" in warn["actions"]
+    assert hard["stage"] == "force_fresh_session"
+    assert hard["should_start_fresh_session"] is True
+    assert blocked["stage"] == "block_llm"
+    assert blocked["should_call_provider"] is False
+
+
+def test_context_circuit_breaker_uses_strongest_token_or_message_stage():
+    decision = context_budget.context_circuit_breaker(120_000, message_count=1)
+
+    assert decision["stage"] == "block_llm"
+    assert decision["stage_reason"] == "tokens"
+    assert decision["token_stage"] == "block_llm"
+    assert decision["message_stage"] == "ok"
+
+
 def test_context_circuit_breaker_validates_threshold_order():
     with pytest.raises(ValueError, match="warn_tokens < hard_tokens < max_tokens"):
         context_budget.context_circuit_breaker(100, warn_tokens=80, hard_tokens=60, max_tokens=120)
+    with pytest.raises(ValueError, match="warn_messages < hard_messages < max_messages"):
+        context_budget.context_circuit_breaker(
+            100,
+            message_count=10,
+            warn_messages=80,
+            hard_messages=60,
+            max_messages=120,
+        )
 
 
 def test_build_context_budget_event_omits_raw_text():

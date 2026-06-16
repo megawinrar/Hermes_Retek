@@ -19,6 +19,16 @@ THRESHOLD_ACTIONS: tuple[tuple[int, str], ...] = (
 DEFAULT_CIRCUIT_BREAKER_WARN_TOKENS = 60_000
 DEFAULT_CIRCUIT_BREAKER_HARD_TOKENS = 80_000
 DEFAULT_CIRCUIT_BREAKER_MAX_TOKENS = 120_000
+DEFAULT_CIRCUIT_BREAKER_WARN_MESSAGES = 180
+DEFAULT_CIRCUIT_BREAKER_HARD_MESSAGES = 240
+DEFAULT_CIRCUIT_BREAKER_MAX_MESSAGES = 280
+
+_STAGE_RANK = {
+    "ok": 0,
+    "compress_before_next_turn": 1,
+    "force_fresh_session": 2,
+    "block_llm": 3,
+}
 
 
 def estimate_tokens(text: str) -> int:
@@ -34,6 +44,37 @@ def _validate_tokens(name: str, value: int, *, allow_zero: bool) -> int:
             raise ValueError(f"{name} must be greater than or equal to 0")
         raise ValueError(f"{name} must be greater than 0")
     return value
+
+
+def _validate_optional_count(name: str, value: int | None) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if value < 0:
+        raise ValueError(f"{name} must be greater than or equal to 0")
+    return value
+
+
+def _stage_from_count(value: int, *, warn: int, hard: int, max_value: int) -> str:
+    if value >= max_value:
+        return "block_llm"
+    if value >= hard:
+        return "force_fresh_session"
+    if value >= warn:
+        return "compress_before_next_turn"
+    return "ok"
+
+
+def _merge_actions(*action_groups: list[str]) -> list[str]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for group in action_groups:
+        for action in group:
+            if action not in seen:
+                seen.add(action)
+                merged.append(action)
+    return merged
 
 
 def context_usage(used_tokens: int, max_tokens: int) -> dict[str, Any]:
@@ -90,6 +131,10 @@ def context_circuit_breaker(
     warn_tokens: int = DEFAULT_CIRCUIT_BREAKER_WARN_TOKENS,
     hard_tokens: int = DEFAULT_CIRCUIT_BREAKER_HARD_TOKENS,
     max_tokens: int = DEFAULT_CIRCUIT_BREAKER_MAX_TOKENS,
+    message_count: int | None = None,
+    warn_messages: int = DEFAULT_CIRCUIT_BREAKER_WARN_MESSAGES,
+    hard_messages: int = DEFAULT_CIRCUIT_BREAKER_HARD_MESSAGES,
+    max_messages: int = DEFAULT_CIRCUIT_BREAKER_MAX_MESSAGES,
 ) -> dict[str, Any]:
     """Return a pre-LLM context safety decision.
 
@@ -101,27 +146,56 @@ def context_circuit_breaker(
     warn_tokens = _validate_tokens("warn_tokens", warn_tokens, allow_zero=False)
     hard_tokens = _validate_tokens("hard_tokens", hard_tokens, allow_zero=False)
     max_tokens = _validate_tokens("max_tokens", max_tokens, allow_zero=False)
+    message_count = _validate_optional_count("message_count", message_count)
+    warn_messages = _validate_tokens("warn_messages", warn_messages, allow_zero=False)
+    hard_messages = _validate_tokens("hard_messages", hard_messages, allow_zero=False)
+    max_messages = _validate_tokens("max_messages", max_messages, allow_zero=False)
     if not (warn_tokens < hard_tokens < max_tokens):
         raise ValueError("expected warn_tokens < hard_tokens < max_tokens")
+    if not (warn_messages < hard_messages < max_messages):
+        raise ValueError("expected warn_messages < hard_messages < max_messages")
 
-    if used_tokens >= max_tokens:
-        stage = "block_llm"
+    token_stage = _stage_from_count(
+        used_tokens,
+        warn=warn_tokens,
+        hard=hard_tokens,
+        max_value=max_tokens,
+    )
+    message_stage = (
+        _stage_from_count(
+            message_count,
+            warn=warn_messages,
+            hard=hard_messages,
+            max_value=max_messages,
+        )
+        if message_count is not None
+        else "ok"
+    )
+    stage = max((token_stage, message_stage), key=lambda value: _STAGE_RANK[value])
+    stage_reason = "messages" if _STAGE_RANK[message_stage] > _STAGE_RANK[token_stage] else "tokens"
+    if stage == "block_llm":
         actions = ["write_rlm_checkpoint", "force_fresh_session", "do_not_call_provider"]
-    elif used_tokens >= hard_tokens:
-        stage = "force_fresh_session"
+    elif stage == "force_fresh_session":
         actions = ["write_rlm_checkpoint", "force_compaction", "start_fresh_worker_session"]
-    elif used_tokens >= warn_tokens:
-        stage = "compress_before_next_turn"
+    elif stage == "compress_before_next_turn":
         actions = ["write_rlm_checkpoint", "compress_or_summarize_before_more_tools"]
     else:
-        stage = "ok"
         actions = []
+    if message_stage != "ok":
+        actions = _merge_actions(actions, ["trim_history_by_message_count"])
     return {
         "event": "context_circuit_breaker",
         "used_tokens": used_tokens,
         "warn_tokens": warn_tokens,
         "hard_tokens": hard_tokens,
         "max_tokens": max_tokens,
+        "message_count": message_count,
+        "warn_messages": warn_messages,
+        "hard_messages": hard_messages,
+        "max_messages": max_messages,
+        "token_stage": token_stage,
+        "message_stage": message_stage,
+        "stage_reason": stage_reason,
         "stage": stage,
         "actions": actions,
         "should_call_provider": stage != "block_llm",

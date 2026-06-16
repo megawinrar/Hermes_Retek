@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,53 @@ except ImportError:  # pragma: no cover
 
 
 PARSER_RESULT_SUFFIXES = {".json", ".csv"}
+RE_BROWSER_RESULT_RE = re.compile(
+    r"/opt/data/rebrowser/[^\s'\"<>]+\.(?:json|csv)",
+    flags=re.IGNORECASE,
+)
+RE_BROWSER_SCRIPT_RE = re.compile(
+    r"(?P<dir>/opt/data/rebrowser/)(?P<prefix>[^/\s'\"<>]+?)-search(?:-v(?P<version>\d+))?\.js",
+    flags=re.IGNORECASE,
+)
+
+
+def infer_parser_result_paths(function_args: Any, function_result: Any) -> list[str]:
+    """Infer compact parser output artifacts from tool args/result text.
+
+    Hermes-generated parser scripts often finish with a short human summary
+    that omits the output filename. For the common `/opt/data/rebrowser/*`
+    convention, infer result JSON names from script names so RLM recording is
+    not dependent on the model remembering to print the path.
+    """
+    try:
+        raw = json.dumps(function_args, ensure_ascii=False, default=str) + "\n" + str(function_result)
+    except Exception:
+        raw = str(function_args) + "\n" + str(function_result)
+
+    paths: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: str) -> None:
+        cleaned = path.rstrip(".,);:]")
+        lowered = cleaned.lower()
+        if cleaned in seen:
+            return
+        if not (lowered.endswith(".json") or lowered.endswith(".csv")):
+            return
+        seen.add(cleaned)
+        paths.append(cleaned)
+
+    for match in RE_BROWSER_RESULT_RE.finditer(raw):
+        add(match.group(0))
+
+    for match in RE_BROWSER_SCRIPT_RE.finditer(raw):
+        directory = match.group("dir")
+        prefix = match.group("prefix")
+        version = match.group("version")
+        suffix = f"-v{version}" if version else ""
+        add(f"{directory}{prefix}-results{suffix}.json")
+
+    return paths
 
 
 def _count_json_items(data: Any) -> int:

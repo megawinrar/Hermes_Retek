@@ -41,10 +41,11 @@ def test_patch_parser_result_rlm_hook_inserts_hooks() -> None:
     assert patch_parser_result_rlm_hook.PATCH_MARKER in updated
     assert "import re" in updated
     assert "def _hermes_retek_maybe_record_parser_result(" in updated
+    assert "infer_parser_result_paths" in updated
     assert "from parser_result_rlm import write_parser_result_lesson" in updated
     assert updated.count("_hermes_retek_maybe_record_parser_result(") == 3
     assert "not _is_error_result" in updated
-    assert "/opt/data/rebrowser/" in updated
+    assert "parser result RLM hook recording" in updated
 
 
 def test_patch_parser_result_rlm_hook_is_idempotent() -> None:
@@ -55,3 +56,22 @@ def test_patch_parser_result_rlm_hook_is_idempotent() -> None:
     assert changed_again is False
     assert second == updated
     assert second.count(patch_parser_result_rlm_hook.PATCH_MARKER) == 1
+
+
+def test_patch_parser_result_rlm_hook_upgrades_old_marker() -> None:
+    old, changed = patch_parser_result_rlm_hook.patch_parser_result_rlm_hook(BASE_SNIPPET)
+    old = old.replace(
+        patch_parser_result_rlm_hook.PATCH_MARKER,
+        patch_parser_result_rlm_hook.OLD_PATCH_MARKER,
+    ).replace(
+        "from parser_result_rlm import infer_parser_result_paths as _infer_parser_result_paths\n\n        return _infer_parser_result_paths(function_args, function_result)",
+        "raw = str(function_args) + str(function_result)\n        return re.findall(r\"/opt/data/rebrowser/[^\\\\s]+\\\\.(?:json|csv)\", raw)",
+    )
+
+    upgraded, upgraded_changed = patch_parser_result_rlm_hook.patch_parser_result_rlm_hook(old)
+
+    assert changed is True
+    assert upgraded_changed is True
+    assert patch_parser_result_rlm_hook.PATCH_MARKER in upgraded
+    assert "infer_parser_result_paths" in upgraded
+    assert "return re.findall" not in upgraded
