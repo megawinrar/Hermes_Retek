@@ -46,6 +46,8 @@ def test_patch_parser_result_rlm_hook_inserts_hooks() -> None:
     assert updated.count("_hermes_retek_maybe_record_parser_result(") == 3
     assert "not _is_error_result" in updated
     assert "parser result RLM hook recording" in updated
+    assert "parser result RLM hook failed" in updated
+    assert "logger.warning" in updated
 
 
 def test_patch_parser_result_rlm_hook_is_idempotent() -> None:

@@ -9,8 +9,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-PATCH_MARKER = "HERMES_RETEK_PARSER_RESULT_RLM_HOOK_V2"
-OLD_PATCH_MARKER = "HERMES_RETEK_PARSER_RESULT_RLM_HOOK"
+PATCH_MARKER = "HERMES_RETEK_PARSER_RESULT_RLM_HOOK_V3"
+OLD_PATCH_MARKERS = (
+    "HERMES_RETEK_PARSER_RESULT_RLM_HOOK_V2",
+    "HERMES_RETEK_PARSER_RESULT_RLM_HOOK",
+)
+OLD_PATCH_MARKER = OLD_PATCH_MARKERS[-1]
 
 IMPORT_ANCHOR = "import random\n"
 IMPORT_BLOCK = "import random\nimport re\n"
@@ -30,7 +34,7 @@ def _hermes_retek_parser_result_paths(function_args, function_result) -> list[st
 
         return _infer_parser_result_paths(function_args, function_result)
     except Exception as exc:
-        logger.debug("parser result path inference failed: %s", exc)
+        logger.warning("parser result path inference failed: %s", exc)
         return []
 
 
@@ -60,6 +64,7 @@ def _hermes_retek_maybe_record_parser_result(function_name: str, function_args, 
 
         for path in paths[:5]:
             if not os.path.exists(path):
+                logger.info("parser result RLM hook skipped missing path: %s", path)
                 continue
             logger.info("parser result RLM hook recording: path=%s process=%s", path, process_id or "none")
             _write_parser_result_lesson(
@@ -69,7 +74,7 @@ def _hermes_retek_maybe_record_parser_result(function_name: str, function_args, 
                 site=_hermes_retek_infer_parser_site(path, function_args, function_result),
             )
     except Exception as exc:
-        logger.debug("parser result RLM hook failed: %s", exc)
+        logger.warning("parser result RLM hook failed: %s", exc)
 
 # Maximum number'''.rstrip()
 
@@ -128,7 +133,9 @@ def patch_parser_result_rlm_hook(source: str) -> tuple[str, bool]:
     """Return patched source and whether it changed."""
     if PATCH_MARKER in source:
         return source, False
-    if OLD_PATCH_MARKER in source:
+    for old_marker in OLD_PATCH_MARKERS:
+        if old_marker not in source:
+            continue
         updated = source
         if "import re\n" not in updated:
             if IMPORT_ANCHOR not in updated:
@@ -136,7 +143,7 @@ def patch_parser_result_rlm_hook(source: str) -> tuple[str, bool]:
             updated = updated.replace(IMPORT_ANCHOR, IMPORT_BLOCK, 1)
         updated, changed = _replace_between(
             updated,
-            f"logger = logging.getLogger(__name__)\n\n\n# {OLD_PATCH_MARKER}:",
+            f"logger = logging.getLogger(__name__)\n\n\n# {old_marker}:",
             "\n\n# Maximum number",
             HELPER_BLOCK,
         )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sqlite3
 import subprocess
 import tempfile
 from pathlib import Path
@@ -425,3 +426,59 @@ def test_subprocess_env_moves_runtime_state_to_opt_data(monkeypatch) -> None:
     assert env["DUAL_BOT_REPORT_DIR"] == "/opt/data/reports"
     assert env["HERMES_RLM_ENABLED"] == "1"
     assert env["HERMES_RLM_STORE_PATH"] == "/opt/data/rlm_store.db"
+
+
+def test_execute_logs_sqlite_operational_error_with_preflight(monkeypatch, tmp_path: Path) -> None:
+    tool = load_tool()
+    log_path = tmp_path / "logs" / "process.jsonl"
+
+    class FakeOrchestrator:
+        @staticmethod
+        def run_process(_namespace):
+            raise sqlite3.OperationalError("unable to open database file")
+
+    tool.DEFAULT_PROJECT_DIR = ROOT
+    tool.DEFAULT_ORCHESTRATOR = ROOT / "scripts" / "process_orchestrator.py"
+    tool.DEFAULT_PROCESS_STORE = str(tmp_path / "runtime" / "process.db")
+    tool.DEFAULT_SUPERVISOR_STORE = str(tmp_path / "runtime" / "supervisor.db")
+    tool.DEFAULT_RLM_STORE = str(tmp_path / "runtime" / "rlm.db")
+    tool.DEFAULT_DUAL_BOT_STORE = str(tmp_path / "runtime" / "dual.db")
+    tool.DEFAULT_DUAL_BOT_REPORT_DIR = str(tmp_path / "runtime" / "reports")
+    tool._ORCHESTRATOR_CACHE = None
+    monkeypatch.setenv("HERMES_PROCESS_LOG_PATH", str(log_path))
+    monkeypatch.setattr(tool, "_load_orchestrator", lambda: FakeOrchestrator)
+
+    result = json.loads(
+        tool.execute(
+            action="run",
+            task="b2b parsing export xlsx",
+            live_dual=False,
+            live_route_audit=False,
+            notify_telegram=False,
+            timeout=30,
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "OperationalError: unable to open database file"
+    assert result["preflight"]["paths"]["process_store"]["parent_exists"] is True
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert [event["event_type"] for event in events] == ["hermes_process_tool_start", "hermes_process_tool_error"]
+    assert events[-1]["level"] == "error"
+
+
+def test_path_diagnostics_reports_permission_errors(monkeypatch) -> None:
+    tool = load_tool()
+    original_exists = tool.Path.exists
+
+    def fake_exists(path):
+        if str(path) == "/blocked/rlm_store.db":
+            raise PermissionError("blocked")
+        return original_exists(path)
+
+    monkeypatch.setattr(tool.Path, "exists", fake_exists)
+
+    diagnostics = tool._path_diagnostics("/blocked/rlm_store.db")
+
+    assert diagnostics["exists"] is None
+    assert "PermissionError" in diagnostics["exists_error"]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -34,6 +36,63 @@ def test_telegram_chat_id_falls_back_to_allowed_user(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "245167740, 123")
 
     assert devlog.telegram_chat_id() == "245167740"
+
+
+def test_send_telegram_message_truncates_over_limit_and_drops_html_parse_mode(monkeypatch) -> None:
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        payload = json.loads(cmd[cmd.index("-d") + 1])
+        captured["payload"] = payload
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True, "result": {"message_id": 9}}), stderr="")
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setattr(devlog.subprocess, "run", fake_run)
+
+    delivery = devlog.send_telegram_message("<b>" + ("x" * 5000), parse_mode="HTML")
+
+    assert delivery["delivered"] is True
+    assert delivery["truncated"] is True
+    assert delivery["sent_text_chars"] <= devlog.TELEGRAM_TEXT_LIMIT
+    assert "parse_mode" not in captured["payload"]
+
+
+def test_send_telegram_document_uses_send_document(monkeypatch, tmp_path: Path) -> None:
+    artifact = tmp_path / "result.xlsx"
+    artifact.write_bytes(b"xlsx")
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps({"ok": True, "result": {"message_id": 11, "document": {"file_id": "file-1"}}}),
+            stderr="",
+        )
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setattr(devlog.subprocess, "run", fake_run)
+
+    delivery = devlog.send_telegram_document(artifact, caption="Готово", filename="lom.xlsx")
+
+    assert delivery["delivered"] is True
+    assert delivery["file_id"] == "file-1"
+    assert any("sendDocument" in part for part in captured["cmd"])
+    assert f"document=@{artifact};filename=lom.xlsx" in captured["cmd"]
+
+
+def test_send_telegram_document_reports_missing_file(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+
+    delivery = devlog.send_telegram_document(tmp_path / "missing.xlsx")
+
+    assert delivery["delivered"] is False
+    assert delivery["error"] == "file_not_found"
 
 
 def test_dispatch_human_notification_sends_buttons(monkeypatch) -> None:

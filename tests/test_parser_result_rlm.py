@@ -16,12 +16,13 @@ import rlm_store  # noqa: E402
 def test_infer_parser_result_paths_keeps_explicit_artifacts() -> None:
     paths = parser_result_rlm.infer_parser_result_paths(
         {"cmd": "node /opt/data/rebrowser/parser.js"},
-        "saved /opt/data/rebrowser/b2b-results-v4.json, /opt/data/rebrowser/export.csv)",
+        "saved /opt/data/rebrowser/b2b-results-v4.json, /opt/data/rebrowser/export.csv), /opt/data/rebrowser/export.xlsx",
     )
 
     assert paths == [
         "/opt/data/rebrowser/b2b-results-v4.json",
         "/opt/data/rebrowser/export.csv",
+        "/opt/data/rebrowser/export.xlsx",
     ]
 
 

@@ -127,6 +127,90 @@ def _text(value: Any, default: str = "") -> str:
     return str(value)
 
 
+def _scripts_dir() -> str:
+    return str(DEFAULT_ORCHESTRATOR.parent)
+
+
+def _process_log(event_type: str, payload: dict[str, Any], *, process_id: str = "", level: str = "info") -> None:
+    try:
+        scripts_dir = _scripts_dir()
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from process_log import log_event
+
+        log_event(event_type, payload, process_id=process_id, level=level)
+    except Exception:
+        return
+
+
+def _path_diagnostics(path: str) -> dict[str, Any]:
+    target = Path(path)
+    parent = target.parent
+    result: dict[str, Any] = {
+        "path": str(target),
+        "parent": str(parent),
+    }
+    try:
+        result["exists"] = target.exists()
+    except OSError as exc:
+        result["exists"] = None
+        result["exists_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        result["parent_exists"] = parent.exists()
+        result["parent_is_dir"] = parent.is_dir()
+    except OSError as exc:
+        result["parent_exists"] = None
+        result["parent_is_dir"] = None
+        result["parent_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        result["parent_writable"] = os.access(parent, os.W_OK) if result.get("parent_exists") else False
+    except OSError as exc:
+        result["parent_writable"] = False
+        result["parent_writable_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        result["file_writable"] = os.access(target, os.W_OK) if result.get("exists") else None
+    except OSError as exc:
+        result["file_writable"] = None
+        result["file_writable_error"] = f"{type(exc).__name__}: {exc}"
+    return {
+        "path": result["path"],
+        "exists": result.get("exists"),
+        "parent": result["parent"],
+        "parent_exists": result.get("parent_exists"),
+        "parent_is_dir": result.get("parent_is_dir"),
+        "parent_writable": result.get("parent_writable"),
+        "file_writable": result.get("file_writable"),
+        **{key: value for key, value in result.items() if key.endswith("_error")},
+    }
+
+
+def _preflight_runtime_paths(args: dict[str, Any]) -> dict[str, Any]:
+    paths = {
+        "process_store": DEFAULT_PROCESS_STORE,
+        "supervisor_store": DEFAULT_SUPERVISOR_STORE,
+        "rlm_store": _rlm_store(args),
+        "dual_bot_store": DEFAULT_DUAL_BOT_STORE,
+        "dual_bot_report_dir": DEFAULT_DUAL_BOT_REPORT_DIR,
+    }
+    created: list[str] = []
+    errors: list[dict[str, str]] = []
+    for key, raw_path in paths.items():
+        if not raw_path:
+            continue
+        target = Path(raw_path)
+        directory = target if key.endswith("_dir") else target.parent
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            created.append(str(directory))
+        except Exception as exc:
+            errors.append({"key": key, "path": str(directory), "error": f"{type(exc).__name__}: {exc}"})
+    return {
+        "paths": {key: _path_diagnostics(value) for key, value in paths.items() if value},
+        "created_dirs": sorted(set(created)),
+        "errors": errors,
+    }
+
+
 def should_route_task_process_first(task: str) -> bool:
     return bool(PROCESS_FIRST_RE.search(task or ""))
 
@@ -558,6 +642,19 @@ def execute(**kwargs: Any) -> str:
     include_raw = _as_bool(kwargs.get("include_raw"), False)
     execution_mode = _execution_mode(kwargs.get("execution_mode"))
     started_at = time.perf_counter()
+    process_hint = _text(kwargs.get("process_id")).strip()
+    preflight = _preflight_runtime_paths(kwargs)
+    _process_log(
+        "hermes_process_tool_start",
+        {
+            "action": action,
+            "execution_mode": execution_mode,
+            "timeout_seconds": timeout,
+            "task_preview": _text(kwargs.get("task"))[:300],
+            "preflight": preflight,
+        },
+        process_id=process_hint,
+    )
     try:
         if execution_mode == "in_process":
             try:
@@ -572,15 +669,16 @@ def execute(**kwargs: Any) -> str:
             cmd = build_command(kwargs)
             completed = run_orchestrator(cmd, timeout=timeout)
             if completed.returncode != 0:
-                return _json(
-                    {
-                        "ok": False,
-                        "action": action,
-                        "exit_code": completed.returncode,
-                        "error": completed.stderr.strip() or completed.stdout.strip(),
-                        "adapter": {"execution_mode": execution_mode, "duration_ms": elapsed_adapter_ms(started_at)},
-                    }
-                )
+                error_payload = {
+                    "ok": False,
+                    "action": action,
+                    "exit_code": completed.returncode,
+                    "error": completed.stderr.strip() or completed.stdout.strip(),
+                    "preflight": preflight,
+                    "adapter": {"execution_mode": execution_mode, "duration_ms": elapsed_adapter_ms(started_at)},
+                }
+                _process_log("hermes_process_tool_error", error_payload, process_id=process_hint, level="error")
+                return _json(error_payload)
             payload = _load_stdout(action, completed.stdout)
 
         summary = summarize_payload(action, payload, include_raw=include_raw)
@@ -591,29 +689,44 @@ def execute(**kwargs: Any) -> str:
                 "adapter": {"execution_mode": execution_mode, "duration_ms": elapsed_adapter_ms(started_at)},
             }
         )
+        _process_log(
+            "hermes_process_tool_success",
+            {
+                "action": action,
+                "status": summary.get("status", ""),
+                "process_id": summary.get("process_id", process_hint),
+                "adapter": summary.get("adapter", {}),
+                "preflight_errors": preflight.get("errors", []),
+            },
+            process_id=_text(summary.get("process_id"), process_hint),
+        )
         return _json(summary)
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else 2
-        return _json(
-            {
-                "ok": False,
-                "action": action,
-                "exit_code": code,
-                "error": str(exc.code),
-                "adapter": {"execution_mode": execution_mode, "duration_ms": elapsed_adapter_ms(started_at)},
-            }
-        )
+        error_payload = {
+            "ok": False,
+            "action": action,
+            "exit_code": code,
+            "error": str(exc.code),
+            "preflight": preflight,
+            "adapter": {"execution_mode": execution_mode, "duration_ms": elapsed_adapter_ms(started_at)},
+        }
+        _process_log("hermes_process_tool_error", error_payload, process_id=process_hint, level="error")
+        return _json(error_payload)
     except subprocess.TimeoutExpired as exc:
-        return _json({"ok": False, "action": action, "error": "timeout", "timeout_seconds": exc.timeout})
+        error_payload = {"ok": False, "action": action, "error": "timeout", "timeout_seconds": exc.timeout}
+        _process_log("hermes_process_tool_error", error_payload, process_id=process_hint, level="error")
+        return _json(error_payload)
     except Exception as exc:
-        return _json(
-            {
-                "ok": False,
-                "action": action,
-                "error": f"{type(exc).__name__}: {exc}",
-                "adapter": {"execution_mode": execution_mode, "duration_ms": elapsed_adapter_ms(started_at)},
-            }
-        )
+        error_payload = {
+            "ok": False,
+            "action": action,
+            "error": f"{type(exc).__name__}: {exc}",
+            "preflight": preflight,
+            "adapter": {"execution_mode": execution_mode, "duration_ms": elapsed_adapter_ms(started_at)},
+        }
+        _process_log("hermes_process_tool_error", error_payload, process_id=process_hint, level="error")
+        return _json(error_payload)
 
 
 TOOL_SCHEMA = {

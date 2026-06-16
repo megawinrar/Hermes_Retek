@@ -8,8 +8,10 @@ import csv
 import json
 import re
 import sqlite3
+import zipfile
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree as ET
 
 import rlm_store
 
@@ -19,9 +21,9 @@ except ImportError:  # pragma: no cover
     from scripts.secret_patterns import redact_payload
 
 
-PARSER_RESULT_SUFFIXES = {".json", ".csv"}
+PARSER_RESULT_SUFFIXES = {".json", ".csv", ".xlsx"}
 RE_BROWSER_RESULT_RE = re.compile(
-    r"/opt/data/rebrowser/[^\s'\"<>]+\.(?:json|csv)",
+    r"/opt/data/rebrowser/[^\s'\"<>]+\.(?:json|csv|xlsx)",
     flags=re.IGNORECASE,
 )
 RE_BROWSER_SCRIPT_RE = re.compile(
@@ -51,7 +53,7 @@ def infer_parser_result_paths(function_args: Any, function_result: Any) -> list[
         lowered = cleaned.lower()
         if cleaned in seen:
             return
-        if not (lowered.endswith(".json") or lowered.endswith(".csv")):
+        if not (lowered.endswith(".json") or lowered.endswith(".csv") or lowered.endswith(".xlsx")):
             return
         seen.add(cleaned)
         paths.append(cleaned)
@@ -110,13 +112,38 @@ def _csv_summary(path: Path) -> dict[str, Any]:
     }
 
 
+def _xlsx_inline_text(cell: ET.Element) -> str:
+    return "".join(cell.itertext()).strip()
+
+
+def _xlsx_summary(path: Path) -> dict[str, Any]:
+    with zipfile.ZipFile(path) as zf:
+        raw = zf.read("xl/worksheets/sheet1.xml")
+    root = ET.fromstring(raw)
+    ns = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    rows = root.findall(".//main:sheetData/main:row", ns)
+    header: list[str] = []
+    if rows:
+        header = [_xlsx_inline_text(cell) for cell in rows[0].findall("main:c", ns)]
+    return {
+        "format": "xlsx",
+        "records": max(0, len(rows) - 1 if header else len(rows)),
+        "columns": header[:20],
+    }
+
+
 def summarize_parser_result(path: str | Path) -> dict[str, Any]:
     artifact = Path(path)
     if not artifact.exists():
         raise FileNotFoundError(str(artifact))
     if artifact.suffix.lower() not in PARSER_RESULT_SUFFIXES:
         raise ValueError(f"unsupported parser result suffix: {artifact.suffix}")
-    summary = _json_summary(artifact) if artifact.suffix.lower() == ".json" else _csv_summary(artifact)
+    if artifact.suffix.lower() == ".json":
+        summary = _json_summary(artifact)
+    elif artifact.suffix.lower() == ".xlsx":
+        summary = _xlsx_summary(artifact)
+    else:
+        summary = _csv_summary(artifact)
     summary.update(
         {
             "path": str(artifact),

@@ -137,3 +137,38 @@ For any new site:
   notes in RLM.
 - If a download/export fails, record the action, page URL, screenshot, and
   console-visible error text if available.
+- If the site returns too many rows to export, split by date ranges first by
+  two-year windows, then one-year windows, then smaller chunks if the UI still
+  reports an export limit. Save every chunk and merge only after chunk counts
+  are known.
+- If a parser script succeeds but the final answer is interrupted, do not rerun
+  the whole website flow first. Inspect `/opt/data/rebrowser/*results*.json`,
+  `*.csv`, screenshots, and progress logs, then resume from the latest
+  checkpoint.
+
+## Excel and Delivery
+
+1. Keep raw parser output in JSON/CSV first; these are the debugging source of
+   truth.
+2. For a user-facing Excel file, convert CSV with the dependency-free exporter:
+
+```bash
+python scripts/xlsx_exporter.py /opt/data/rebrowser/b2b-lom-2020-2026.csv /opt/data/rebrowser/b2b-lom-2020-2026.xlsx --sheet-name B2B --dedupe-columns link,title,org,datePub
+```
+
+3. Do not install `openpyxl` inside the running Hermes container just to create
+   a simple workbook. Use `xlsx_exporter.py`; it works with the standard
+   library.
+4. Send the finished workbook through Telegram as a document, not as text:
+
+```bash
+python scripts/devlog.py --store /opt/data/supervisor_store.db send-file --task-id "$SUPERVISOR_TASK_ID" --title "B2B Excel export" --path /opt/data/rebrowser/b2b-lom-2020-2026.xlsx --telegram
+```
+
+5. After every successful parser result, make sure RLM has a compact
+   `parser_result` record for JSON, CSV, and XLSX artifacts. If the automatic
+   hook is silent, run:
+
+```bash
+python scripts/parser_result_rlm.py /opt/data/rebrowser/b2b-lom-2020-2026.xlsx --store /opt/data/rlm_store.db --site b2b_center --title "B2B Excel export"
+```

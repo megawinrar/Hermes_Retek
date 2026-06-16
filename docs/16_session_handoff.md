@@ -1,32 +1,48 @@
 # Hermes Retek Session Handoff
 
-Date: 2026-06-15
+Date: 2026-06-16
 
 ## Current State
 
 Working branch in this workspace:
 
 ```text
-ops-safe-restart-speed
+browser-logic-policy-20260615
 ```
 
-GitHub branch created for this work:
+GitHub branch for the current continuation:
 
 ```text
-ops-safe-restart-speed-g3-rlm-20260615
+browser-logic-policy-20260615
 ```
 
 GitHub URL:
 
 ```text
-https://github.com/megawinrar/Hermes_Retek/tree/ops-safe-restart-speed-g3-rlm-20260615
+https://github.com/megawinrar/Hermes_Retek/tree/browser-logic-policy-20260615
 ```
 
-Code baseline before this handoff update:
+Code baseline before the 2026-06-16 process logging / Excel / RLM fix:
 
 ```text
-2b93515 docs: record coverage refactor status
+4be5e6d fix: guard oversized context before provider calls
 ```
+
+Production server constraint:
+
+```text
+Do not switch /opt/hermes-assistant away from branch custom without explicit user approval.
+```
+
+Server production path:
+
+```text
+/opt/hermes-assistant
+```
+
+The Yandex server remained on branch `custom` during this work. Deploys should
+continue as file overlays unless the user explicitly approves a production
+branch switch.
 
 Key commits in this session:
 
@@ -137,10 +153,11 @@ Focused coverage added:
 
 ## Current Test Baseline
 
-Latest local verification in this workspace:
+Latest local verification in this workspace after the 2026-06-16 continuation:
 
 ```text
-pytest: 273 passed
+pytest: 378 passed
+focused process/logging/RLM/Excel suite: 39 passed
 coverage over production/custom/scripts code: 74%
 coverage full report including tests: 83%
 context_budget.py coverage: 96%
@@ -184,27 +201,51 @@ handoff-20260615-coverage70-server
 Current stop marker after this continuation:
 
 ```text
-handoff-20260615-big-context-policy
+handoff-20260616-process-logging-excel-rlm
 ```
 
 This marker points to the GitHub branch state after:
 
-- coverage was raised to 70%;
-- gateway/supervisor/context-budget narrow tests were added;
-- the latest reviewed files were overlaid onto the Yandex server without
-  switching production away from `custom`.
+- process logging was added to `hermes_process`;
+- Telegram text delivery was clipped before the 4096 char limit;
+- Telegram document delivery was added through `devlog.py send-file`;
+- dependency-free CSV to XLSX export was added through `scripts/xlsx_exporter.py`;
+- parser-result RLM now supports JSON, CSV, and XLSX artifacts;
+- parser-result hook failures are logged as warnings instead of silent debug;
+- `hermes-browser` skill documents the JSON/CSV -> XLSX -> send-file -> RLM flow.
 
-The current marker additionally points to:
+## 2026-06-16 Live Debug Findings
 
-- live RLM enablement through `hermes_process_tool`;
-- `kontur-parser` skill and manifest/test coverage;
-- server-side Kontur browser script credential sanitization;
-- `/opt/data/rlm_store.db` smoke write;
-- server overlay/restart notes for the Docker file bind mount.
-- big-task context policy: `max_tokens` default 6000, manual cap 20000,
-  normal context pack 50% capped at 3000, expanded context pack 70% capped at
-  5000 for L4, retries, high-risk agent work, Kontur/supplier, deploy,
-  migrations, and huge tasks.
+Observed in Docker logs before the fix:
+
+- `hermes_process` sometimes returned `OperationalError: unable to open database file`;
+- Telegram approval delivery failed with `Message is too long`;
+- Excel generation failed because `openpyxl` was not installed in the Hermes
+  container;
+- parser artifacts existed, but automatic RLM parser-result records were not
+  reliably visible after successful browser/script runs.
+
+New places to inspect first after the next Hermes run:
+
+```text
+/opt/data/logs/hermes_process_events.jsonl
+/opt/data/rlm_store.db
+/opt/data/rebrowser/*results*.json
+/opt/data/rebrowser/*.csv
+/opt/data/rebrowser/*.xlsx
+docker logs --since 1h hermes-agent
+```
+
+Expected flow for parser/export tasks now:
+
+1. `hermes_process(action="run", task=...)` starts the task.
+2. Bot#1/Bot#2 process writes normal SQLite events.
+3. `hermes_process` adapter writes JSONL start/success/error events with SQLite
+   preflight diagnostics.
+4. Parser keeps raw JSON/CSV outputs under `/opt/data/rebrowser`.
+5. User-facing Excel is created with `scripts/xlsx_exporter.py`, not `openpyxl`.
+6. Finished workbook is sent by `scripts/devlog.py send-file --telegram`.
+7. RLM stores compact `parser_result` lessons for JSON/CSV/XLSX artifacts.
 
 ## Server Deploy
 
