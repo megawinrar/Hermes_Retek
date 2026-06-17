@@ -16,11 +16,10 @@ import sqlite3
 import textwrap
 import urllib.error
 import urllib.request
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from _common import gen_id, read_env_file, utc_now
 from human_notification import redact_payload, redact_text
 
 
@@ -91,25 +90,12 @@ def format_skill_context(skill_context: dict[str, Any] | None) -> str:
     return json.dumps(compact, ensure_ascii=False, indent=2, sort_keys=True)
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def run_id() -> str:
-    return f"dual-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    return gen_id("dual")
 
 
 def load_env_file(path: Path = ENV_FILE) -> dict[str, str]:
-    data: dict[str, str] = {}
-    if not path.exists():
-        return data
-    for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        data[key.strip()] = value.strip().strip('"').strip("'")
-    return data
+    return read_env_file(path)
 
 
 def parse_simple_yaml_scalars(path: Path) -> dict[str, str]:

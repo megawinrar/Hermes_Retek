@@ -7,14 +7,13 @@ import argparse
 import json
 import sys
 import time
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
+from _common import gen_id, utc_now  # noqa: E402
 import dual_bot_lab as lab  # noqa: E402
 from human_notification import redact_text  # noqa: E402
 from supervisor_common import APPROVED_STATUSES, INVALID_BOT2_STATUS, extract_bot2_verdict  # noqa: E402
@@ -73,12 +72,8 @@ CASES: list[dict[str, str]] = [
 ]
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def suite_id() -> str:
-    return f"repair-suite-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    return gen_id("repair-suite")
 
 
 def print_block(title: str, body: Any = "", *, pause: int = 0) -> None:

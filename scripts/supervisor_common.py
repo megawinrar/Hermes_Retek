@@ -14,10 +14,10 @@ import re
 import sqlite3
 import subprocess
 import sys
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from _common import gen_id, utc_now
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -76,10 +76,6 @@ ALLOWED_STATUS_TRANSITIONS = {
 }
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def dumps(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
 
@@ -91,7 +87,7 @@ def loads(raw: str | None, default: Any = None) -> Any:
 
 
 def task_id() -> str:
-    return f"sup-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    return gen_id("sup")
 
 
 def connect(store_path: Path | str | None = None) -> sqlite3.Connection:

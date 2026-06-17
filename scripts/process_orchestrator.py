@@ -10,11 +10,10 @@ import json
 import os
 import sqlite3
 import time
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from _common import gen_id, utc_now
 from human_notification import (
     build_human_notification_payload,
     dispatch_human_notification,
@@ -100,16 +99,12 @@ def _remember_lru(cache: dict[str, Any], key: str, value: Any, *, max_size: int)
     cache[key] = value
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def elapsed_ms(started_at: float) -> int:
     return max(0, int((time.perf_counter() - started_at) * 1000))
 
 
 def process_id() -> str:
-    return f"proc-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    return gen_id("proc")
 
 
 def classify_task(task: str) -> dict[str, Any]:

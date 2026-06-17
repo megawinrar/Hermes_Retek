@@ -7,8 +7,6 @@ import argparse
 import json
 import sys
 import tempfile
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -17,6 +15,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
+from _common import gen_id, utc_now  # noqa: E402
 from human_notification import redact_payload  # noqa: E402
 import process_orchestrator as orchestrator  # noqa: E402
 import tool_gateway  # noqa: E402
@@ -25,12 +24,8 @@ import tool_gateway  # noqa: E402
 REPORT_DIR = ROOT / "reports"
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def suite_id() -> str:
-    return f"stage2-battle-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    return gen_id("stage2-battle")
 
 
 def run_process(

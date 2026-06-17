@@ -14,11 +14,10 @@ import os
 import sqlite3
 import subprocess
 import sys
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from _common import gen_id, read_env_file, utc_now
 from dual_bot_lab import BOT2_VERDICT_JSON_SCHEMA, bot2_repair_messages
 from human_notification import redact_payload, redact_text
 from supervisor_common import INVALID_BOT2_STATUS, parse_bot2_verdict
@@ -36,26 +35,12 @@ HERMES_CONTAINER = os.environ.get("HERMES_CONTAINER", "hermes-agent")
 DEFAULT_TELEGRAM_CHAT_ID = "245167740"
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def session_id() -> str:
-    return f"bot2-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    return gen_id("bot2")
 
 
 def load_env(path: Path | None = None) -> dict[str, str]:
-    env_file = path or PROJECT_DIR / ".env"
-    env: dict[str, str] = {}
-    if not env_file.exists():
-        return env
-    for raw in env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        env[key.strip()] = value.strip().strip('"').strip("'")
-    return env
+    return read_env_file(path or PROJECT_DIR / ".env")
 
 
 ENV = load_env()
