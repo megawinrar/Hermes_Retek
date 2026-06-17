@@ -8,7 +8,6 @@ import json
 import sys
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -17,8 +16,15 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from _common import gen_id, utc_now  # noqa: E402
 from human_notification import redact_payload  # noqa: E402
-import process_orchestrator as orchestrator  # noqa: E402
-import tool_gateway  # noqa: E402
+from suite_harness import (  # noqa: E402
+    assert_fields,
+    build_process_args,
+    case_status,
+    gateway_case,
+    json_block,
+    report_header,
+    run_process_and_details,
+)
 
 
 REPORT_DIR = ROOT / "reports" / "real_tasks"
@@ -29,32 +35,14 @@ def suite_id() -> str:
 
 
 def process_run(*, process_store: Path, supervisor_store: Path, task: str, bot2_status: str = "APPROVE") -> dict[str, Any]:
-    args = SimpleNamespace(
+    args = build_process_args(
         process_store=process_store,
         supervisor_store=supervisor_store,
         task=task,
-        acceptance="Result must satisfy the task with concrete evidence and risk notes.",
-        bot1_result="",
-        evidence="",
         bot2_status=bot2_status,
-        bot2_verdict_json="",
-        bot2_route_audit_json="",
-        live_route_audit=False,
-        live_dual=False,
-        bot1_model="deepseek-v4-flash",
-        bot2_model="gpt-5.3-codex",
-        timeout=120,
-        max_tokens=1400,
-        notify_telegram=False,
-        notification_dry_run=True,
     )
     try:
-        payload = orchestrator.run_process(args)
-        details = orchestrator.process_details(
-            payload["process_id"],
-            store_path=process_store,
-            supervisor_store_path=supervisor_store,
-        )
+        payload, details = run_process_and_details(args)
     except Exception as exc:
         return {
             "run_failed": True,
@@ -65,30 +53,6 @@ def process_run(*, process_store: Path, supervisor_store: Path, task: str, bot2_
         "summary": details.get("summary") or {},
         "timeline": details.get("timeline") or [],
     }
-
-
-def gateway_check(*, supervisor_store: Path, command: list[str]) -> dict[str, Any]:
-    payload = tool_gateway.gateway_decision(task_id="", argv=command, store_path=supervisor_store)
-    payload["exit_code"] = 0 if payload.get("allowed") else 2
-    return payload
-
-
-def value_at(payload: dict[str, Any], dotted: str) -> Any:
-    value: Any = payload
-    for part in dotted.split("."):
-        if not isinstance(value, dict):
-            return None
-        value = value.get(part)
-    return value
-
-
-def assert_fields(actual: dict[str, Any], expected: dict[str, Any]) -> list[str]:
-    failures: list[str] = []
-    for dotted, expected_value in expected.items():
-        actual_value = value_at(actual, dotted)
-        if actual_value != expected_value:
-            failures.append(f"{dotted}: expected {expected_value!r}, got {actual_value!r}")
-    return failures
 
 
 def process_case(
@@ -120,18 +84,6 @@ def process_case(
             "notification": summary.get("notification", {}),
             "waiting_on": summary.get("waiting_on", ""),
         },
-    }
-
-
-def gateway_case(*, name: str, command: list[str], expected: dict[str, Any], supervisor_store: Path) -> dict[str, Any]:
-    payload = gateway_check(supervisor_store=supervisor_store, command=command)
-    failures = assert_fields({"gateway": payload}, expected)
-    return {
-        "name": name,
-        "kind": "gateway",
-        "passed": not failures,
-        "failures": failures,
-        "gateway": payload,
     }
 
 
@@ -227,30 +179,32 @@ def run_suite(*, report_dir: Path) -> dict[str, Any]:
 def write_report(sid: str, result: dict[str, Any], *, report_dir: Path) -> Path:
     report_dir.mkdir(parents=True, exist_ok=True)
     path = report_dir / f"{sid}.md"
-    lines = [
-        "# Hermes Retek Real Task Suite",
-        "",
-        f"- Suite: `{sid}`",
-        f"- Time: `{utc_now()}`",
-        f"- Passed: `{result['passed_count']}/{result['case_count']}`",
-        "",
-        "| Case | Kind | Result | Status | Level | Type |",
-        "| --- | --- | --- | --- | --- | --- |",
-    ]
+    lines = report_header(
+        "Hermes Retek Real Task Suite",
+        sid,
+        passed_count=result["passed_count"],
+        case_count=result["case_count"],
+        time=utc_now(),
+    )
+    lines.extend(
+        [
+            "| Case | Kind | Result | Status | Level | Type |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+    )
     for case in result["cases"]:
         summary = case.get("summary") or {}
-        status = summary.get("status") or (case.get("gateway") or {}).get("reason") or ""
         lines.append(
             "| {name} | {kind} | {result} | `{status}` | `{level}` | `{task_type}` |".format(
                 name=case["name"],
                 kind=case["kind"],
                 result="PASS" if case["passed"] else "FAIL",
-                status=status,
+                status=case_status(case),
                 level=summary.get("task_level", ""),
                 task_type=summary.get("task_type", ""),
             )
         )
-    lines.extend(["", "## Details", "", "```json", json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True), "```", ""])
+    lines.extend(["", "## Details", "", *json_block(result), ""])
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
 
