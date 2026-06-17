@@ -38,6 +38,8 @@ from supervisor_common import (
     link_bot2,
     parse_bot2_verdict,
     record_human_decision,
+    REPAIR_STATUS_FAILED_CLOSED,
+    REPAIR_STATUS_REPAIRED,
     supervisor_status_for_verdict,
     task_details,
     update_task,
@@ -260,6 +262,59 @@ def create_process_run(
 
 def parse_verdict(text: str) -> dict[str, Any]:
     return extract_bot2_verdict(text)
+
+
+def _attempt_bot2_json_repair(
+    *,
+    cfg: dict[str, str],
+    bot2_model: str,
+    max_tokens: int,
+    timeout: int,
+    rid: str,
+    round_no: int,
+    label: str,
+    task: str,
+    acceptance: str,
+    bot1: str,
+    bot2: str,
+    verdict: dict[str, Any],
+) -> tuple[dict[str, Any], str, int, dict[str, Any]]:
+    """Single-shot repair of an invalid Bot#2 verdict via the live model.
+
+    Shared by live_dual_result and live_bot1_revision_result (the only difference
+    used to be the transcript label). Returns the verdict to use, the (possibly
+    appended) Bot#2 transcript text, the repair latency, and the repair usage.
+    On success the repaired verdict replaces the original; on failure the
+    original verdict is stamped failed_closed and kept.
+    """
+    import dual_bot_lab as lab
+
+    repair_started_at = time.perf_counter()
+    bot2_repair, bot2_repair_raw = lab.call_chat(
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        model=bot2_model,
+        messages=lab.bot2_repair_messages(task, acceptance, bot1, bot2),
+        max_tokens=max_tokens,
+        timeout=timeout,
+    )
+    repair_latency_ms = elapsed_ms(repair_started_at)
+    repair_usage = bot2_repair_raw.get("usage", {})
+    lab.add_message(
+        rid,
+        f"{label}-{round_no}",
+        bot2_model,
+        bot2_repair,
+        {"usage": repair_usage, "latency_ms": repair_latency_ms},
+    )
+    repaired_verdict = parse_verdict(bot2_repair)
+    repaired_verdict["repair_attempted"] = True
+    if repaired_verdict.get("status") != INVALID_BOT2_STATUS:
+        repaired_verdict["repair_status"] = REPAIR_STATUS_REPAIRED
+        return repaired_verdict, f"{bot2}\n\n## Bot#2 JSON Repair\n\n{bot2_repair}", repair_latency_ms, repair_usage
+    verdict["repair_attempted"] = True
+    verdict["repair_status"] = REPAIR_STATUS_FAILED_CLOSED
+    return verdict, bot2, repair_latency_ms, repair_usage
 
 
 def route_requires_bot1(route: dict[str, Any]) -> bool:
@@ -743,33 +798,20 @@ def live_dual_result(
         verdict = parse_verdict(bot2)
         bot2_repair_latency_ms = 0
         if verdict.get("status") == INVALID_BOT2_STATUS:
-            bot2_repair_started_at = time.perf_counter()
-            bot2_repair, bot2_repair_raw = lab.call_chat(
-                base_url=cfg["base_url"],
-                api_key=cfg["api_key"],
-                model=bot2_model,
-                messages=lab.bot2_repair_messages(task, acceptance, bot1, bot2),
+            verdict, bot2, bot2_repair_latency_ms, bot2_repair_usage = _attempt_bot2_json_repair(
+                cfg=cfg,
+                bot2_model=bot2_model,
                 max_tokens=max_tokens,
                 timeout=timeout,
+                rid=rid,
+                round_no=round_no,
+                label="Bot#2-repair",
+                task=task,
+                acceptance=acceptance,
+                bot1=bot1,
+                bot2=bot2,
+                verdict=verdict,
             )
-            bot2_repair_latency_ms = elapsed_ms(bot2_repair_started_at)
-            bot2_repair_usage = bot2_repair_raw.get("usage", {})
-            lab.add_message(
-                rid,
-                f"Bot#2-repair-{round_no}",
-                bot2_model,
-                bot2_repair,
-                {"usage": bot2_repair_usage, "latency_ms": bot2_repair_latency_ms},
-            )
-            repaired_verdict = parse_verdict(bot2_repair)
-            repaired_verdict["repair_attempted"] = True
-            if repaired_verdict.get("status") != INVALID_BOT2_STATUS:
-                repaired_verdict["repair_status"] = "repaired"
-                verdict = repaired_verdict
-                bot2 = f"{bot2}\n\n## Bot#2 JSON Repair\n\n{bot2_repair}"
-            else:
-                verdict["repair_attempted"] = True
-                verdict["repair_status"] = "failed_closed"
 
         loop_exhausted = verdict.get("status") == "REQUEST_CHANGES" and round_no == MAX_BOT_REVIEW_CYCLES
         if loop_exhausted:
@@ -941,33 +983,20 @@ def live_bot1_revision_result(
     bot2_repair_latency_ms = 0
     bot2_repair_usage: dict[str, Any] = {}
     if verdict.get("status") == INVALID_BOT2_STATUS:
-        bot2_repair_started_at = time.perf_counter()
-        bot2_repair, bot2_repair_raw = lab.call_chat(
-            base_url=cfg["base_url"],
-            api_key=cfg["api_key"],
-            model=bot2_model,
-            messages=lab.bot2_repair_messages(task, acceptance, bot1, bot2),
+        verdict, bot2, bot2_repair_latency_ms, bot2_repair_usage = _attempt_bot2_json_repair(
+            cfg=cfg,
+            bot2_model=bot2_model,
             max_tokens=max_tokens,
             timeout=timeout,
+            rid=rid,
+            round_no=round_no,
+            label="Bot#2-human-repair",
+            task=task,
+            acceptance=acceptance,
+            bot1=bot1,
+            bot2=bot2,
+            verdict=verdict,
         )
-        bot2_repair_latency_ms = elapsed_ms(bot2_repair_started_at)
-        bot2_repair_usage = bot2_repair_raw.get("usage", {})
-        lab.add_message(
-            rid,
-            f"Bot#2-human-repair-{round_no}",
-            bot2_model,
-            bot2_repair,
-            {"usage": bot2_repair_usage, "latency_ms": bot2_repair_latency_ms},
-        )
-        repaired_verdict = parse_verdict(bot2_repair)
-        repaired_verdict["repair_attempted"] = True
-        if repaired_verdict.get("status") != INVALID_BOT2_STATUS:
-            repaired_verdict["repair_status"] = "repaired"
-            verdict = repaired_verdict
-            bot2 = f"{bot2}\n\n## Bot#2 JSON Repair\n\n{bot2_repair}"
-        else:
-            verdict["repair_attempted"] = True
-            verdict["repair_status"] = "failed_closed"
 
     cycle = {
         "round": round_no,

@@ -25,6 +25,8 @@ from supervisor_common import (
     HUMAN_DECISION_NO_STATUS,
     HUMAN_DECISION_YES_STATUS,
     INVALID_BOT2_STATUS,
+    REPAIR_STATUS_FAILED_CLOSED,
+    REPAIR_STATUS_REPAIRED,
     parse_bot2_verdict,
 )
 
@@ -424,11 +426,11 @@ def review_with_bot2_repair(
     repaired = parse_verdict(repair_raw)
     repaired["repair_attempted"] = True
     if repaired.get("status") != INVALID_BOT2_STATUS and repair_code == 0:
-        repaired["repair_status"] = "repaired"
+        repaired["repair_status"] = REPAIR_STATUS_REPAIRED
         return code, f"{raw}\n\n## Bot#2 JSON Repair\n\n{repair_raw}", repaired
 
     verdict["repair_attempted"] = True
-    verdict["repair_status"] = "failed_closed"
+    verdict["repair_status"] = REPAIR_STATUS_FAILED_CLOSED
     verdict["risks"] = list(verdict.get("risks") or []) + [f"bot2_repair_exit_{repair_code}"]
     return code, f"{raw}\n\n## Bot#2 JSON Repair Failed\n\n{repair_raw}", verdict
 

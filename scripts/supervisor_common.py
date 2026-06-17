@@ -47,6 +47,11 @@ ESCALATION_STATUSES = {
 }
 BLOCKED_STATUSES = {"BLOCKED_BY_POLICY", "LOOP_DETECTED"}
 INVALID_BOT2_STATUS = "INVALID_BOT2_OUTPUT"
+
+# Outcome labels for the Bot#2 invalid-JSON single-shot repair attempt, shared by
+# every repair site so the strings can never drift.
+REPAIR_STATUS_REPAIRED = "repaired"
+REPAIR_STATUS_FAILED_CLOSED = "failed_closed"
 BOT2_VERDICT_STATUSES = APPROVED_STATUSES | ESCALATION_STATUSES | BLOCKED_STATUSES | {INVALID_BOT2_STATUS}
 
 YES_MEANING = "Agree with Bot#2 and return Bot#1 to fixes."
