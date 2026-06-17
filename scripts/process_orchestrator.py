@@ -10,11 +10,10 @@ import json
 import os
 import sqlite3
 import time
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from _common import gen_id, utc_now
 from human_notification import (
     build_human_notification_payload,
     dispatch_human_notification,
@@ -39,6 +38,8 @@ from supervisor_common import (
     link_bot2,
     parse_bot2_verdict,
     record_human_decision,
+    REPAIR_STATUS_FAILED_CLOSED,
+    REPAIR_STATUS_REPAIRED,
     supervisor_status_for_verdict,
     task_details,
     update_task,
@@ -100,16 +101,12 @@ def _remember_lru(cache: dict[str, Any], key: str, value: Any, *, max_size: int)
     cache[key] = value
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def elapsed_ms(started_at: float) -> int:
     return max(0, int((time.perf_counter() - started_at) * 1000))
 
 
 def process_id() -> str:
-    return f"proc-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    return gen_id("proc")
 
 
 def classify_task(task: str) -> dict[str, Any]:
@@ -265,6 +262,59 @@ def create_process_run(
 
 def parse_verdict(text: str) -> dict[str, Any]:
     return extract_bot2_verdict(text)
+
+
+def _attempt_bot2_json_repair(
+    *,
+    cfg: dict[str, str],
+    bot2_model: str,
+    max_tokens: int,
+    timeout: int,
+    rid: str,
+    round_no: int,
+    label: str,
+    task: str,
+    acceptance: str,
+    bot1: str,
+    bot2: str,
+    verdict: dict[str, Any],
+) -> tuple[dict[str, Any], str, int, dict[str, Any]]:
+    """Single-shot repair of an invalid Bot#2 verdict via the live model.
+
+    Shared by live_dual_result and live_bot1_revision_result (the only difference
+    used to be the transcript label). Returns the verdict to use, the (possibly
+    appended) Bot#2 transcript text, the repair latency, and the repair usage.
+    On success the repaired verdict replaces the original; on failure the
+    original verdict is stamped failed_closed and kept.
+    """
+    import dual_bot_lab as lab
+
+    repair_started_at = time.perf_counter()
+    bot2_repair, bot2_repair_raw = lab.call_chat(
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        model=bot2_model,
+        messages=lab.bot2_repair_messages(task, acceptance, bot1, bot2),
+        max_tokens=max_tokens,
+        timeout=timeout,
+    )
+    repair_latency_ms = elapsed_ms(repair_started_at)
+    repair_usage = bot2_repair_raw.get("usage", {})
+    lab.add_message(
+        rid,
+        f"{label}-{round_no}",
+        bot2_model,
+        bot2_repair,
+        {"usage": repair_usage, "latency_ms": repair_latency_ms},
+    )
+    repaired_verdict = parse_verdict(bot2_repair)
+    repaired_verdict["repair_attempted"] = True
+    if repaired_verdict.get("status") != INVALID_BOT2_STATUS:
+        repaired_verdict["repair_status"] = REPAIR_STATUS_REPAIRED
+        return repaired_verdict, f"{bot2}\n\n## Bot#2 JSON Repair\n\n{bot2_repair}", repair_latency_ms, repair_usage
+    verdict["repair_attempted"] = True
+    verdict["repair_status"] = REPAIR_STATUS_FAILED_CLOSED
+    return verdict, bot2, repair_latency_ms, repair_usage
 
 
 def route_requires_bot1(route: dict[str, Any]) -> bool:
@@ -748,33 +798,20 @@ def live_dual_result(
         verdict = parse_verdict(bot2)
         bot2_repair_latency_ms = 0
         if verdict.get("status") == INVALID_BOT2_STATUS:
-            bot2_repair_started_at = time.perf_counter()
-            bot2_repair, bot2_repair_raw = lab.call_chat(
-                base_url=cfg["base_url"],
-                api_key=cfg["api_key"],
-                model=bot2_model,
-                messages=lab.bot2_repair_messages(task, acceptance, bot1, bot2),
+            verdict, bot2, bot2_repair_latency_ms, bot2_repair_usage = _attempt_bot2_json_repair(
+                cfg=cfg,
+                bot2_model=bot2_model,
                 max_tokens=max_tokens,
                 timeout=timeout,
+                rid=rid,
+                round_no=round_no,
+                label="Bot#2-repair",
+                task=task,
+                acceptance=acceptance,
+                bot1=bot1,
+                bot2=bot2,
+                verdict=verdict,
             )
-            bot2_repair_latency_ms = elapsed_ms(bot2_repair_started_at)
-            bot2_repair_usage = bot2_repair_raw.get("usage", {})
-            lab.add_message(
-                rid,
-                f"Bot#2-repair-{round_no}",
-                bot2_model,
-                bot2_repair,
-                {"usage": bot2_repair_usage, "latency_ms": bot2_repair_latency_ms},
-            )
-            repaired_verdict = parse_verdict(bot2_repair)
-            repaired_verdict["repair_attempted"] = True
-            if repaired_verdict.get("status") != INVALID_BOT2_STATUS:
-                repaired_verdict["repair_status"] = "repaired"
-                verdict = repaired_verdict
-                bot2 = f"{bot2}\n\n## Bot#2 JSON Repair\n\n{bot2_repair}"
-            else:
-                verdict["repair_attempted"] = True
-                verdict["repair_status"] = "failed_closed"
 
         loop_exhausted = verdict.get("status") == "REQUEST_CHANGES" and round_no == MAX_BOT_REVIEW_CYCLES
         if loop_exhausted:
@@ -946,33 +983,20 @@ def live_bot1_revision_result(
     bot2_repair_latency_ms = 0
     bot2_repair_usage: dict[str, Any] = {}
     if verdict.get("status") == INVALID_BOT2_STATUS:
-        bot2_repair_started_at = time.perf_counter()
-        bot2_repair, bot2_repair_raw = lab.call_chat(
-            base_url=cfg["base_url"],
-            api_key=cfg["api_key"],
-            model=bot2_model,
-            messages=lab.bot2_repair_messages(task, acceptance, bot1, bot2),
+        verdict, bot2, bot2_repair_latency_ms, bot2_repair_usage = _attempt_bot2_json_repair(
+            cfg=cfg,
+            bot2_model=bot2_model,
             max_tokens=max_tokens,
             timeout=timeout,
+            rid=rid,
+            round_no=round_no,
+            label="Bot#2-human-repair",
+            task=task,
+            acceptance=acceptance,
+            bot1=bot1,
+            bot2=bot2,
+            verdict=verdict,
         )
-        bot2_repair_latency_ms = elapsed_ms(bot2_repair_started_at)
-        bot2_repair_usage = bot2_repair_raw.get("usage", {})
-        lab.add_message(
-            rid,
-            f"Bot#2-human-repair-{round_no}",
-            bot2_model,
-            bot2_repair,
-            {"usage": bot2_repair_usage, "latency_ms": bot2_repair_latency_ms},
-        )
-        repaired_verdict = parse_verdict(bot2_repair)
-        repaired_verdict["repair_attempted"] = True
-        if repaired_verdict.get("status") != INVALID_BOT2_STATUS:
-            repaired_verdict["repair_status"] = "repaired"
-            verdict = repaired_verdict
-            bot2 = f"{bot2}\n\n## Bot#2 JSON Repair\n\n{bot2_repair}"
-        else:
-            verdict["repair_attempted"] = True
-            verdict["repair_status"] = "failed_closed"
 
     cycle = {
         "round": round_no,
@@ -1292,6 +1316,52 @@ def dry_revision_verdict(prior_verdict: dict[str, Any]) -> dict[str, Any]:
     return verdict
 
 
+def _record_bot2_quality_gate(
+    *,
+    pid: str,
+    supervisor_task_id: str,
+    bot2_session_id: str,
+    verdict: dict[str, Any],
+    final_status: str,
+    skill_context: dict[str, Any],
+    role_run_summary: str,
+    process_store: Path | str | None,
+    supervisor_store: Path | str | None,
+    after_human_continue: bool = False,
+) -> None:
+    """Link the Bot#2 verdict to the supervisor task and record the quality-gate
+    assignment, role run, and bot2_verdict event.
+
+    Shared verbatim by run_process and continue_process; the role-run summary and
+    the after_human_continue marker are the only differences between the two.
+    """
+    link_bot2(supervisor_task_id, bot2_session_id, verdict, store_path=supervisor_store)
+    add_assignment(
+        pid,
+        "bot2",
+        "quality_gate",
+        "completed",
+        {
+            "session_id": bot2_session_id,
+            "verdict": verdict,
+            "skills": skill_context_for_role(skill_context, "bot2"),
+        },
+        store_path=process_store,
+    )
+    add_role_run(
+        supervisor_task_id,
+        "bot2",
+        "completed",
+        role_run_summary,
+        {"process_id": pid, "verdict": verdict},
+        store_path=supervisor_store,
+    )
+    event = {"bot2_session_id": bot2_session_id, "verdict": verdict, "supervisor_status": final_status}
+    if after_human_continue:
+        event["after_human_continue"] = True
+    add_process_event(pid, "bot2_verdict", event, store_path=process_store)
+
+
 def continue_process(args: argparse.Namespace) -> dict[str, Any]:
     process_started_at = time.perf_counter()
     details = process_details(
@@ -1410,29 +1480,18 @@ def continue_process(args: argparse.Namespace) -> dict[str, Any]:
             store_path=args.supervisor_store,
         )
 
-    link_bot2(supervisor_task_id, bot2_session_id, verdict, store_path=args.supervisor_store)
     final_status = supervisor_status_for_verdict(verdict)
-    add_assignment(
-        args.process_id,
-        "bot2",
-        "quality_gate",
-        "completed",
-        {"session_id": bot2_session_id, "verdict": verdict, "skills": skill_context_for_role(skill_context, "bot2")},
-        store_path=args.process_store,
-    )
-    add_role_run(
-        supervisor_task_id,
-        "bot2",
-        "completed",
-        f"Bot#2 verdict after Bot#1 revision: {verdict.get('status')}",
-        {"process_id": args.process_id, "verdict": verdict},
-        store_path=args.supervisor_store,
-    )
-    add_process_event(
-        args.process_id,
-        "bot2_verdict",
-        {"bot2_session_id": bot2_session_id, "verdict": verdict, "supervisor_status": final_status, "after_human_continue": True},
-        store_path=args.process_store,
+    _record_bot2_quality_gate(
+        pid=args.process_id,
+        supervisor_task_id=supervisor_task_id,
+        bot2_session_id=bot2_session_id,
+        verdict=verdict,
+        final_status=final_status,
+        skill_context=skill_context,
+        role_run_summary=f"Bot#2 verdict after Bot#1 revision: {verdict.get('status')}",
+        after_human_continue=True,
+        process_store=args.process_store,
+        supervisor_store=args.supervisor_store,
     )
     if verdict.get("review_cycles"):
         add_process_event(
@@ -1663,32 +1722,16 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
             bot2_session_id = f"{pid}-route-policy"
 
     if needs_bot2:
-        link_bot2(supervisor_task_id, bot2_session_id, verdict, store_path=args.supervisor_store)
-        add_assignment(
-            pid,
-            "bot2",
-            "quality_gate",
-            "completed",
-            {
-                "session_id": bot2_session_id,
-                "verdict": verdict,
-                "skills": skill_context_for_role(skill_context, "bot2"),
-            },
-            store_path=args.process_store,
-        )
-        add_role_run(
-            supervisor_task_id,
-            "bot2",
-            "completed",
-            f"Bot#2 verdict: {verdict.get('status')}",
-            {"process_id": pid, "verdict": verdict},
-            store_path=args.supervisor_store,
-        )
-        add_process_event(
-            pid,
-            "bot2_verdict",
-            {"bot2_session_id": bot2_session_id, "verdict": verdict, "supervisor_status": final_status},
-            store_path=args.process_store,
+        _record_bot2_quality_gate(
+            pid=pid,
+            supervisor_task_id=supervisor_task_id,
+            bot2_session_id=bot2_session_id,
+            verdict=verdict,
+            final_status=final_status,
+            skill_context=skill_context,
+            role_run_summary=f"Bot#2 verdict: {verdict.get('status')}",
+            process_store=args.process_store,
+            supervisor_store=args.supervisor_store,
         )
         if verdict.get("review_cycles"):
             add_process_event(

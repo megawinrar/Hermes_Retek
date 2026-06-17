@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sqlite3
 import subprocess
 import sys
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from _common import gen_id, utc_now
+from json_salvage import brace_objects, fenced_json_blocks, strip_json_fence
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -47,10 +47,21 @@ ESCALATION_STATUSES = {
 }
 BLOCKED_STATUSES = {"BLOCKED_BY_POLICY", "LOOP_DETECTED"}
 INVALID_BOT2_STATUS = "INVALID_BOT2_OUTPUT"
+
+# Outcome labels for the Bot#2 invalid-JSON single-shot repair attempt, shared by
+# every repair site so the strings can never drift.
+REPAIR_STATUS_REPAIRED = "repaired"
+REPAIR_STATUS_FAILED_CLOSED = "failed_closed"
 BOT2_VERDICT_STATUSES = APPROVED_STATUSES | ESCALATION_STATUSES | BLOCKED_STATUSES | {INVALID_BOT2_STATUS}
 
 YES_MEANING = "Agree with Bot#2 and return Bot#1 to fixes."
 NO_MEANING = "Reject Bot#2 objection and accept Bot#1 result as-is."
+
+# Canonical task statuses a human Да/Нет decision drives. Shared so every
+# subsystem (supervisor task store + bot2_gate review store) records the same
+# vocabulary for the same outcome (see BUG-2 in docs/refactoring/03_latent_bugs.md).
+HUMAN_DECISION_YES_STATUS = "return_to_bot1"
+HUMAN_DECISION_NO_STATUS = "accepted_by_user_override"
 
 SUPERVISOR_STATUSES = {
     "created",
@@ -76,10 +87,6 @@ ALLOWED_STATUS_TRANSITIONS = {
 }
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def dumps(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
 
@@ -91,7 +98,7 @@ def loads(raw: str | None, default: Any = None) -> Any:
 
 
 def task_id() -> str:
-    return f"sup-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    return gen_id("sup")
 
 
 def connect(store_path: Path | str | None = None) -> sqlite3.Connection:
@@ -439,9 +446,7 @@ def invalid_bot2_verdict(reason: str, raw: str = "") -> dict[str, Any]:
 
 
 def _strip_single_json_fence(raw: str) -> str:
-    stripped = raw.strip()
-    match = re.fullmatch(r"```(?:json)?\s*(\{.*\})\s*```", stripped, flags=re.S)
-    return match.group(1).strip() if match else stripped
+    return strip_json_fence(raw)
 
 
 def parse_bot2_verdict(raw: str) -> dict[str, Any]:
@@ -465,9 +470,7 @@ def extract_bot2_verdict(raw: str) -> dict[str, Any]:
     direct = parse_bot2_verdict(raw)
     if direct.get("status") != INVALID_BOT2_STATUS:
         return direct
-    fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", raw, flags=re.S)
-    brace_candidates = re.findall(r"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})", raw, flags=re.S)
-    for candidate in fenced + brace_candidates:
+    for candidate in fenced_json_blocks(raw) + brace_objects(raw):
         parsed = parse_bot2_verdict(candidate)
         if parsed.get("status") != INVALID_BOT2_STATUS:
             return parsed
@@ -533,7 +536,7 @@ def record_human_decision(
     if normalized not in {"yes", "no"}:
         raise SystemExit("--choice must be yes or no")
     meaning = YES_MEANING if normalized == "yes" else NO_MEANING
-    status = "return_to_bot1" if normalized == "yes" else "accepted_by_user_override"
+    status = HUMAN_DECISION_YES_STATUS if normalized == "yes" else HUMAN_DECISION_NO_STATUS
     with connect(store_path) as con:
         pending = con.execute(
             """

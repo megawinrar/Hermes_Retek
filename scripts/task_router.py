@@ -9,6 +9,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from json_salvage import brace_objects, strip_json_fence
+from levels import LEVEL_RANK, RISK_RANK
+
 
 LEVEL_DEFAULTS: dict[str, dict[str, Any]] = {
     "L0": {
@@ -67,9 +70,6 @@ LEVEL_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_output_tokens": 6000,
     },
 }
-LEVEL_RANK = {level: index for index, level in enumerate(["L0", "L1", "L2", "L3", "L4"])}
-RISK_RANK = {"low": 0, "medium": 1, "high": 2}
-
 PROCESS_PLAN: dict[str, list[str]] = {
     "L0": ["router", "supervisor"],
     "L1": ["router", "supervisor", "bot1"],
@@ -292,15 +292,11 @@ def parse_classification_audit(raw: str) -> dict[str, Any]:
         "review_required": True,
         "summary": "Bot#2 route audit did not return a valid JSON object; require review fail-safe.",
     }
-    text = raw.strip()
-    fenced = re.fullmatch(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.S)
-    if fenced:
-        text = fenced.group(1).strip()
+    text = strip_json_fence(raw)
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
-        candidates = re.findall(r"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})", raw, flags=re.S)
-        for candidate in candidates:
+        for candidate in brace_objects(raw):
             try:
                 parsed = json.loads(candidate)
             except json.JSONDecodeError:

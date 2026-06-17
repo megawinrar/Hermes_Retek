@@ -7,30 +7,31 @@ import argparse
 import json
 import sys
 import tempfile
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
+from _common import gen_id, utc_now  # noqa: E402
 from human_notification import redact_payload  # noqa: E402
-import process_orchestrator as orchestrator  # noqa: E402
-import tool_gateway  # noqa: E402
+from suite_harness import (  # noqa: E402
+    assert_fields,
+    build_process_args,
+    case_status,
+    gateway_case,
+    json_block,
+    report_header,
+    run_process_and_details,
+)
 
 
 REPORT_DIR = ROOT / "reports"
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def suite_id() -> str:
-    return f"stage2-battle-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    return gen_id("stage2-battle")
 
 
 def run_process(
@@ -39,35 +40,15 @@ def run_process(
     supervisor_store: Path,
     task: str,
     bot2_status: str = "APPROVE",
-    timeout: int = 120,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    del timeout
-    args = SimpleNamespace(
+    args = build_process_args(
         process_store=process_store,
         supervisor_store=supervisor_store,
         task=task,
-        acceptance="Result must satisfy the task with concrete evidence and risk notes.",
-        bot1_result="",
-        evidence="",
         bot2_status=bot2_status,
-        bot2_verdict_json="",
-        bot2_route_audit_json="",
-        live_route_audit=False,
-        live_dual=False,
-        bot1_model="deepseek-v4-flash",
-        bot2_model="gpt-5.3-codex",
-        timeout=120,
-        max_tokens=1400,
-        notify_telegram=False,
-        notification_dry_run=True,
     )
     try:
-        payload = orchestrator.run_process(args)
-        details = orchestrator.process_details(
-            payload["process_id"],
-            store_path=process_store,
-            supervisor_store_path=supervisor_store,
-        )
+        return run_process_and_details(args)
     except Exception as exc:
         return (
             {},
@@ -77,35 +58,6 @@ def run_process(
                 "error": str(exc),
             },
         )
-    return payload, details
-
-
-def gateway_check(
-    *,
-    supervisor_store: Path,
-    command: list[str],
-    task_id: str = "",
-    timeout: int = 120,
-) -> dict[str, Any]:
-    del timeout
-    payload = tool_gateway.gateway_decision(task_id=task_id, argv=command, store_path=supervisor_store)
-    payload["exit_code"] = 0 if payload.get("allowed") else 2
-    return payload
-
-
-def assert_fields(actual: dict[str, Any], expected: dict[str, Any]) -> list[str]:
-    failures: list[str] = []
-    for dotted, expected_value in expected.items():
-        value: Any = actual
-        for part in dotted.split("."):
-            if isinstance(value, dict):
-                value = value.get(part)
-            else:
-                value = None
-                break
-        if value != expected_value:
-            failures.append(f"{dotted}: expected {expected_value!r}, got {value!r}")
-    return failures
 
 
 def process_case(
@@ -136,24 +88,6 @@ def process_case(
         "process_id": payload.get("process_id", ""),
         "supervisor_task_id": payload.get("supervisor_task_id", ""),
         "summary": summary,
-    }
-
-
-def gateway_case(
-    *,
-    name: str,
-    command: list[str],
-    expected: dict[str, Any],
-    supervisor_store: Path,
-) -> dict[str, Any]:
-    payload = gateway_check(supervisor_store=supervisor_store, command=command)
-    failures = assert_fields({"gateway": payload}, expected)
-    return {
-        "name": name,
-        "kind": "gateway",
-        "passed": not failures,
-        "failures": failures,
-        "gateway": payload,
     }
 
 
@@ -294,24 +228,22 @@ def run_suite(*, report_dir: Path) -> dict[str, Any]:
 def write_report(sid: str, cases: list[dict[str, Any]], *, report_dir: Path) -> Path:
     report_dir.mkdir(parents=True, exist_ok=True)
     path = report_dir / f"{sid}.md"
-    lines = [
-        "# Stage 2 Battle Suite",
-        "",
-        f"- Suite: `{sid}`",
-        f"- Time: `{utc_now()}`",
-        f"- Passed: `{sum(1 for case in cases if case['passed'])}/{len(cases)}`",
-        "",
-        "| Case | Kind | Result | Key status |",
-        "| --- | --- | --- | --- |",
-    ]
+    lines = report_header(
+        "Stage 2 Battle Suite",
+        sid,
+        passed_count=sum(1 for case in cases if case["passed"]),
+        case_count=len(cases),
+        time=utc_now(),
+    )
+    lines.extend(
+        [
+            "| Case | Kind | Result | Key status |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
     for case in cases:
-        status = (
-            (case.get("summary") or {}).get("status")
-            or (case.get("gateway") or {}).get("reason")
-            or ""
-        )
         result = "PASS" if case["passed"] else "FAIL"
-        lines.append(f"| {case['name']} | {case['kind']} | {result} | `{status}` |")
+        lines.append(f"| {case['name']} | {case['kind']} | {result} | `{case_status(case)}` |")
     lines.extend(["", "## Details", ""])
     for case in cases:
         lines.extend(
@@ -326,9 +258,7 @@ def write_report(sid: str, cases: list[dict[str, Any]], *, report_dir: Path) -> 
             lines.append("- Failures:")
             lines.extend(f"  - {failure}" for failure in case["failures"])
         lines.append("")
-        lines.append("```json")
-        lines.append(json.dumps(redact_payload(case), ensure_ascii=False, indent=2, sort_keys=True))
-        lines.append("```")
+        lines.extend(json_block(redact_payload(case)))
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
