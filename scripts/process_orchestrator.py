@@ -1316,6 +1316,52 @@ def dry_revision_verdict(prior_verdict: dict[str, Any]) -> dict[str, Any]:
     return verdict
 
 
+def _record_bot2_quality_gate(
+    *,
+    pid: str,
+    supervisor_task_id: str,
+    bot2_session_id: str,
+    verdict: dict[str, Any],
+    final_status: str,
+    skill_context: dict[str, Any],
+    role_run_summary: str,
+    process_store: Path | str | None,
+    supervisor_store: Path | str | None,
+    after_human_continue: bool = False,
+) -> None:
+    """Link the Bot#2 verdict to the supervisor task and record the quality-gate
+    assignment, role run, and bot2_verdict event.
+
+    Shared verbatim by run_process and continue_process; the role-run summary and
+    the after_human_continue marker are the only differences between the two.
+    """
+    link_bot2(supervisor_task_id, bot2_session_id, verdict, store_path=supervisor_store)
+    add_assignment(
+        pid,
+        "bot2",
+        "quality_gate",
+        "completed",
+        {
+            "session_id": bot2_session_id,
+            "verdict": verdict,
+            "skills": skill_context_for_role(skill_context, "bot2"),
+        },
+        store_path=process_store,
+    )
+    add_role_run(
+        supervisor_task_id,
+        "bot2",
+        "completed",
+        role_run_summary,
+        {"process_id": pid, "verdict": verdict},
+        store_path=supervisor_store,
+    )
+    event = {"bot2_session_id": bot2_session_id, "verdict": verdict, "supervisor_status": final_status}
+    if after_human_continue:
+        event["after_human_continue"] = True
+    add_process_event(pid, "bot2_verdict", event, store_path=process_store)
+
+
 def continue_process(args: argparse.Namespace) -> dict[str, Any]:
     process_started_at = time.perf_counter()
     details = process_details(
@@ -1434,29 +1480,18 @@ def continue_process(args: argparse.Namespace) -> dict[str, Any]:
             store_path=args.supervisor_store,
         )
 
-    link_bot2(supervisor_task_id, bot2_session_id, verdict, store_path=args.supervisor_store)
     final_status = supervisor_status_for_verdict(verdict)
-    add_assignment(
-        args.process_id,
-        "bot2",
-        "quality_gate",
-        "completed",
-        {"session_id": bot2_session_id, "verdict": verdict, "skills": skill_context_for_role(skill_context, "bot2")},
-        store_path=args.process_store,
-    )
-    add_role_run(
-        supervisor_task_id,
-        "bot2",
-        "completed",
-        f"Bot#2 verdict after Bot#1 revision: {verdict.get('status')}",
-        {"process_id": args.process_id, "verdict": verdict},
-        store_path=args.supervisor_store,
-    )
-    add_process_event(
-        args.process_id,
-        "bot2_verdict",
-        {"bot2_session_id": bot2_session_id, "verdict": verdict, "supervisor_status": final_status, "after_human_continue": True},
-        store_path=args.process_store,
+    _record_bot2_quality_gate(
+        pid=args.process_id,
+        supervisor_task_id=supervisor_task_id,
+        bot2_session_id=bot2_session_id,
+        verdict=verdict,
+        final_status=final_status,
+        skill_context=skill_context,
+        role_run_summary=f"Bot#2 verdict after Bot#1 revision: {verdict.get('status')}",
+        after_human_continue=True,
+        process_store=args.process_store,
+        supervisor_store=args.supervisor_store,
     )
     if verdict.get("review_cycles"):
         add_process_event(
@@ -1687,32 +1722,16 @@ def run_process(args: argparse.Namespace) -> dict[str, Any]:
             bot2_session_id = f"{pid}-route-policy"
 
     if needs_bot2:
-        link_bot2(supervisor_task_id, bot2_session_id, verdict, store_path=args.supervisor_store)
-        add_assignment(
-            pid,
-            "bot2",
-            "quality_gate",
-            "completed",
-            {
-                "session_id": bot2_session_id,
-                "verdict": verdict,
-                "skills": skill_context_for_role(skill_context, "bot2"),
-            },
-            store_path=args.process_store,
-        )
-        add_role_run(
-            supervisor_task_id,
-            "bot2",
-            "completed",
-            f"Bot#2 verdict: {verdict.get('status')}",
-            {"process_id": pid, "verdict": verdict},
-            store_path=args.supervisor_store,
-        )
-        add_process_event(
-            pid,
-            "bot2_verdict",
-            {"bot2_session_id": bot2_session_id, "verdict": verdict, "supervisor_status": final_status},
-            store_path=args.process_store,
+        _record_bot2_quality_gate(
+            pid=pid,
+            supervisor_task_id=supervisor_task_id,
+            bot2_session_id=bot2_session_id,
+            verdict=verdict,
+            final_status=final_status,
+            skill_context=skill_context,
+            role_run_summary=f"Bot#2 verdict: {verdict.get('status')}",
+            process_store=args.process_store,
+            supervisor_store=args.supervisor_store,
         )
         if verdict.get("review_cycles"):
             add_process_event(
