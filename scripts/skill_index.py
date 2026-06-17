@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from levels import LEVELS
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "skills" / "manifest.json"
@@ -119,7 +121,7 @@ def validate_manifest(data: dict[str, Any], *, base_dir: Path = ROOT) -> None:
         if item.get("risk_level") == "high" and not item.get("gateway_required"):
             raise ValueError(f"{name} high-risk skill must require gateway")
     level_policy = data.get("level_policy") or {}
-    for level in ["L0", "L1", "L2", "L3", "L4"]:
+    for level in LEVELS:
         if level not in level_policy:
             raise ValueError(f"missing level_policy for {level}")
     task_type_tags = data.get("task_type_tags") or {}
@@ -441,7 +443,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_cmd.set_defaults(func=cmd_list)
 
     select = sub.add_parser("select")
-    select.add_argument("--level", required=True, choices=["L0", "L1", "L2", "L3", "L4"])
+    select.add_argument("--level", required=True, choices=LEVELS)
     select.add_argument("--role", default="")
     select.add_argument("--task-type", default="")
     select.add_argument("--include-approval-required", action="store_true")
@@ -449,7 +451,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     context = sub.add_parser("context")
     context.add_argument("--route-json", default="")
-    context.add_argument("--level", default="L2", choices=["L0", "L1", "L2", "L3", "L4"])
+    context.add_argument("--level", default="L2", choices=LEVELS)
     context.add_argument("--task-type", default="standard_task")
     context.add_argument("--risk-level", default="medium", choices=["low", "medium", "high"])
     context.add_argument("--review-required", action="store_true")

@@ -4,6 +4,18 @@
 > Каждый требует решения: фиксить в рамках рефакторинга (с тестом «было/стало»)
 > или вынести отдельно.
 
+## Status (Phase 2)
+
+- **BUG-1 — FIXED.** `should_escalate` couples to `ESCALATION_STATUSES`. Test:
+  `tests/test_should_escalate_characterization.py`.
+- **BUG-2 — FIXED** (chose "свести к канону"). `bot2_gate.cmd_decide` now writes
+  `HUMAN_DECISION_YES_STATUS`/`HUMAN_DECISION_NO_STATUS` from supervisor_common.
+  Test: `tests/test_bot2_gate_decide_vocab.py`.
+- **BUG-3 — FIXED.** `dual_bot_lab.db()` has an `_INITIALIZED` guard.
+- **BUG-4 — documented, deferred** (needs a redaction-threshold decision).
+
+---
+
 ## BUG-1 — Escalation-status drift (severity: HIGH)
 
 `bot2_gate.should_escalate` (`scripts/bot2_gate.py:322`) держит собственный список

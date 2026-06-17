@@ -20,7 +20,13 @@ from typing import Any
 from _common import gen_id, read_env_file, utc_now
 from dual_bot_lab import BOT2_VERDICT_JSON_SCHEMA, bot2_repair_messages
 from human_notification import redact_payload, redact_text
-from supervisor_common import INVALID_BOT2_STATUS, parse_bot2_verdict
+from supervisor_common import (
+    ESCALATION_STATUSES,
+    HUMAN_DECISION_NO_STATUS,
+    HUMAN_DECISION_YES_STATUS,
+    INVALID_BOT2_STATUS,
+    parse_bot2_verdict,
+)
 
 
 PROJECT_DIR = Path(os.environ.get("HERMES_PROJECT_DIR", "/opt/hermes-assistant"))
@@ -305,18 +311,11 @@ def verdict_text(verdict: dict[str, Any]) -> str:
 
 
 def should_escalate(verdict: dict[str, Any]) -> bool:
+    # BUG-1 fix: use the single canonical escalation set from supervisor_common
+    # instead of a local list that had drifted (it omitted NEED_HUMAN_DECISION
+    # and REFACTORING_REQUIRED, so those verdicts silently skipped the gate).
     status = str(verdict.get("status") or "").upper()
-    return status in {
-        "REJECT",
-        "NEEDS_HUMAN",
-        "REQUEST_CHANGES",
-        "INSUFFICIENT_EVIDENCE",
-        "MISSING_TESTS_FOR_CODE_CHANGE",
-        "FAKE_IMPLEMENTATION_DETECTED",
-        "TEST_THEATER_DETECTED",
-        "RUBBER_STAMP_RISK",
-        INVALID_BOT2_STATUS,
-    }
+    return status in ESCALATION_STATUSES or status == INVALID_BOT2_STATUS
 
 
 def escalation_message(
@@ -559,7 +558,9 @@ def cmd_decide(args: argparse.Namespace) -> None:
         if choice == "yes"
         else "Отклонить возражение Bot#2 и принять работу Bot#1 как есть"
     )
-    status = "user_agreed_with_bot2" if choice == "yes" else "user_accepted_bot1"
+    # BUG-2 fix: record the same canonical task status the supervisor uses, so
+    # the review store and the supervisor task store speak one vocabulary.
+    status = HUMAN_DECISION_YES_STATUS if choice == "yes" else HUMAN_DECISION_NO_STATUS
     with db(args.store) as con:
         exists = con.execute("SELECT id FROM bot2_review_sessions WHERE id=?", (args.session_id,)).fetchone()
         if not exists:

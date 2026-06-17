@@ -1,12 +1,9 @@
-"""Characterization tests for bot2_gate.should_escalate.
+"""Tests for bot2_gate.should_escalate.
 
-IMPORTANT: this file pins the CURRENT behavior, INCLUDING the known drift bug
-(BUG-1 in docs/refactoring/03_latent_bugs.md): bot2_gate.should_escalate keeps a
-local status list that has diverged from supervisor_common.ESCALATION_STATUSES.
-
-The two statuses NEED_HUMAN_DECISION and REFACTORING_REQUIRED currently do NOT
-escalate here. Phase 2 fixes BUG-1 and flips the two assertions in
-test_drift_statuses_currently_do_not_escalate to True (before/after evidence).
+After the BUG-1 fix (docs/refactoring/03_latent_bugs.md), should_escalate is
+coupled to the single canonical supervisor_common.ESCALATION_STATUSES set plus
+INVALID_BOT2_OUTPUT. These tests assert that coupling so the local list can
+never drift again.
 """
 
 from __future__ import annotations
@@ -21,33 +18,24 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import pytest  # noqa: E402
 
 from bot2_gate import should_escalate  # noqa: E402
+from supervisor_common import (  # noqa: E402
+    APPROVED_STATUSES,
+    BLOCKED_STATUSES,
+    ESCALATION_STATUSES,
+    INVALID_BOT2_STATUS,
+)
 
 
-ESCALATING = [
-    "REJECT",
-    "NEEDS_HUMAN",
-    "REQUEST_CHANGES",
-    "INSUFFICIENT_EVIDENCE",
-    "MISSING_TESTS_FOR_CODE_CHANGE",
-    "FAKE_IMPLEMENTATION_DETECTED",
-    "TEST_THEATER_DETECTED",
-    "RUBBER_STAMP_RISK",
-    "INVALID_BOT2_OUTPUT",
-]
-
-NON_ESCALATING = [
-    "APPROVE",
-    "APPROVE_WITH_EVIDENCE",
-    "BLOCKED_BY_POLICY",
-    "LOOP_DETECTED",
-    "SOMETHING_UNKNOWN",
-    "",
-]
+NON_ESCALATING = sorted(APPROVED_STATUSES | BLOCKED_STATUSES | {"SOMETHING_UNKNOWN", ""})
 
 
-@pytest.mark.parametrize("status", ESCALATING)
-def test_escalating_statuses(status: str) -> None:
+@pytest.mark.parametrize("status", sorted(ESCALATION_STATUSES))
+def test_every_canonical_escalation_status_escalates(status: str) -> None:
     assert should_escalate({"status": status}) is True
+
+
+def test_invalid_bot2_output_escalates() -> None:
+    assert should_escalate({"status": INVALID_BOT2_STATUS}) is True
 
 
 @pytest.mark.parametrize("status", NON_ESCALATING)
@@ -60,7 +48,7 @@ def test_status_is_case_insensitive() -> None:
 
 
 @pytest.mark.parametrize("status", ["NEED_HUMAN_DECISION", "REFACTORING_REQUIRED"])
-def test_drift_statuses_currently_do_not_escalate(status: str) -> None:
-    # BUG-1: these ARE in supervisor_common.ESCALATION_STATUSES but the gate's
-    # local list omits them. Phase 2 will flip these to True.
-    assert should_escalate({"status": status}) is False
+def test_drift_statuses_now_escalate_after_bug1_fix(status: str) -> None:
+    # BUG-1 before/after evidence: these are in ESCALATION_STATUSES but the old
+    # local list omitted them, so they used to return False. Now they escalate.
+    assert should_escalate({"status": status}) is True

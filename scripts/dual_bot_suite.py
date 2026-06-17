@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +13,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from _common import gen_id, utc_now  # noqa: E402
+from json_salvage import brace_objects, fenced_json_blocks  # noqa: E402
 import dual_bot_lab as lab  # noqa: E402
 
 
@@ -74,8 +74,7 @@ CASES: list[dict[str, str]] = [
 
 
 def extract_verdict(text: str) -> dict[str, Any]:
-    fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.S)
-    candidates = fenced + re.findall(r"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})", text, flags=re.S)
+    candidates = fenced_json_blocks(text) + brace_objects(text)
     for candidate in candidates:
         try:
             data = json.loads(candidate)

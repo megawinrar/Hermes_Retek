@@ -120,37 +120,46 @@ def bothub_config() -> dict[str, str]:
     return {"api_key": api_key, "base_url": base_url.rstrip("/")}
 
 
+_INITIALIZED_LAB_STORES: set[str] = set()
+
+
 def db() -> sqlite3.Connection:
     STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    store_key = str(STORE_PATH)
+    existed_before = STORE_PATH.exists()
     con = sqlite3.connect(STORE_PATH)
     con.row_factory = sqlite3.Row
-    con.execute("PRAGMA journal_mode=WAL")
-    con.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS dual_bot_runs (
-            id TEXT PRIMARY KEY,
-            created_at TEXT NOT NULL,
-            task TEXT NOT NULL,
-            acceptance TEXT NOT NULL,
-            bot1_model TEXT NOT NULL,
-            bot2_model TEXT NOT NULL,
-            status TEXT NOT NULL,
-            report_path TEXT DEFAULT ''
-        );
+    # BUG-3 fix: only run schema init once per store path, mirroring
+    # supervisor_common.connect instead of executescript on every connection.
+    if not existed_before or store_key not in _INITIALIZED_LAB_STORES:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS dual_bot_runs (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                task TEXT NOT NULL,
+                acceptance TEXT NOT NULL,
+                bot1_model TEXT NOT NULL,
+                bot2_model TEXT NOT NULL,
+                status TEXT NOT NULL,
+                report_path TEXT DEFAULT ''
+            );
 
-        CREATE TABLE IF NOT EXISTS dual_bot_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            speaker TEXT NOT NULL,
-            model TEXT NOT NULL,
-            content TEXT NOT NULL,
-            metadata_json TEXT DEFAULT '{}',
-            FOREIGN KEY(run_id) REFERENCES dual_bot_runs(id)
-        );
-        """
-    )
-    con.commit()
+            CREATE TABLE IF NOT EXISTS dual_bot_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                speaker TEXT NOT NULL,
+                model TEXT NOT NULL,
+                content TEXT NOT NULL,
+                metadata_json TEXT DEFAULT '{}',
+                FOREIGN KEY(run_id) REFERENCES dual_bot_runs(id)
+            );
+            """
+        )
+        con.commit()
+        _INITIALIZED_LAB_STORES.add(store_key)
     return con
 
 
